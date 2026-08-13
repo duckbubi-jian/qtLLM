@@ -5,6 +5,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QThread>
 #include <QUuid>
@@ -90,6 +91,19 @@ void WorkerClient::generate(const QString& prompt, const QString& systemPrompt,
                             float temperature, float topP, int topK,
                             float repeatPenalty)
 {
+    QList<chat::Message> messages;
+    if (!systemPrompt.isEmpty())
+        messages.append({chat::Role::System, systemPrompt});
+    messages.append({chat::Role::User, prompt});
+    generate(messages, contextSize, maxTokens, threads, temperature, topP, topK,
+             repeatPenalty);
+}
+
+void WorkerClient::generate(const QList<chat::Message>& messages,
+                            int contextSize, int maxTokens, int threads,
+                            float temperature, float topP, int topK,
+                            float repeatPenalty)
+{
     if (state_ != State::ModelReady)
     {
         fail(QStringLiteral("invalid_state"),
@@ -97,10 +111,17 @@ void WorkerClient::generate(const QString& prompt, const QString& systemPrompt,
         return;
     }
     if (threads <= 0) threads = qMax(1, QThread::idealThreadCount());
+
+    QJsonArray serializedMessages;
+    for (const auto& message : messages)
+    {
+        serializedMessages.append(
+            QJsonObject{{QStringLiteral("role"), chat::roleName(message.role)},
+                        {QStringLiteral("content"), message.content}});
+    }
     generationRequestId_ =
         send(QString::fromLatin1(protocol::message_type::generate),
-             {{QStringLiteral("prompt"), prompt},
-              {QStringLiteral("systemPrompt"), systemPrompt},
+             {{QStringLiteral("messages"), serializedMessages},
               {QStringLiteral("contextSize"), contextSize},
               {QStringLiteral("maxTokens"), maxTokens},
               {QStringLiteral("threads"), threads},

@@ -39,6 +39,8 @@ The worker entry point follows the same rule: `worker/main.cpp` remains beside
 Development executables are written directly to the CMake build directory.
 On Windows, building `qtLLM` also copies the Qt platform plugin to the adjacent
 `platforms` directory, so the application can be launched from the build tree.
+The last successfully loaded model path is stored in `qtLLM.ini` beside the
+executable and restored into the model path field on the next launch.
 
 Run the default test suite without loading a model:
 

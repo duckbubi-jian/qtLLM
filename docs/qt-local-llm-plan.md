@@ -152,10 +152,11 @@ qtLLM/
 
 ### 阶段二：工程骨架（第 2 周）
 
-当前状态：版本 1 JSONL IPC、持久 worker、Qt `QProcess` 客户端、模型加载、
-流式 token、取消与基础聊天窗口已完成。协议单元测试和 worker 进程集成测试
-已接入 CTest；本地 DeepSeek 1.5B Q4_K_M 已验证一次加载后取消生成并直接进行
-第二次生成。日志、配置持久化、worker 崩溃自动恢复和 CI 仍待补充。操作与协议
+当前状态：版本 2 JSONL IPC、持久 worker、Qt `QProcess` 客户端、模型加载、
+流式 token、取消、结构化多轮历史与上下文自动裁剪已完成。协议单元测试和 worker
+进程集成测试已接入 CTest；本地 DeepSeek 1.5B Q4_K_M 已验证取消后继续生成、
+多轮消息和真实 tokenizer 裁剪。最后成功加载的模型路径已持久化到运行目录；日志、
+其余设置持久化、worker 崩溃自动恢复和 CI 仍待补充。操作与协议
 边界见 [阶段二 JSONL IPC](stage-2-jsonl-ipc.md)。
 
 任务：
@@ -184,7 +185,7 @@ error
 
 ```json
 {
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "requestId": "uuid",
   "type": "generate",
   "payload": {}
@@ -199,6 +200,9 @@ error
 - 不完整 JSON 和协议版本不匹配有明确处理。
 
 ### 阶段三：聊天 MVP（第 3 至 4 周）
+
+> TODO：SQLite 会话持久化与应用重启后的历史恢复暂缓。本阶段当前只实现运行期间
+> 的多轮上下文；详细边界和后续验收项见 [`TODO.md`](../TODO.md)。
 
 任务：
 

@@ -1,8 +1,11 @@
 #pragma once
 
+#include "ChatMessage.hpp"
+#include "SettingsStore.hpp"
 #include "WorkerClient.hpp"
 
 #include <QByteArray>
+#include <QList>
 #include <QMainWindow>
 #include <QString>
 
@@ -45,7 +48,9 @@ class MainWindow final : public QMainWindow
     [[nodiscard]] bool conversationIsAtBottom() const;
     void scrollConversationToBottom();
     void flushPendingUtf8(bool final = false);
+    void discardPendingHistoryMessage();
 
+    infrastructure::SettingsStore settingsStore_;
     infrastructure::WorkerClient workerClient_;
     QLineEdit* modelPathEdit_ = nullptr;
     QPushButton* browseButton_ = nullptr;
@@ -60,7 +65,9 @@ class MainWindow final : public QMainWindow
     QLabel* statusLabel_ = nullptr;
     QTimer* renderTimer_ = nullptr;
     MessageWidget* currentAssistant_ = nullptr;
+    QList<chat::Message> conversationMessages_;
     QString currentAssistantText_;
     QByteArray pendingUtf8_;
+    bool hasPendingHistoryMessage_ = false;
 };
 }  // namespace qtllm::ui

@@ -2,6 +2,7 @@ cmake-*
 *.xml
 *.iml
 *.name
+qtLLM.ini
 
 # Model weights and interrupted downloads do not belong in source control.
 *.gguf

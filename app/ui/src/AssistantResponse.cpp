@@ -49,4 +49,11 @@ AssistantResponse parseAssistantResponse(QStringView rawResponse)
 
     return {{}, source.trimmed(), false, false};
 }
+
+QString assistantHistoryText(QStringView rawResponse)
+{
+    const auto response = parseAssistantResponse(rawResponse);
+    if (response.hasReasoning && !response.reasoningComplete) return {};
+    return response.answer.trimmed();
+}
 }  // namespace qtllm::ui

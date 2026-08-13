@@ -1,8 +1,10 @@
 #pragma once
 
+#include "ChatMessage.hpp"
 #include "JsonLineProtocol.hpp"
 
 #include <QByteArray>
+#include <QList>
 #include <QObject>
 #include <QProcess>
 #include <QString>
@@ -33,6 +35,10 @@ class WorkerClient final : public QObject
     void stop();
     void loadModel(const QString& modelPath, int gpuLayers = 0);
     void unloadModel();
+    void generate(const QList<chat::Message>& messages, int contextSize = 8192,
+                  int maxTokens = 1024, int threads = 0,
+                  float temperature = 0.6F, float topP = 0.95F, int topK = 40,
+                  float repeatPenalty = 1.05F);
     void generate(const QString& prompt, const QString& systemPrompt,
                   int contextSize = 8192, int maxTokens = 1024, int threads = 0,
                   float temperature = 0.6F, float topP = 0.95F, int topK = 40,

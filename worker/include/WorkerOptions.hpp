@@ -1,5 +1,8 @@
 #pragma once
 
+#include "ChatMessage.hpp"
+
+#include <QList>
 #include <QString>
 
 #include <cstdint>
@@ -13,6 +16,7 @@ struct WorkerOptions
     QString modelPath;
     QString prompt;
     QString systemPrompt = QStringLiteral("You are a helpful assistant.");
+    QList<chat::Message> messages;
     int contextSize = 8192;
     int maxTokens = 1024;
     int threads = 0;

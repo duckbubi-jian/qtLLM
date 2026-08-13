@@ -1,6 +1,11 @@
 #include "WorkerClient.hpp"
+#include "SettingsStore.hpp"
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QFileInfo>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QtTest>
 
 namespace qtllm::tests
@@ -10,8 +15,35 @@ class WorkerClientTest final : public QObject
     Q_OBJECT
 
    private slots:
+    void storesLastModelPathInExplicitIniFile();
+    void defaultsToApplicationDirectory();
     void startsHandshakesAndStopsWorker();
 };
+
+void WorkerClientTest::storesLastModelPathInExplicitIniFile()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto settingsPath =
+        QDir(directory.path()).filePath(QStringLiteral("qtLLM.ini"));
+    const auto modelPath = QStringLiteral("D:/models/deepseek/model.gguf");
+
+    infrastructure::SettingsStore settings(settingsPath);
+    QVERIFY(settings.lastModelPath().isEmpty());
+    QVERIFY(settings.setLastModelPath(modelPath));
+    QCOMPARE(settings.lastModelPath(), modelPath);
+    QVERIFY(QFileInfo::exists(settingsPath));
+
+    const infrastructure::SettingsStore reloaded(settingsPath);
+    QCOMPARE(reloaded.lastModelPath(), modelPath);
+}
+
+void WorkerClientTest::defaultsToApplicationDirectory()
+{
+    const infrastructure::SettingsStore settings;
+    QCOMPARE(settings.filePath(), QDir(QCoreApplication::applicationDirPath())
+                                      .filePath(QStringLiteral("qtLLM.ini")));
+}
 
 void WorkerClientTest::startsHandshakesAndStopsWorker()
 {

@@ -67,18 +67,37 @@ void logErrors(ggml_log_level level, const char* text, void*)
     }
 }
 
-bool formatPrompt(const llama_model* model, const WorkerOptions& options,
+QList<chat::Message> requestMessages(const WorkerOptions& options)
+{
+    if (!options.messages.isEmpty()) return options.messages;
+
+    QList<chat::Message> messages;
+    if (!options.systemPrompt.isEmpty())
+        messages.append({chat::Role::System, options.systemPrompt});
+    messages.append({chat::Role::User, options.prompt});
+    return messages;
+}
+
+bool formatPrompt(const llama_model* model,
+                  const QList<chat::Message>& requestMessages,
                   QByteArray& prompt, QString& errorMessage)
 {
-    const auto systemPrompt = options.systemPrompt.toUtf8();
-    const auto userPrompt = options.prompt.toUtf8();
-
+    std::vector<QByteArray> roles;
+    std::vector<QByteArray> contents;
     std::vector<llama_chat_message> messages;
-    if (!systemPrompt.isEmpty())
+    roles.reserve(requestMessages.size());
+    contents.reserve(requestMessages.size());
+    messages.reserve(requestMessages.size());
+    for (const auto& message : requestMessages)
     {
-        messages.push_back({"system", systemPrompt.constData()});
+        roles.push_back(chat::roleName(message.role).toUtf8());
+        contents.push_back(message.content.toUtf8());
     }
-    messages.push_back({"user", userPrompt.constData()});
+    for (std::size_t index = 0; index < roles.size(); ++index)
+    {
+        messages.push_back(
+            {roles[index].constData(), contents[index].constData()});
+    }
 
     const char* chatTemplate = llama_model_chat_template(model, nullptr);
     if (chatTemplate == nullptr)
@@ -110,6 +129,50 @@ bool formatPrompt(const llama_model* model, const WorkerOptions& options,
 
     prompt.resize(written);
     return true;
+}
+
+bool tokenize(const llama_vocab* vocabulary, const QByteArray& prompt,
+              std::vector<llama_token>& tokens, QString& errorMessage);
+
+bool preparePrompt(const llama_model* model, const llama_vocab* vocabulary,
+                   const WorkerOptions& options, QByteArray& formattedPrompt,
+                   std::vector<llama_token>& promptTokens,
+                   int& discardedMessages, QString& errorMessage)
+{
+    auto messages = requestMessages(options);
+    const auto historyStart =
+        !messages.isEmpty() && messages.constFirst().role == chat::Role::System
+            ? 1
+            : 0;
+
+    while (true)
+    {
+        if (!formatPrompt(model, messages, formattedPrompt, errorMessage) ||
+            !tokenize(vocabulary, formattedPrompt, promptTokens, errorMessage))
+        {
+            return false;
+        }
+        if (promptTokens.size() + static_cast<std::size_t>(options.maxTokens) <=
+            static_cast<std::size_t>(options.contextSize))
+        {
+            return true;
+        }
+
+        const auto removableMessages = messages.size() - historyStart - 1;
+        if (removableMessages < 2) break;
+        messages.removeAt(historyStart);
+        messages.removeAt(historyStart);
+        discardedMessages += 2;
+    }
+
+    errorMessage =
+        QStringLiteral(
+            "The latest message (%1 prompt tokens) plus the %2-token "
+            "response reserve exceeds the %3-token context window.")
+            .arg(promptTokens.size())
+            .arg(options.maxTokens)
+            .arg(options.contextSize);
+    return false;
 }
 
 bool tokenize(const llama_vocab* vocabulary, const QByteArray& prompt,
@@ -251,27 +314,11 @@ bool LlamaEngine::generate(const WorkerOptions& options,
     const auto* vocabulary = llama_model_get_vocab(impl_->model.get());
 
     QByteArray formattedPrompt;
-    if (!formatPrompt(impl_->model.get(), options, formattedPrompt,
-                      errorMessage))
-    {
-        return false;
-    }
-
     std::vector<llama_token> promptTokens;
-    if (!tokenize(vocabulary, formattedPrompt, promptTokens, errorMessage))
+    auto discardedMessages = 0;
+    if (!preparePrompt(impl_->model.get(), vocabulary, options, formattedPrompt,
+                       promptTokens, discardedMessages, errorMessage))
     {
-        return false;
-    }
-
-    if (promptTokens.size() + static_cast<std::size_t>(options.maxTokens) >
-        static_cast<std::size_t>(options.contextSize))
-    {
-        errorMessage = QStringLiteral(
-                           "Prompt (%1 tokens) plus --max-tokens (%2) exceeds "
-                           "--context-size (%3).")
-                           .arg(promptTokens.size())
-                           .arg(options.maxTokens)
-                           .arg(options.contextSize);
         return false;
     }
 
@@ -408,6 +455,7 @@ bool LlamaEngine::generate(const WorkerOptions& options,
         metrics->firstTokenMilliseconds = firstTokenMilliseconds;
         metrics->promptTokens = static_cast<int>(promptTokens.size());
         metrics->generatedTokens = generatedTokens;
+        metrics->discardedMessages = discardedMessages;
         metrics->generationTokensPerSecond = tokensPerSecond;
     }
 

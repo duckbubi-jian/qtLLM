@@ -14,4 +14,5 @@ struct AssistantResponse
 };
 
 AssistantResponse parseAssistantResponse(QStringView rawResponse);
+QString assistantHistoryText(QStringView rawResponse);
 }  // namespace qtllm::ui

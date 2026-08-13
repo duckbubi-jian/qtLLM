@@ -6,6 +6,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QProcess>
 #include <QtTest>
@@ -22,6 +23,7 @@ class WorkerProcessTest final : public QObject
     void rejectsInvalidJson();
     void rejectsProtocolMismatch();
     void rejectsGenerationBeforeModelLoad();
+    void rejectsInvalidMessageHistory();
     void reportsIdleStatus();
     void modelLifecycle();
     void cleanupTestCase();
@@ -118,6 +120,27 @@ void WorkerProcessTest::rejectsGenerationBeforeModelLoad()
              qPrintable(errorMessage));
     QVERIFY2(expectError(QStringLiteral("generate-unloaded"),
                          QStringLiteral("model_not_loaded"), errorMessage),
+             qPrintable(errorMessage));
+}
+
+void WorkerProcessTest::rejectsInvalidMessageHistory()
+{
+    QString errorMessage;
+    auto payload = generationPayload({}, 8);
+    payload.remove(QStringLiteral("prompt"));
+    payload.remove(QStringLiteral("systemPrompt"));
+    payload.insert(QStringLiteral("messages"),
+                   QJsonArray{QJsonObject{
+                       {QStringLiteral("role"), QStringLiteral("assistant")},
+                       {QStringLiteral("content"), QStringLiteral("hello")}}});
+    QVERIFY2(send(protocol::makeMessage(
+                      QStringLiteral("invalid-history"),
+                      QString::fromLatin1(protocol::message_type::generate),
+                      payload),
+                  errorMessage),
+             qPrintable(errorMessage));
+    QVERIFY2(expectError(QStringLiteral("invalid-history"),
+                         QStringLiteral("invalid_payload"), errorMessage),
              qPrintable(errorMessage));
 }
 
@@ -225,12 +248,43 @@ void WorkerProcessTest::modelLifecycle()
     QVERIFY(cancelAccepted);
     QVERIFY(generationFinished);
 
-    QVERIFY2(send(protocol::makeMessage(
-                      QStringLiteral("generation-2"),
-                      QString::fromLatin1(protocol::message_type::generate),
-                      generationPayload(QStringLiteral("Answer only: OK"), 16)),
-                  errorMessage),
-             qPrintable(errorMessage));
+    QVERIFY2(
+        send(protocol::makeMessage(
+                 QStringLiteral("generation-2"),
+                 QString::fromLatin1(protocol::message_type::generate),
+                 [&]
+                 {
+                     auto payload = generationPayload({}, 16);
+                     payload.remove(QStringLiteral("prompt"));
+                     payload.remove(QStringLiteral("systemPrompt"));
+                     payload.insert(
+                         QStringLiteral("messages"),
+                         QJsonArray{
+                             QJsonObject{{QStringLiteral("role"),
+                                          QStringLiteral("system")},
+                                         {QStringLiteral("content"),
+                                          QStringLiteral(
+                                              "You are a concise assistant.")}},
+                             QJsonObject{
+                                 {QStringLiteral("role"),
+                                  QStringLiteral("user")},
+                                 {QStringLiteral("content"),
+                                  QStringLiteral("Remember number 42.")}},
+                             QJsonObject{
+                                 {QStringLiteral("role"),
+                                  QStringLiteral("assistant")},
+                                 {QStringLiteral("content"),
+                                  QStringLiteral("I will remember 42.")}},
+                             QJsonObject{
+                                 {QStringLiteral("role"),
+                                  QStringLiteral("user")},
+                                 {QStringLiteral("content"),
+                                  QStringLiteral(
+                                      "Answer only with the number.")}}});
+                     return payload;
+                 }()),
+             errorMessage),
+        qPrintable(errorMessage));
 
     auto receivedBytes = QByteArray{};
     generationFinished = false;
@@ -255,6 +309,9 @@ void WorkerProcessTest::modelLifecycle()
             QCOMPARE(
                 response.payload.value(QStringLiteral("cancelled")).toBool(),
                 false);
+            QCOMPARE(response.payload.value(QStringLiteral("discardedMessages"))
+                         .toInt(),
+                     0);
         }
         if (response.type == QLatin1String(protocol::message_type::error))
         {
@@ -264,6 +321,57 @@ void WorkerProcessTest::modelLifecycle()
     }
     QVERIFY(generationFinished);
     QVERIFY(!receivedBytes.isEmpty());
+
+    auto trimmedHistoryPayload = generationPayload({}, 8);
+    trimmedHistoryPayload.remove(QStringLiteral("prompt"));
+    trimmedHistoryPayload.remove(QStringLiteral("systemPrompt"));
+    trimmedHistoryPayload.insert(QStringLiteral("contextSize"), 256);
+    trimmedHistoryPayload.insert(
+        QStringLiteral("messages"),
+        QJsonArray{
+            QJsonObject{{QStringLiteral("role"), QStringLiteral("system")},
+                        {QStringLiteral("content"),
+                         QStringLiteral("You are a concise assistant.")}},
+            QJsonObject{{QStringLiteral("role"), QStringLiteral("user")},
+                        {QStringLiteral("content"),
+                         QStringLiteral("old context ").repeated(300)}},
+            QJsonObject{{QStringLiteral("role"), QStringLiteral("assistant")},
+                        {QStringLiteral("content"),
+                         QStringLiteral("old answer ").repeated(300)}},
+            QJsonObject{{QStringLiteral("role"), QStringLiteral("user")},
+                        {QStringLiteral("content"),
+                         QStringLiteral("Answer only: OK")}}});
+    QVERIFY2(send(protocol::makeMessage(
+                      QStringLiteral("generation-trimmed"),
+                      QString::fromLatin1(protocol::message_type::generate),
+                      trimmedHistoryPayload),
+                  errorMessage),
+             qPrintable(errorMessage));
+
+    generationFinished = false;
+    while (!generationFinished)
+    {
+        QVERIFY2(read(response, errorMessage, 120000),
+                 qPrintable(errorMessage));
+        if (response.requestId != QStringLiteral("generation-trimmed"))
+            continue;
+        if (response.type ==
+            QLatin1String(protocol::message_type::generationFinished))
+        {
+            generationFinished = true;
+            QCOMPARE(
+                response.payload.value(QStringLiteral("cancelled")).toBool(),
+                false);
+            QCOMPARE(response.payload.value(QStringLiteral("discardedMessages"))
+                         .toInt(),
+                     2);
+        }
+        if (response.type == QLatin1String(protocol::message_type::error))
+        {
+            QFAIL(qPrintable(
+                response.payload.value(QStringLiteral("message")).toString()));
+        }
+    }
 }
 
 void WorkerProcessTest::cleanupTestCase()

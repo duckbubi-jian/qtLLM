@@ -17,6 +17,7 @@ struct GenerationMetrics
     qint64 firstTokenMilliseconds = -1;
     int promptTokens = 0;
     int generatedTokens = 0;
+    int discardedMessages = 0;
     double generationTokensPerSecond = 0.0;
 };
 

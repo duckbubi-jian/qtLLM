@@ -5,6 +5,7 @@
 #include "ProtocolVersion.hpp"
 
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QMetaObject>
 #include <QMutexLocker>
@@ -72,14 +73,89 @@ bool readFloat(const QJsonObject& payload, const QString& name, float minimum,
     return true;
 }
 
+bool readMessages(const QJsonObject& payload, WorkerOptions& options,
+                  QString& errorMessage)
+{
+    const auto messagesValue = payload.value(QStringLiteral("messages"));
+    if (messagesValue.isUndefined())
+    {
+        return readString(payload, QStringLiteral("prompt"), options.prompt,
+                          errorMessage, true) &&
+               readString(payload, QStringLiteral("systemPrompt"),
+                          options.systemPrompt, errorMessage);
+    }
+    if (!messagesValue.isArray() || messagesValue.toArray().isEmpty())
+    {
+        errorMessage =
+            QStringLiteral("payload.messages must be a non-empty array.");
+        return false;
+    }
+
+    const auto messages = messagesValue.toArray();
+    options.messages.reserve(messages.size());
+    for (qsizetype index = 0; index < messages.size(); ++index)
+    {
+        const auto value = messages.at(index);
+        if (!value.isObject())
+        {
+            errorMessage = QStringLiteral(
+                               "payload.messages[%1] must be an "
+                               "object.")
+                               .arg(index);
+            return false;
+        }
+        const auto object = value.toObject();
+        const auto roleValue = object.value(QStringLiteral("role"));
+        const auto contentValue = object.value(QStringLiteral("content"));
+        chat::Role role;
+        if (!roleValue.isString() ||
+            !chat::parseRole(roleValue.toString(), role))
+        {
+            errorMessage =
+                QStringLiteral("payload.messages[%1].role is invalid.")
+                    .arg(index);
+            return false;
+        }
+        if (!contentValue.isString() || contentValue.toString().isEmpty())
+        {
+            errorMessage = QStringLiteral(
+                               "payload.messages[%1].content must "
+                               "be a non-empty string.")
+                               .arg(index);
+            return false;
+        }
+        options.messages.append({role, contentValue.toString()});
+    }
+
+    qsizetype index = 0;
+    if (options.messages.constFirst().role == chat::Role::System) ++index;
+    auto expectedRole = chat::Role::User;
+    for (; index < options.messages.size(); ++index)
+    {
+        if (options.messages.at(index).role != expectedRole)
+        {
+            errorMessage = QStringLiteral(
+                "payload.messages must contain an optional leading system "
+                "message followed by alternating user and assistant messages.");
+            return false;
+        }
+        expectedRole = expectedRole == chat::Role::User ? chat::Role::Assistant
+                                                        : chat::Role::User;
+    }
+    if (options.messages.constLast().role != chat::Role::User)
+    {
+        errorMessage =
+            QStringLiteral("payload.messages must end with a user message.");
+        return false;
+    }
+    return true;
+}
+
 bool parseGenerationOptions(const QJsonObject& payload, WorkerOptions& options,
                             QString& errorMessage)
 {
     options.threads = qMax(1, QThread::idealThreadCount());
-    return readString(payload, QStringLiteral("prompt"), options.prompt,
-                      errorMessage, true) &&
-           readString(payload, QStringLiteral("systemPrompt"),
-                      options.systemPrompt, errorMessage) &&
+    return readMessages(payload, options, errorMessage) &&
            readInteger(payload, QStringLiteral("contextSize"), 256, 1'048'576,
                        options.contextSize, errorMessage) &&
            readInteger(payload, QStringLiteral("maxTokens"), 1, 1'048'576,
@@ -237,19 +313,18 @@ void WorkerSession::handleGenerate(const protocol::Message& message)
                   QStringLiteral("A generation is already active."));
         return;
     }
-    if (!engine_.isModelLoaded())
-    {
-        sendError(message.requestId, QStringLiteral("model_not_loaded"),
-                  QStringLiteral("Load a model before generating."));
-        return;
-    }
-
     WorkerOptions options;
     QString errorMessage;
     if (!parseGenerationOptions(message.payload, options, errorMessage))
     {
         sendError(message.requestId, QStringLiteral("invalid_payload"),
                   errorMessage);
+        return;
+    }
+    if (!engine_.isModelLoaded())
+    {
+        sendError(message.requestId, QStringLiteral("model_not_loaded"),
+                  QStringLiteral("Load a model before generating."));
         return;
     }
 
@@ -341,6 +416,7 @@ void WorkerSession::finishGeneration(const QString& requestId, bool generated,
           metrics.firstTokenMilliseconds},
          {QStringLiteral("promptTokens"), metrics.promptTokens},
          {QStringLiteral("generatedTokens"), metrics.generatedTokens},
+         {QStringLiteral("discardedMessages"), metrics.discardedMessages},
          {QStringLiteral("tokensPerSecond"),
           metrics.generationTokensPerSecond}}));
 }

@@ -1,5 +1,6 @@
 #include "MainWindow.hpp"
 
+#include "AssistantResponse.hpp"
 #include "MessageWidget.hpp"
 
 #include <QCoreApplication>
@@ -28,6 +29,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
     setMinimumSize(720, 520);
 
     buildUi();
+    modelPathEdit_->setText(settingsStore_.lastModelPath());
 
     connect(&workerClient_, &infrastructure::WorkerClient::stateChanged, this,
             &MainWindow::updateState);
@@ -37,6 +39,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
                 statusLabel_->setText(
                     tr("Model ready - loaded in %1 ms").arg(milliseconds));
                 modelPathEdit_->setText(path);
+                if (!settingsStore_.setLastModelPath(path))
+                {
+                    statusLabel_->setText(
+                        tr("Model ready, but the model path could not be "
+                           "saved beside the application."));
+                }
             });
     connect(&workerClient_, &infrastructure::WorkerClient::tokenReceived, this,
             &MainWindow::appendToken);
@@ -74,8 +82,13 @@ void MainWindow::sendPrompt()
     promptEdit_->clear();
     pendingUtf8_.clear();
     currentAssistantText_.clear();
-    workerClient_.generate(prompt,
-                           QStringLiteral("You are a helpful assistant."));
+    conversationMessages_.append({chat::Role::User, prompt});
+    hasPendingHistoryMessage_ = true;
+
+    auto requestMessages = conversationMessages_;
+    requestMessages.prepend(
+        {chat::Role::System, QStringLiteral("You are a helpful assistant.")});
+    workerClient_.generate(requestMessages);
 }
 
 void MainWindow::stopGeneration()
@@ -140,12 +153,43 @@ void MainWindow::finishGeneration(bool cancelled, const QJsonObject& metrics)
     appendRawText(QStringLiteral("\n"));
     currentAssistant_ = nullptr;
 
+    if (!cancelled)
+    {
+        const auto answer = assistantHistoryText(currentAssistantText_);
+        if (!answer.isEmpty())
+        {
+            conversationMessages_.append({chat::Role::Assistant, answer});
+            hasPendingHistoryMessage_ = false;
+        }
+        else
+        {
+            discardPendingHistoryMessage();
+        }
+    }
+    else
+    {
+        discardPendingHistoryMessage();
+    }
+
+    if (cancelled)
+    {
+        statusLabel_->setText(tr("Generation stopped"));
+        return;
+    }
+
+    const auto discardedMessages =
+        metrics.value(QStringLiteral("discardedMessages")).toInt();
     statusLabel_->setText(
-        cancelled ? tr("Generation stopped")
-                  : tr("Ready - %1 token/s")
-                        .arg(metrics.value(QStringLiteral("tokensPerSecond"))
-                                 .toDouble(),
-                             0, 'f', 1));
+        discardedMessages > 0
+            ? tr("Ready - %1 token/s - %2 earlier messages omitted")
+                  .arg(metrics.value(QStringLiteral("tokensPerSecond"))
+                           .toDouble(),
+                       0, 'f', 1)
+                  .arg(discardedMessages)
+            : tr("Ready - %1 token/s")
+                  .arg(metrics.value(QStringLiteral("tokensPerSecond"))
+                           .toDouble(),
+                       0, 'f', 1));
 }
 
 void MainWindow::showError(const QString& code, const QString& message)
@@ -160,6 +204,7 @@ void MainWindow::showError(const QString& code, const QString& message)
         renderAssistant(true);
         currentAssistant_ = nullptr;
     }
+    discardPendingHistoryMessage();
     qWarning().noquote() << code << message;
 }
 
@@ -339,5 +384,16 @@ void MainWindow::flushPendingUtf8(bool final)
     currentAssistantText_ += text;
     appendRawText(text);
     if (!final && !renderTimer_->isActive()) renderTimer_->start();
+}
+
+void MainWindow::discardPendingHistoryMessage()
+{
+    if (!hasPendingHistoryMessage_) return;
+    if (!conversationMessages_.isEmpty() &&
+        conversationMessages_.constLast().role == chat::Role::User)
+    {
+        conversationMessages_.removeLast();
+    }
+    hasPendingHistoryMessage_ = false;
 }
 }  // namespace qtllm::ui

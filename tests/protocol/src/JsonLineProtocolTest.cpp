@@ -2,6 +2,7 @@
 
 #include "ProtocolVersion.hpp"
 
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QtTest>
 
@@ -25,7 +26,10 @@ void JsonLineProtocolTest::roundTripsMessage()
 {
     const auto original = protocol::makeMessage(
         QStringLiteral("request-1"), QStringLiteral("generate"),
-        {{QStringLiteral("prompt"), QStringLiteral("hello")},
+        {{QStringLiteral("messages"),
+          QJsonArray{QJsonObject{
+              {QStringLiteral("role"), QStringLiteral("user")},
+              {QStringLiteral("content"), QStringLiteral("hello")}}}},
          {QStringLiteral("maxTokens"), 32}});
 
     const auto line = protocol::encodeLine(original);

@@ -14,6 +14,7 @@ class AssistantResponseTest final : public QObject
     void parsesCompletedReasoning();
     void parsesStreamingReasoning();
     void preservesPlainAnswer();
+    void excludesIncompleteReasoningFromHistory();
     void userMessageDisplaysItsText();
     void reasoningOnlyResponseFallsBackToVisibleAnswer();
 };
@@ -44,6 +45,17 @@ void AssistantResponseTest::preservesPlainAnswer()
         QStringLiteral("```python\nprint('ok')\n```"));
     QVERIFY(!response.hasReasoning);
     QCOMPARE(response.answer, QStringLiteral("```python\nprint('ok')\n```"));
+}
+
+void AssistantResponseTest::excludesIncompleteReasoningFromHistory()
+{
+    QVERIFY(ui::assistantHistoryText(QStringLiteral("<think>still working"))
+                .isEmpty());
+    QCOMPARE(ui::assistantHistoryText(
+                 QStringLiteral("<think>notes</think>Final answer")),
+             QStringLiteral("Final answer"));
+    QCOMPARE(ui::assistantHistoryText(QStringLiteral("Plain answer")),
+             QStringLiteral("Plain answer"));
 }
 
 void AssistantResponseTest::userMessageDisplaysItsText()

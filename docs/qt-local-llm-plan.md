@@ -92,20 +92,38 @@ qtLLM-offline-<edition>-<version>.zip
 ```text
 qtLLM/
 ├── app/
+│   ├── CMakeLists.txt
+│   ├── main.cpp
 │   ├── ui/
+│   │   ├── include/
+│   │   ├── src/
+│   │   └── ui/
 │   ├── application/
-│   ├── infrastructure/
-│   └── main.cpp
+│   └── infrastructure/
+│       ├── include/
+│       └── src/
 ├── worker/
+│   ├── include/
+│   └── src/
 ├── shared/
 │   ├── protocol/
+│   │   ├── include/
+│   │   └── src/
 │   └── models/
-├── third_party/
+│       └── include/
 ├── tests/
+│   ├── client/src/
+│   ├── protocol/src/
+│   └── worker/src/
+├── third_party/
 ├── packaging/
 ├── docs/
 └── CMakeLists.txt
 ```
+
+根 CMake 递归发现 `app`、`worker`、`shared` 和 `tests` 中的 `.cpp`、
+`.hpp` 与 `.ui` 文件。功能目录保持稳定，新增代码放入对应功能目录下的
+`include`、`src` 或 `ui`，不需要手工维护 target 文件清单。
 
 ## 4. 开发阶段
 
@@ -131,6 +149,12 @@ qtLLM/
 - 形成不同硬件上的性能基线。
 
 ### 阶段二：工程骨架（第 2 周）
+
+当前状态：版本 1 JSONL IPC、持久 worker、Qt `QProcess` 客户端、模型加载、
+流式 token、取消与基础聊天窗口已完成。协议单元测试和 worker 进程集成测试
+已接入 CTest；本地 DeepSeek 1.5B Q4_K_M 已验证一次加载后取消生成并直接进行
+第二次生成。日志、配置持久化、worker 崩溃自动恢复和 CI 仍待补充。操作与协议
+边界见 [阶段二 JSONL IPC](stage-2-jsonl-ipc.md)。
 
 任务：
 

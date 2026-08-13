@@ -162,7 +162,14 @@ bool tokenPiece(const llama_vocab* vocabulary, llama_token token,
 }
 }  // namespace
 
-LlamaEngine::LlamaEngine()
+class LlamaEngine::Impl
+{
+   public:
+    ModelPointer model;
+    QString modelPath;
+};
+
+LlamaEngine::LlamaEngine() : impl_(std::make_unique<Impl>())
 {
     llama_log_set(logErrors, nullptr);
     llama_backend_init();
@@ -171,44 +178,81 @@ LlamaEngine::LlamaEngine()
 
 LlamaEngine::~LlamaEngine()
 {
+    impl_.reset();
     llama_backend_free();
 }
 
-bool LlamaEngine::generate(const WorkerOptions& options,
-                           const TokenHandler& tokenHandler,
-                           QString& errorMessage,
-                           const std::atomic_bool* externalCancellation)
+bool LlamaEngine::loadModel(const QString& modelPath, int gpuLayers,
+                            QString& errorMessage, qint64* loadMilliseconds)
 {
-    cancelled_.store(false, std::memory_order_relaxed);
-    CancellationState cancellationState{&cancelled_, externalCancellation};
+    unloadModel();
 
     QElapsedTimer loadTimer;
     loadTimer.start();
 
     auto modelParameters = llama_model_default_params();
-    modelParameters.n_gpu_layers = options.gpuLayers;
+    modelParameters.n_gpu_layers = gpuLayers;
     modelParameters.use_mmap = true;
 
-    const auto modelPath = options.modelPath.toUtf8();
+    const auto encodedPath = modelPath.toUtf8();
     ModelPointer model(
-        llama_model_load_from_file(modelPath.constData(), modelParameters));
+        llama_model_load_from_file(encodedPath.constData(), modelParameters));
     if (!model)
     {
         errorMessage = QStringLiteral("Unable to load GGUF model: %1")
-                           .arg(QFileInfo(options.modelPath).fileName());
+                           .arg(QFileInfo(modelPath).fileName());
         return false;
     }
-
-    const auto loadMilliseconds = loadTimer.elapsed();
-    const auto* vocabulary = llama_model_get_vocab(model.get());
-    if (vocabulary == nullptr)
+    if (llama_model_get_vocab(model.get()) == nullptr)
     {
         errorMessage = QStringLiteral("The loaded model has no vocabulary.");
         return false;
     }
 
+    impl_->model = std::move(model);
+    impl_->modelPath = QFileInfo(modelPath).absoluteFilePath();
+    if (loadMilliseconds != nullptr)
+    {
+        *loadMilliseconds = loadTimer.elapsed();
+    }
+    return true;
+}
+
+void LlamaEngine::unloadModel()
+{
+    impl_->model.reset();
+    impl_->modelPath.clear();
+}
+
+bool LlamaEngine::isModelLoaded() const
+{
+    return impl_->model != nullptr;
+}
+
+QString LlamaEngine::modelPath() const
+{
+    return impl_->modelPath;
+}
+
+bool LlamaEngine::generate(const WorkerOptions& options,
+                           const TokenHandler& tokenHandler,
+                           QString& errorMessage, GenerationMetrics* metrics,
+                           const std::atomic_bool* externalCancellation)
+{
+    cancelled_.store(false, std::memory_order_relaxed);
+    CancellationState cancellationState{&cancelled_, externalCancellation};
+
+    if (!impl_->model)
+    {
+        errorMessage = QStringLiteral("No model is loaded.");
+        return false;
+    }
+
+    const auto* vocabulary = llama_model_get_vocab(impl_->model.get());
+
     QByteArray formattedPrompt;
-    if (!formatPrompt(model.get(), options, formattedPrompt, errorMessage))
+    if (!formatPrompt(impl_->model.get(), options, formattedPrompt,
+                      errorMessage))
     {
         return false;
     }
@@ -242,7 +286,7 @@ bool LlamaEngine::generate(const WorkerOptions& options,
     contextParameters.no_perf = false;
 
     ContextPointer context(
-        llama_init_from_model(model.get(), contextParameters));
+        llama_init_from_model(impl_->model.get(), contextParameters));
     if (!context)
     {
         errorMessage =
@@ -358,8 +402,16 @@ bool LlamaEngine::generate(const WorkerOptions& options,
     const auto generationSeconds = generationTimer.elapsed() / 1000.0;
     const auto tokensPerSecond =
         generationSeconds > 0.0 ? generatedTokens / generationSeconds : 0.0;
-    QTextStream(stderr) << "model_load_ms=" << loadMilliseconds
-                        << " prompt_eval_ms=" << promptEvaluationMilliseconds
+    if (metrics != nullptr)
+    {
+        metrics->promptEvaluationMilliseconds = promptEvaluationMilliseconds;
+        metrics->firstTokenMilliseconds = firstTokenMilliseconds;
+        metrics->promptTokens = static_cast<int>(promptTokens.size());
+        metrics->generatedTokens = generatedTokens;
+        metrics->generationTokensPerSecond = tokensPerSecond;
+    }
+
+    QTextStream(stderr) << "prompt_eval_ms=" << promptEvaluationMilliseconds
                         << " first_token_ms=" << firstTokenMilliseconds
                         << " prompt_tokens=" << promptTokens.size()
                         << " generated_tokens=" << generatedTokens

@@ -1,12 +1,15 @@
 #include "LlamaEngine.hpp"
+#include "StdinReader.hpp"
 #include "WorkerOptions.hpp"
+#include "WorkerSession.hpp"
 
-#include "protocol/ProtocolVersion.hpp"
+#include "ProtocolVersion.hpp"
 
 #include <QCommandLineParser>
 #include <QCoreApplication>
 #include <QFile>
 #include <QTextStream>
+#include <QThread>
 
 #include <atomic>
 #include <csignal>
@@ -18,6 +21,35 @@ std::atomic_bool interrupted = false;
 void handleInterrupt(int)
 {
     interrupted.store(true, std::memory_order_relaxed);
+}
+
+int runIpc(QCoreApplication& application)
+{
+    qtllm::worker::WorkerSession session;
+    QString errorMessage;
+    if (!session.start(errorMessage))
+    {
+        QTextStream(stderr) << "error: " << errorMessage << Qt::endl;
+        return 2;
+    }
+
+    QThread readerThread;
+    qtllm::worker::StdinReader reader;
+    reader.moveToThread(&readerThread);
+    QObject::connect(&readerThread, &QThread::started, &reader,
+                     &qtllm::worker::StdinReader::readLines);
+    QObject::connect(&reader, &qtllm::worker::StdinReader::lineReceived,
+                     &session, &qtllm::worker::WorkerSession::processLine);
+    QObject::connect(&reader, &qtllm::worker::StdinReader::inputClosed,
+                     &application, &QCoreApplication::quit);
+    QObject::connect(&reader, &qtllm::worker::StdinReader::inputClosed,
+                     &readerThread, &QThread::quit);
+    readerThread.start();
+
+    const auto result = application.exec();
+    readerThread.quit();
+    readerThread.wait();
+    return result;
 }
 }  // namespace
 
@@ -31,6 +63,11 @@ int main(int argc, char* argv[])
     QCommandLineParser parser;
     qtllm::worker::configureParser(parser);
     parser.process(application);
+
+    if (parser.isSet(QStringLiteral("ipc")))
+    {
+        return runIpc(application);
+    }
 
     qtllm::worker::WorkerOptions options;
     QString errorMessage;
@@ -60,6 +97,13 @@ int main(int argc, char* argv[])
     std::signal(SIGINT, handleInterrupt);
 
     qtllm::worker::LlamaEngine engine;
+    qint64 loadMilliseconds = 0;
+    if (!engine.loadModel(options.modelPath, options.gpuLayers, errorMessage,
+                          &loadMilliseconds))
+    {
+        QTextStream(stderr) << "error: " << errorMessage << Qt::endl;
+        return 1;
+    }
     QFile output;
     if (!output.open(stdout, QIODevice::WriteOnly))
     {
@@ -78,7 +122,7 @@ int main(int argc, char* argv[])
             output.write(piece);
             output.flush();
         },
-        errorMessage, &interrupted);
+        errorMessage, nullptr, &interrupted);
 
     if (!generated)
     {
@@ -88,5 +132,6 @@ int main(int argc, char* argv[])
 
     output.write("\n");
     output.flush();
+    QTextStream(stderr) << "model_load_ms=" << loadMilliseconds << Qt::endl;
     return 0;
 }

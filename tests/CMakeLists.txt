@@ -1,3 +1,67 @@
+find_package(Qt6 6.5 REQUIRED COMPONENTS Test)
+
+qtllm_collect_module_files(
+    "${CMAKE_CURRENT_SOURCE_DIR}/protocol"
+    protocol_test_sources
+    protocol_test_headers
+    protocol_test_forms
+)
+
+qt_add_executable(qtllm-protocol-tests
+    ${protocol_test_sources}
+    ${protocol_test_headers}
+    ${protocol_test_forms}
+)
+target_link_libraries(qtllm-protocol-tests
+    PRIVATE
+        Qt6::Test
+        qtllm_shared
+)
+add_test(NAME protocol_jsonl COMMAND qtllm-protocol-tests)
+
+qtllm_collect_module_files(
+    "${CMAKE_CURRENT_SOURCE_DIR}/client"
+    client_test_sources
+    client_test_headers
+    client_test_forms
+)
+
+qt_add_executable(qtllm-client-tests
+    ${client_test_sources}
+    ${client_test_headers}
+    ${client_test_forms}
+)
+target_link_libraries(qtllm-client-tests
+    PRIVATE
+        Qt6::Test
+        qtllm_app_infrastructure
+)
+add_dependencies(qtllm-client-tests qtllm-worker)
+add_test(NAME client_worker_lifecycle COMMAND qtllm-client-tests)
+
+qtllm_collect_module_files(
+    "${CMAKE_CURRENT_SOURCE_DIR}/worker"
+    worker_test_sources
+    worker_test_headers
+    worker_test_forms
+)
+
+qt_add_executable(qtllm-worker-tests
+    ${worker_test_sources}
+    ${worker_test_headers}
+    ${worker_test_forms}
+)
+target_link_libraries(qtllm-worker-tests
+    PRIVATE
+        Qt6::Test
+        qtllm_shared
+)
+add_dependencies(qtllm-worker-tests qtllm-worker)
+add_test(NAME worker_jsonl_ipc COMMAND qtllm-worker-tests)
+set_tests_properties(worker_jsonl_ipc PROPERTIES
+    ENVIRONMENT "QTLLM_TEST_WORKER=$<TARGET_FILE:qtllm-worker>"
+)
+
 add_test(NAME worker_help COMMAND qtllm-worker --help)
 add_test(NAME worker_version COMMAND qtllm-worker --version)
 add_test(NAME worker_requires_model

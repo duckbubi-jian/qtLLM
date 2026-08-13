@@ -56,6 +56,9 @@ void configureParser(QCommandLineParser& parser)
     parser.addHelpOption();
     parser.addVersionOption();
     parser.addOption(
+        {QStringLiteral("ipc"),
+         QStringLiteral("Run as a persistent JSON Lines worker.")});
+    parser.addOption(
         {QStringLiteral("model"),
          QStringLiteral("Path to a GGUF model or its first split."),
          QStringLiteral("path")});

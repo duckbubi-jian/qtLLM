@@ -103,6 +103,8 @@ qtLLM/
 │       ├── include/
 │       └── src/
 ├── worker/
+│   ├── CMakeLists.txt
+│   ├── main.cpp
 │   ├── include/
 │   └── src/
 ├── shared/

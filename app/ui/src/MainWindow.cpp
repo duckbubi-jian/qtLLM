@@ -1,5 +1,7 @@
 #include "MainWindow.hpp"
 
+#include "MessageWidget.hpp"
+
 #include <QCoreApplication>
 #include <QFileDialog>
 #include <QFontDatabase>
@@ -8,8 +10,12 @@
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QStatusBar>
+#include <QTabWidget>
 #include <QTextCursor>
+#include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
 
@@ -63,10 +69,11 @@ void MainWindow::sendPrompt()
     const auto prompt = promptEdit_->toPlainText().trimmed();
     if (prompt.isEmpty()) return;
 
-    appendMessage(tr("You"), prompt);
-    transcript_->appendPlainText(tr("Assistant"));
+    appendUserMessage(prompt);
+    beginAssistantMessage();
     promptEdit_->clear();
     pendingUtf8_.clear();
+    currentAssistantText_.clear();
     workerClient_.generate(prompt,
                            QStringLiteral("You are a helpful assistant."));
 }
@@ -128,7 +135,11 @@ void MainWindow::appendToken(const QByteArray& bytes)
 void MainWindow::finishGeneration(bool cancelled, const QJsonObject& metrics)
 {
     flushPendingUtf8(true);
-    transcript_->appendPlainText(QStringLiteral("\n"));
+    renderTimer_->stop();
+    renderAssistant(true);
+    appendRawText(QStringLiteral("\n"));
+    currentAssistant_ = nullptr;
+
     statusLabel_->setText(
         cancelled ? tr("Generation stopped")
                   : tr("Ready - %1 token/s")
@@ -140,6 +151,15 @@ void MainWindow::finishGeneration(bool cancelled, const QJsonObject& metrics)
 void MainWindow::showError(const QString& code, const QString& message)
 {
     statusLabel_->setText(tr("Error: %1").arg(message));
+    if (currentAssistant_ != nullptr)
+    {
+        currentAssistantText_ +=
+            QStringLiteral("\n\n**%1:** %2").arg(tr("Error"), message);
+        appendRawText(QStringLiteral("\nError: %1\n").arg(message));
+        renderTimer_->stop();
+        renderAssistant(true);
+        currentAssistant_ = nullptr;
+    }
     qWarning().noquote() << code << message;
 }
 
@@ -161,11 +181,25 @@ void MainWindow::buildUi()
     modelRow->addWidget(loadButton_);
     layout->addLayout(modelRow);
 
-    transcript_ = new QPlainTextEdit(central);
-    transcript_->setReadOnly(true);
-    transcript_->setPlaceholderText(tr("Conversation"));
-    transcript_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-    layout->addWidget(transcript_, 1);
+    transcriptTabs_ = new QTabWidget(central);
+    conversationScroll_ = new QScrollArea(transcriptTabs_);
+    conversationScroll_->setWidgetResizable(true);
+    conversationScroll_->setFrameShape(QFrame::NoFrame);
+    auto* conversationContent = new QWidget(conversationScroll_);
+    conversationLayout_ = new QVBoxLayout(conversationContent);
+    conversationLayout_->setContentsMargins(6, 6, 6, 6);
+    conversationLayout_->setSpacing(8);
+    conversationLayout_->addStretch();
+    conversationScroll_->setWidget(conversationContent);
+
+    rawTranscript_ = new QPlainTextEdit(transcriptTabs_);
+    rawTranscript_->setReadOnly(true);
+    rawTranscript_->setFont(
+        QFontDatabase::systemFont(QFontDatabase::FixedFont));
+
+    transcriptTabs_->addTab(conversationScroll_, tr("Conversation"));
+    transcriptTabs_->addTab(rawTranscript_, tr("Raw"));
+    layout->addWidget(transcriptTabs_, 1);
 
     promptEdit_ = new QPlainTextEdit(central);
     promptEdit_->setPlaceholderText(tr("Message"));
@@ -180,6 +214,12 @@ void MainWindow::buildUi()
     actionRow->addWidget(stopButton_);
     actionRow->addWidget(sendButton_);
     layout->addLayout(actionRow);
+
+    renderTimer_ = new QTimer(this);
+    renderTimer_->setSingleShot(true);
+    renderTimer_->setInterval(40);
+    connect(renderTimer_, &QTimer::timeout, this,
+            [this] { renderAssistant(); });
 
     statusLabel_ = new QLabel(tr("Starting worker..."), this);
     statusBar()->addWidget(statusLabel_, 1);
@@ -205,13 +245,62 @@ void MainWindow::buildUi()
     updateState(infrastructure::WorkerClient::State::Stopped);
 }
 
-void MainWindow::appendMessage(const QString& role, const QString& text)
+void MainWindow::appendUserMessage(const QString& text)
 {
-    if (!transcript_->document()->isEmpty())
-        transcript_->appendPlainText(QString());
-    transcript_->appendPlainText(role);
-    transcript_->appendPlainText(text);
-    transcript_->appendPlainText(QString());
+    auto* message = new MessageWidget(MessageWidget::Role::User);
+    message->setUserText(text);
+    conversationLayout_->insertWidget(conversationLayout_->count() - 1,
+                                      message);
+
+    if (!rawTranscript_->document()->isEmpty())
+        appendRawText(QStringLiteral("\n"));
+    appendRawText(tr("You") + QStringLiteral("\n") + text +
+                  QStringLiteral("\n\n"));
+    scrollConversationToBottom();
+}
+
+void MainWindow::beginAssistantMessage()
+{
+    currentAssistant_ = new MessageWidget(MessageWidget::Role::Assistant);
+    currentAssistant_->setAssistantText({}, false);
+    conversationLayout_->insertWidget(conversationLayout_->count() - 1,
+                                      currentAssistant_);
+    appendRawText(tr("Assistant") + QStringLiteral("\n"));
+    scrollConversationToBottom();
+}
+
+void MainWindow::appendRawText(const QString& text)
+{
+    auto cursor = rawTranscript_->textCursor();
+    cursor.movePosition(QTextCursor::End);
+    cursor.insertText(text);
+    rawTranscript_->setTextCursor(cursor);
+    rawTranscript_->ensureCursorVisible();
+}
+
+void MainWindow::renderAssistant(bool final)
+{
+    if (currentAssistant_ == nullptr) return;
+    const auto followOutput = conversationIsAtBottom();
+    currentAssistant_->setAssistantText(currentAssistantText_, final);
+    if (followOutput) scrollConversationToBottom();
+}
+
+bool MainWindow::conversationIsAtBottom() const
+{
+    const auto* scrollBar = conversationScroll_->verticalScrollBar();
+    return scrollBar->maximum() - scrollBar->value() <= 48;
+}
+
+void MainWindow::scrollConversationToBottom()
+{
+    QTimer::singleShot(0, conversationScroll_,
+                       [this]
+                       {
+                           auto* scrollBar =
+                               conversationScroll_->verticalScrollBar();
+                           scrollBar->setValue(scrollBar->maximum());
+                       });
 }
 
 void MainWindow::flushPendingUtf8(bool final)
@@ -245,11 +334,10 @@ void MainWindow::flushPendingUtf8(bool final)
     }
     if (validLength <= 0) return;
 
-    auto cursor = transcript_->textCursor();
-    cursor.movePosition(QTextCursor::End);
-    cursor.insertText(QString::fromUtf8(pendingUtf8_.constData(), validLength));
-    transcript_->setTextCursor(cursor);
-    transcript_->ensureCursorVisible();
+    const auto text = QString::fromUtf8(pendingUtf8_.constData(), validLength);
     pendingUtf8_.remove(0, validLength);
+    currentAssistantText_ += text;
+    appendRawText(text);
+    if (!final && !renderTimer_->isActive()) renderTimer_->start();
 }
 }  // namespace qtllm::ui

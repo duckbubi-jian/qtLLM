@@ -33,6 +33,12 @@ Configure CMake with the vcpkg toolchain:
 Source files are discovered recursively. Keep headers, implementations, and
 Designer forms inside each functional module's `include`, `src`, and `ui`
 directories. `app/main.cpp` remains beside `app/CMakeLists.txt`.
+The worker entry point follows the same rule: `worker/main.cpp` remains beside
+`worker/CMakeLists.txt`.
+
+Development executables are written directly to the CMake build directory.
+On Windows, building `qtLLM` also copies the Qt platform plugin to the adjacent
+`platforms` directory, so the application can be launched from the build tree.
 
 Run the default test suite without loading a model:
 

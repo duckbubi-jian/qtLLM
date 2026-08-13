@@ -20,6 +20,25 @@ target_link_libraries(qtllm-protocol-tests
 add_test(NAME protocol_jsonl COMMAND qtllm-protocol-tests)
 
 qtllm_collect_module_files(
+    "${CMAKE_CURRENT_SOURCE_DIR}/ui"
+    ui_test_sources
+    ui_test_headers
+    ui_test_forms
+)
+
+qt_add_executable(qtllm-ui-tests
+    ${ui_test_sources}
+    ${ui_test_headers}
+    ${ui_test_forms}
+)
+target_link_libraries(qtllm-ui-tests
+    PRIVATE
+        Qt6::Test
+        qtllm_app_ui
+)
+add_test(NAME ui_assistant_response COMMAND qtllm-ui-tests)
+
+qtllm_collect_module_files(
     "${CMAKE_CURRENT_SOURCE_DIR}/client"
     client_test_sources
     client_test_headers

@@ -4,14 +4,21 @@
 
 #include <QByteArray>
 #include <QMainWindow>
+#include <QString>
 
 class QLabel;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
+class QScrollArea;
+class QTabWidget;
+class QTimer;
+class QVBoxLayout;
 
 namespace qtllm::ui
 {
+class MessageWidget;
+
 class MainWindow final : public QMainWindow
 {
     Q_OBJECT
@@ -31,18 +38,29 @@ class MainWindow final : public QMainWindow
 
    private:
     void buildUi();
-    void appendMessage(const QString& role, const QString& text);
+    void appendUserMessage(const QString& text);
+    void beginAssistantMessage();
+    void appendRawText(const QString& text);
+    void renderAssistant(bool final = false);
+    [[nodiscard]] bool conversationIsAtBottom() const;
+    void scrollConversationToBottom();
     void flushPendingUtf8(bool final = false);
 
     infrastructure::WorkerClient workerClient_;
     QLineEdit* modelPathEdit_ = nullptr;
     QPushButton* browseButton_ = nullptr;
     QPushButton* loadButton_ = nullptr;
-    QPlainTextEdit* transcript_ = nullptr;
+    QTabWidget* transcriptTabs_ = nullptr;
+    QScrollArea* conversationScroll_ = nullptr;
+    QVBoxLayout* conversationLayout_ = nullptr;
+    QPlainTextEdit* rawTranscript_ = nullptr;
     QPlainTextEdit* promptEdit_ = nullptr;
     QPushButton* sendButton_ = nullptr;
     QPushButton* stopButton_ = nullptr;
     QLabel* statusLabel_ = nullptr;
+    QTimer* renderTimer_ = nullptr;
+    MessageWidget* currentAssistant_ = nullptr;
+    QString currentAssistantText_;
     QByteArray pendingUtf8_;
 };
 }  // namespace qtllm::ui

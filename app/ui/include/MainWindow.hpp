@@ -34,6 +34,7 @@ class MainWindow final : public QMainWindow
     void loadSelectedModel();
     void sendPrompt();
     void stopGeneration();
+    void clearConversation();
     void updateState(infrastructure::WorkerClient::State state);
     void appendToken(const QByteArray& bytes);
     void finishGeneration(bool cancelled, const QJsonObject& metrics);
@@ -49,6 +50,7 @@ class MainWindow final : public QMainWindow
     void scrollConversationToBottom();
     void flushPendingUtf8(bool final = false);
     void discardPendingHistoryMessage();
+    void updateClearButton();
 
     infrastructure::SettingsStore settingsStore_;
     infrastructure::WorkerClient workerClient_;
@@ -60,6 +62,7 @@ class MainWindow final : public QMainWindow
     QVBoxLayout* conversationLayout_ = nullptr;
     QPlainTextEdit* rawTranscript_ = nullptr;
     QPlainTextEdit* promptEdit_ = nullptr;
+    QPushButton* clearButton_ = nullptr;
     QPushButton* sendButton_ = nullptr;
     QPushButton* stopButton_ = nullptr;
     QLabel* statusLabel_ = nullptr;

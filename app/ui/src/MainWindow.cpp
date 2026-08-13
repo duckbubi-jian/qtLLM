@@ -96,6 +96,30 @@ void MainWindow::stopGeneration()
     workerClient_.cancel();
 }
 
+void MainWindow::clearConversation()
+{
+    if (workerClient_.state() ==
+        infrastructure::WorkerClient::State::Generating)
+        return;
+
+    while (conversationLayout_->count() > 1)
+    {
+        auto* item = conversationLayout_->takeAt(0);
+        delete item->widget();
+        delete item;
+    }
+
+    conversationMessages_.clear();
+    rawTranscript_->clear();
+    renderTimer_->stop();
+    currentAssistant_ = nullptr;
+    currentAssistantText_.clear();
+    pendingUtf8_.clear();
+    hasPendingHistoryMessage_ = false;
+    statusLabel_->setText(tr("Conversation cleared"));
+    updateClearButton();
+}
+
 void MainWindow::updateState(infrastructure::WorkerClient::State state)
 {
     const auto ready = state == infrastructure::WorkerClient::State::Ready ||
@@ -112,6 +136,7 @@ void MainWindow::updateState(infrastructure::WorkerClient::State state)
     promptEdit_->setEnabled(modelReady);
     sendButton_->setEnabled(modelReady);
     stopButton_->setEnabled(generating);
+    updateClearButton();
 
     switch (state)
     {
@@ -238,6 +263,7 @@ void MainWindow::buildUi()
     conversationScroll_->setWidget(conversationContent);
 
     rawTranscript_ = new QPlainTextEdit(transcriptTabs_);
+    rawTranscript_->setObjectName(QStringLiteral("rawTranscript"));
     rawTranscript_->setReadOnly(true);
     rawTranscript_->setFont(
         QFontDatabase::systemFont(QFontDatabase::FixedFont));
@@ -247,11 +273,16 @@ void MainWindow::buildUi()
     layout->addWidget(transcriptTabs_, 1);
 
     promptEdit_ = new QPlainTextEdit(central);
+    promptEdit_->setObjectName(QStringLiteral("promptEditor"));
     promptEdit_->setPlaceholderText(tr("Message"));
     promptEdit_->setMaximumHeight(110);
     layout->addWidget(promptEdit_);
 
     auto* actionRow = new QHBoxLayout;
+    clearButton_ = new QPushButton(tr("Clear"), central);
+    clearButton_->setObjectName(QStringLiteral("clearConversationButton"));
+    clearButton_->setToolTip(tr("Clear the current conversation"));
+    actionRow->addWidget(clearButton_);
     actionRow->addStretch();
     stopButton_ = new QPushButton(tr("Stop"), central);
     sendButton_ = new QPushButton(tr("Send"), central);
@@ -277,6 +308,8 @@ void MainWindow::buildUi()
     connect(sendButton_, &QPushButton::clicked, this, &MainWindow::sendPrompt);
     connect(stopButton_, &QPushButton::clicked, this,
             &MainWindow::stopGeneration);
+    connect(clearButton_, &QPushButton::clicked, this,
+            &MainWindow::clearConversation);
     connect(modelPathEdit_, &QLineEdit::textChanged, this,
             [this]
             {
@@ -301,6 +334,7 @@ void MainWindow::appendUserMessage(const QString& text)
         appendRawText(QStringLiteral("\n"));
     appendRawText(tr("You") + QStringLiteral("\n") + text +
                   QStringLiteral("\n\n"));
+    updateClearButton();
     scrollConversationToBottom();
 }
 
@@ -395,5 +429,13 @@ void MainWindow::discardPendingHistoryMessage()
         conversationMessages_.removeLast();
     }
     hasPendingHistoryMessage_ = false;
+}
+
+void MainWindow::updateClearButton()
+{
+    if (clearButton_ == nullptr || conversationLayout_ == nullptr) return;
+    const auto generating = workerClient_.state() ==
+                            infrastructure::WorkerClient::State::Generating;
+    clearButton_->setEnabled(!generating && conversationLayout_->count() > 1);
 }
 }  // namespace qtllm::ui

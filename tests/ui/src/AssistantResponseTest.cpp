@@ -1,6 +1,9 @@
 #include "AssistantResponse.hpp"
+#include "MainWindow.hpp"
 #include "MessageWidget.hpp"
 
+#include <QPlainTextEdit>
+#include <QPushButton>
 #include <QTextBrowser>
 #include <QtTest>
 
@@ -17,6 +20,7 @@ class AssistantResponseTest final : public QObject
     void excludesIncompleteReasoningFromHistory();
     void userMessageDisplaysItsText();
     void reasoningOnlyResponseFallsBackToVisibleAnswer();
+    void clearsVisibleAndInMemoryConversation();
 };
 
 void AssistantResponseTest::parsesCompletedReasoning()
@@ -103,6 +107,31 @@ void AssistantResponseTest::reasoningOnlyResponseFallsBackToVisibleAnswer()
     QVERIFY(visibleAnswer != nullptr);
     QVERIFY(visibleAnswer->viewport()->height() >=
             visibleAnswer->fontMetrics().height());
+}
+
+void AssistantResponseTest::clearsVisibleAndInMemoryConversation()
+{
+    ui::MainWindow window;
+    auto* prompt =
+        window.findChild<QPlainTextEdit*>(QStringLiteral("promptEditor"));
+    auto* rawTranscript =
+        window.findChild<QPlainTextEdit*>(QStringLiteral("rawTranscript"));
+    auto* clearButton = window.findChild<QPushButton*>(
+        QStringLiteral("clearConversationButton"));
+    QVERIFY(prompt != nullptr);
+    QVERIFY(rawTranscript != nullptr);
+    QVERIFY(clearButton != nullptr);
+    QVERIFY(!clearButton->isEnabled());
+
+    prompt->setPlainText(QStringLiteral("temporary message"));
+    QVERIFY(QMetaObject::invokeMethod(&window, "sendPrompt"));
+    QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 2);
+    QVERIFY(clearButton->isEnabled());
+
+    clearButton->click();
+    QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 0);
+    QVERIFY(!clearButton->isEnabled());
+    QVERIFY(rawTranscript->toPlainText().isEmpty());
 }
 }  // namespace qtllm::tests
 

@@ -4,11 +4,20 @@
   "builtin-baseline": "b509a07261b982f35c663bf638aae5f77877d207",
   "dependencies": [
     {
+      "name": "llama-cpp",
+      "version>=": "9030"
+    },
+    {
       "name": "qtbase",
       "version>=": "6.5.2#1"
     }
   ],
   "overrides": [
+    {
+      "name": "llama-cpp",
+      "version": "9030",
+      "port-version": 3
+    },
     {
       "name": "qtbase",
       "version": "6.5.2",

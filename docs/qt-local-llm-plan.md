@@ -111,6 +111,8 @@ qtLLM/
 
 ### 阶段一：技术验证（第 1 周）
 
+当前状态：CPU 推理代码闭环已完成，真实 DeepSeek GGUF 的性能和稳定性验收待执行。操作与记录方式见 [阶段一本地推理验证](stage-1-local-inference.md)。
+
 任务：
 
 - 引入并固定一个明确版本的 llama.cpp。

@@ -34,7 +34,7 @@ class WorkerClient final : public QObject
     void loadModel(const QString& modelPath, int gpuLayers = 0);
     void unloadModel();
     void generate(const QString& prompt, const QString& systemPrompt,
-                  int contextSize = 4096, int maxTokens = 1024, int threads = 0,
+                  int contextSize = 8192, int maxTokens = 1024, int threads = 0,
                   float temperature = 0.6F, float topP = 0.95F, int topK = 40,
                   float repeatPenalty = 1.05F);
     void cancel();

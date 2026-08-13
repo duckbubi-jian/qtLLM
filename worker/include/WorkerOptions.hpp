@@ -13,8 +13,8 @@ struct WorkerOptions
     QString modelPath;
     QString prompt;
     QString systemPrompt = QStringLiteral("You are a helpful assistant.");
-    int contextSize = 4096;
-    int maxTokens = 512;
+    int contextSize = 8192;
+    int maxTokens = 1024;
     int threads = 0;
     int gpuLayers = 0;
     int topK = 40;

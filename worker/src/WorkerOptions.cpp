@@ -70,10 +70,10 @@ void configureParser(QCommandLineParser& parser)
                       QStringLiteral("You are a helpful assistant.")});
     parser.addOption({QStringLiteral("context-size"),
                       QStringLiteral("Context size in tokens."),
-                      QStringLiteral("tokens"), QStringLiteral("4096")});
+                      QStringLiteral("tokens"), QStringLiteral("8192")});
     parser.addOption({QStringLiteral("max-tokens"),
                       QStringLiteral("Maximum generated tokens."),
-                      QStringLiteral("tokens"), QStringLiteral("512")});
+                      QStringLiteral("tokens"), QStringLiteral("1024")});
     parser.addOption(
         {QStringLiteral("threads"),
          QStringLiteral("CPU threads; 0 selects the Qt recommendation."),

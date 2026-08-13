@@ -34,8 +34,8 @@ ctest --test-dir cmake-build-release --output-on-failure
 qtllm-worker.exe `
   --model D:\qtLLM-models\deepseek-r1-distill-qwen-7b-q4km\model.gguf `
   --prompt "请用三句话说明什么是本地大模型" `
-  --context-size 4096 `
-  --max-tokens 512 `
+  --context-size 8192 `
+  --max-tokens 1024 `
   --threads 8
 ```
 

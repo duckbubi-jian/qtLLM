@@ -1,0 +1,33 @@
+minimum_pre_commit_version: "4.0.0"
+
+exclude: ^(?:cmake-build[^/]*|third_party)/
+
+repos:
+  - repo: ssh://code.shoncloud.com:6611/shoncloud/common/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+      - id: check-case-conflict
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: detect-private-key
+      - id: forbid-new-submodules
+      - id: forbid-submodules
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  - repo: ssh://code.shoncloud.com:6611/shoncloud/common/mirrors-clang-format
+    rev: v19.1.0
+    hooks:
+      - id: clang-format
+        files: ^(?:app|worker|shared|tests)/.*\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx)$
+
+  - repo: https://github.com/executablebooks/mdformat
+    rev: 0.7.22
+    hooks:
+      - id: mdformat
+        files: \.md$

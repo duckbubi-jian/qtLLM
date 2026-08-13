@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "deepseek-r1-distill-qwen-7b-q4km",
+  "displayName": "DeepSeek R1 Distill Qwen 7B Q4_K_M",
+  "packageVersion": "1.0.0",
+  "modelRevision": "replace-with-upstream-revision",
+  "engine": "llama.cpp",
+  "format": "gguf",
+  "modelFiles": [
+    {
+      "path": "model.gguf",
+      "sizeBytes": 4680000000,
+      "sha256": "replace-with-64-lowercase-hex-characters"
+    }
+  ],
+  "minimumRuntimeVersion": "0.1.0",
+  "recommendedRamGb": 16,
+  "defaultContextSize": 8192,
+  "presetFile": "preset.json",
+  "licenseFile": "LICENSE.txt",
+  "upstream": {
+    "publisher": "DeepSeek",
+    "modelId": "DeepSeek-R1-Distill-Qwen-7B",
+    "revision": "replace-with-fixed-revision",
+    "source": "replace-with-official-source"
+  }
+}

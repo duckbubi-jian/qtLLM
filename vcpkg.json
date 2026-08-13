@@ -1,0 +1,18 @@
+{
+  "name": "qtllm",
+  "version-string": "0.1.0",
+  "builtin-baseline": "b509a07261b982f35c663bf638aae5f77877d207",
+  "dependencies": [
+    {
+      "name": "qtbase",
+      "version>=": "6.5.2#1"
+    }
+  ],
+  "overrides": [
+    {
+      "name": "qtbase",
+      "version": "6.5.2",
+      "port-version": 1
+    }
+  ]
+}

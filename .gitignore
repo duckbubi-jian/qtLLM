@@ -1,0 +1,8 @@
+cmake-*
+*.xml
+*.iml
+*.name
+
+# Model weights and interrupted downloads do not belong in source control.
+*.gguf
+*.gguf.part

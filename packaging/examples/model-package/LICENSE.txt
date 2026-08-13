@@ -1,0 +1,5 @@
+PLACEHOLDER ONLY
+
+Replace this file with the complete, exact license text that applies to the
+specific upstream model weights and the distributed conversion before creating
+a model package.

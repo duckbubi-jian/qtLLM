@@ -15,5 +15,14 @@
       "name": "vcpkg-cmake-config",
       "host": true
     }
-  ]
+  ],
+  "features": {
+    "cuda": {
+      "description": "Enable the CUDA backend for NVIDIA GPUs",
+      "supports": "!(windows & staticcrt)",
+      "dependencies": [
+        "cuda"
+      ]
+    }
+  }
 }

@@ -20,7 +20,7 @@ struct WorkerOptions
     int contextSize = 8192;
     int maxTokens = 1024;
     int threads = 0;
-    int gpuLayers = 0;
+    int gpuLayers = -1;
     int topK = 40;
     float topP = 0.95F;
     float temperature = 0.6F;

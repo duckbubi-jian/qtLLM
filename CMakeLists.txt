@@ -1,6 +1,37 @@
 cmake_minimum_required(VERSION 3.31)
 
+# Keep the application and all vcpkg dependencies on the VS 2019/v142 ABI.
+# These variables must be set before project() loads the vcpkg toolchain.
+if(WIN32)
+    set(VCPKG_TARGET_TRIPLET "x64-windows-vs2019" CACHE STRING
+        "qtLLM Windows vcpkg triplet" FORCE)
+    set(VCPKG_OVERLAY_TRIPLETS
+        "${CMAKE_CURRENT_LIST_DIR}/vcpkg-overlay-triplets" CACHE STRING
+        "qtLLM vcpkg overlay triplets" FORCE)
+endif()
+
+option(QTLLM_ENABLE_CUDA "Build llama.cpp with the NVIDIA CUDA backend" OFF)
+if(QTLLM_ENABLE_CUDA)
+    list(APPEND VCPKG_MANIFEST_FEATURES cuda)
+endif()
+
+if(QTLLM_ENABLE_CUDA)
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        set(CMAKE_CUDA_ARCHITECTURES 86 CACHE STRING
+            "CUDA architectures for the target NVIDIA GPU")
+    endif()
+    if(CMAKE_CUDA_ARCHITECTURES STREQUAL "")
+        message(FATAL_ERROR "QTLLM_ENABLE_CUDA requires CMAKE_CUDA_ARCHITECTURES")
+    endif()
+endif()
+
 project(qtLLM VERSION 0.1.0 LANGUAGES CXX)
+
+if(MSVC AND (MSVC_VERSION LESS 1920 OR MSVC_VERSION GREATER_EQUAL 1930))
+    message(FATAL_ERROR
+        "qtLLM requires the Visual Studio 2019/v142 compiler. "
+        "Select a Visual Studio 2019 toolchain and reset the CMake cache.")
+endif()
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)

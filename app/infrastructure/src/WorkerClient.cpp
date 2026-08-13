@@ -248,7 +248,8 @@ void WorkerClient::handleMessage(const protocol::Message& message)
         emit modelLoaded(
             modelPath_,
             message.payload.value(QStringLiteral("loadMilliseconds"))
-                .toInteger());
+                .toInteger(),
+            message.payload.value(QStringLiteral("device")).toString());
     }
     else if (message.type ==
                  QLatin1String(protocol::message_type::modelUnloaded) &&

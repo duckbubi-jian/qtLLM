@@ -257,10 +257,10 @@ void WorkerSession::handleLoadModel(const protocol::Message& message)
 
     QString modelPath;
     QString errorMessage;
-    int gpuLayers = 0;
+    int gpuLayers = -1;
     if (!readString(message.payload, QStringLiteral("modelPath"), modelPath,
                     errorMessage, true) ||
-        !readInteger(message.payload, QStringLiteral("gpuLayers"), 0, 10'000,
+        !readInteger(message.payload, QStringLiteral("gpuLayers"), -1, 10'000,
                      gpuLayers, errorMessage))
     {
         sendError(message.requestId, QStringLiteral("invalid_payload"),
@@ -288,6 +288,7 @@ void WorkerSession::handleLoadModel(const protocol::Message& message)
         message.requestId,
         QString::fromLatin1(protocol::message_type::modelLoaded),
         {{QStringLiteral("modelPath"), engine_.modelPath()},
+         {QStringLiteral("device"), engine_.deviceDescription()},
          {QStringLiteral("loadMilliseconds"), loadMilliseconds}}));
 }
 

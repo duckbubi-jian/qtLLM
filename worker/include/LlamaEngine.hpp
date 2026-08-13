@@ -37,6 +37,7 @@ class LlamaEngine
     void unloadModel();
     [[nodiscard]] bool isModelLoaded() const;
     [[nodiscard]] QString modelPath() const;
+    [[nodiscard]] QString deviceDescription() const;
 
     bool generate(const WorkerOptions& options,
                   const TokenHandler& tokenHandler, QString& errorMessage,

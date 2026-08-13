@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "deepseek-r1-distill-qwen-7b-q4km",
+  "displayName": "DeepSeek R1 Distill Qwen 7B Q4_K_M",
+  "packageVersion": "1.0.0-dev.1",
+  "modelRevision": "361004151d4f4f6b446dc5e6d46fbf4422a80d5f",
+  "engine": "llama.cpp",
+  "format": "gguf",
+  "modelFiles": [
+    {
+      "path": "model.gguf",
+      "sizeBytes": 4683073504,
+      "sha256": "731ece8d06dc7eda6f6572997feb9ee1258db0784827e642909d9b565641937b"
+    }
+  ],
+  "minimumRuntimeVersion": "0.1.0",
+  "recommendedRamGb": 16,
+  "defaultContextSize": 8192,
+  "presetFile": "preset.json",
+  "licenseFile": "LICENSE.txt",
+  "upstream": {
+    "publisher": "DeepSeek",
+    "modelId": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+    "revision": "916b56a44061fd5cd7d6a8fb632557ed4f724f60",
+    "source": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+  }
+}

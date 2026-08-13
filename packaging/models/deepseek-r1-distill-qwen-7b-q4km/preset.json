@@ -1,0 +1,8 @@
+{
+  "contextSize": 8192,
+  "maxOutputTokens": 2048,
+  "temperature": 0.6,
+  "topP": 0.95,
+  "topK": 40,
+  "repeatPenalty": 1.05
+}

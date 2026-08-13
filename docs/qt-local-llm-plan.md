@@ -23,18 +23,24 @@
 | 操作系统 | Windows 10/11 x64 |
 | 开发语言 | C++20 |
 | UI | Qt 6 Widgets |
-| 构建 | CMake + MSVC 2022 |
+| 构建 | CMake + MSVC 2019/v142（CUDA 11.8） |
 | 推理引擎 | llama.cpp，固定到明确版本或提交 |
 | 推荐验证模型 | DeepSeek-R1-Distill-Qwen-7B |
 | 模型格式 | GGUF |
 | 推荐量化 | Q4_K_M |
 | 会话存储 | SQLite |
 | 进程通信 | QProcess + JSON Lines |
-| 推理后端 | CPU 首发，随后支持 Vulkan 和 CUDA |
+| 推理后端 | CPU 与 CUDA 分离发布；CUDA 11.8/RTX 3090 目标为 compute capability 8.6 |
 | 安装程序 | Inno Setup 或 WiX Toolset |
 | 自动测试 | Qt Test + CTest |
 
 推荐的 7B Q4_K_M 模型文件预计约 4 至 5 GB。最低建议 16 GB 内存，推荐 32 GB。实际要求以目标硬件测试结果为准。框架安装包不预置模型权重。
+
+CUDA 包仅携带项目自身的 `ggml-cuda.dll`，不再分发 NVIDIA 的 CUDA DLL。
+GPU 用户需要预装兼容的 NVIDIA 驱动和 CUDA Toolkit 11.8，并保证 CUDA
+运行库可由 `PATH` 找到；CPU 包继续保持无 CUDA 依赖。安装器依赖收集规则必须
+排除 `cudart64_110.dll`、`cublas64_11.dll`、`cublasLt64_11.dll` 和
+`nvcuda.dll`。
 
 ## 3. 总体架构
 

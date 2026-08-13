@@ -33,7 +33,7 @@ class WorkerClient final : public QObject
 
     void start(const QString& workerPath = {});
     void stop();
-    void loadModel(const QString& modelPath, int gpuLayers = 0);
+    void loadModel(const QString& modelPath, int gpuLayers = -1);
     void unloadModel();
     void generate(const QList<chat::Message>& messages, int contextSize = 8192,
                   int maxTokens = 1024, int threads = 0,
@@ -51,7 +51,8 @@ class WorkerClient final : public QObject
 
    signals:
     void stateChanged(qtllm::infrastructure::WorkerClient::State state);
-    void modelLoaded(const QString& modelPath, qint64 loadMilliseconds);
+    void modelLoaded(const QString& modelPath, qint64 loadMilliseconds,
+                     const QString& device);
     void tokenReceived(const QByteArray& bytes);
     void generationFinished(bool cancelled, const QJsonObject& metrics);
     void errorOccurred(const QString& code, const QString& message);

@@ -23,5 +23,19 @@
       "version": "6.5.2",
       "port-version": 1
     }
-  ]
+  ],
+  "features": {
+    "cuda": {
+      "description": "Build the NVIDIA CUDA runtime",
+      "dependencies": [
+        {
+          "name": "llama-cpp",
+          "default-features": false,
+          "features": [
+            "cuda"
+          ]
+        }
+      ]
+    }
+  }
 }

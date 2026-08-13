@@ -33,19 +33,22 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
 
     connect(&workerClient_, &infrastructure::WorkerClient::stateChanged, this,
             &MainWindow::updateState);
-    connect(&workerClient_, &infrastructure::WorkerClient::modelLoaded, this,
-            [this](const QString& path, qint64 milliseconds)
+    connect(
+        &workerClient_, &infrastructure::WorkerClient::modelLoaded, this,
+        [this](const QString& path, qint64 milliseconds, const QString& device)
+        {
+            statusLabel_->setText(
+                tr("Model ready on %1 - loaded in %2 ms")
+                    .arg(device.isEmpty() ? tr("CPU") : device)
+                    .arg(milliseconds));
+            modelPathEdit_->setText(path);
+            if (!settingsStore_.setLastModelPath(path))
             {
                 statusLabel_->setText(
-                    tr("Model ready - loaded in %1 ms").arg(milliseconds));
-                modelPathEdit_->setText(path);
-                if (!settingsStore_.setLastModelPath(path))
-                {
-                    statusLabel_->setText(
-                        tr("Model ready, but the model path could not be "
-                           "saved beside the application."));
-                }
-            });
+                    tr("Model ready, but the model path could not be "
+                       "saved beside the application."));
+            }
+        });
     connect(&workerClient_, &infrastructure::WorkerClient::tokenReceived, this,
             &MainWindow::appendToken);
     connect(&workerClient_, &infrastructure::WorkerClient::generationFinished,

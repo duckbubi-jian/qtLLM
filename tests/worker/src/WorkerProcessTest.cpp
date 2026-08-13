@@ -173,12 +173,19 @@ void WorkerProcessTest::modelLifecycle()
         modelPath = QDir(modelPath).filePath(QStringLiteral("model.gguf"));
     QVERIFY2(QFileInfo::exists(modelPath), qPrintable(modelPath));
 
+    bool validGpuLayers = false;
+    const auto gpuLayers =
+        qEnvironmentVariableIntValue("QTLLM_TEST_GPU_LAYERS", &validGpuLayers);
+    const auto requestedGpuLayers = validGpuLayers ? gpuLayers : 0;
+    QVERIFY2(requestedGpuLayers >= -1 && requestedGpuLayers <= 10'000,
+             "QTLLM_TEST_GPU_LAYERS must be between -1 and 10000.");
+
     QString errorMessage;
     QVERIFY2(send(protocol::makeMessage(
                       QStringLiteral("load-1"),
                       QString::fromLatin1(protocol::message_type::loadModel),
                       {{QStringLiteral("modelPath"), modelPath},
-                       {QStringLiteral("gpuLayers"), 0}}),
+                       {QStringLiteral("gpuLayers"), requestedGpuLayers}}),
                   errorMessage),
              qPrintable(errorMessage));
     protocol::Message response;
@@ -186,6 +193,19 @@ void WorkerProcessTest::modelLifecycle()
                     QString::fromLatin1(protocol::message_type::modelLoaded),
                     response, errorMessage, 120000),
              qPrintable(errorMessage));
+    QVERIFY(
+        !response.payload.value(QStringLiteral("device")).toString().isEmpty());
+    const auto expectedDevice =
+        QString::fromLocal8Bit(qgetenv("QTLLM_TEST_DEVICE_CONTAINS"));
+    if (!expectedDevice.isEmpty())
+    {
+        QVERIFY2(
+            response.payload.value(QStringLiteral("device"))
+                .toString()
+                .contains(expectedDevice, Qt::CaseInsensitive),
+            qPrintable(
+                response.payload.value(QStringLiteral("device")).toString()));
+    }
 
     QVERIFY2(send(protocol::makeMessage(
                       QStringLiteral("generation-cancelled"),

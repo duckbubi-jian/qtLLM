@@ -2,13 +2,15 @@
 
 ## 当前范围
 
-阶段一先验证 CPU 上的单轮本地推理闭环：
+阶段一验证 CPU 与单卡 CUDA 上的本地推理闭环：
 
 - 使用 vcpkg overlay 固定 `llama.cpp b9030` 及其配套 `ggml 0.10.2`。
 - 从仓库外加载 GGUF，不提交或复制模型权重。
 - 使用 GGUF 内置 chat template 生成单轮回复。
 - 将生成文本流式写入 stdout，将诊断和性能数据写入 stderr。
-- 支持 Ctrl+C 取消 CPU 推理。
+- 支持 Ctrl+C 取消推理。
+- CUDA 11.8 runtime 使用 Visual Studio 2019/v142 构建，针对 RTX 3090
+  （compute capability 8.6），运行时只选择 GPU 0。
 
 Qt 主程序与 worker 的 JSONL IPC、多轮上下文和模型包解析属于下一阶段，不在本验证程序中提前实现。
 
@@ -23,6 +25,30 @@ cmake -S . -B cmake-build-release -G Ninja `
 cmake --build cmake-build-release
 ctest --test-dir cmake-build-release --output-on-failure
 ```
+
+CUDA runtime 与 CPU runtime 使用独立构建目录和发布包。在 *x64 Native
+Tools Command Prompt for VS 2019* 中设置 `VCPKG_ROOT` 后执行：
+
+```powershell
+cmake --preset cuda-release-vs2019 `
+  -DCMAKE_CXX_COMPILER="C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/VC/Tools/MSVC/14.29.30133/bin/Hostx64/x64/cl.exe" `
+  -DCMAKE_C_COMPILER="C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/VC/Tools/MSVC/14.29.30133/bin/Hostx64/x64/cl.exe" `
+  -DCMAKE_CUDA_HOST_COMPILER="C:/Program Files (x86)/Microsoft Visual Studio/2019/Community/VC/Tools/MSVC/14.29.30133/bin/Hostx64/x64/cl.exe"
+cmake --build --preset cuda-release-vs2019
+ctest --test-dir cmake-build-cuda --output-on-failure
+```
+
+根 `CMakeLists.txt` 会自动将 Windows 的 vcpkg triplet 固定为仓库内的
+`x64-windows-vs2019`，因此 CLion 的 CMake options 只需添加
+`-DQTLLM_ENABLE_CUDA=ON`。CLion Toolchain 仍须选择 Visual Studio 2019；切换
+Toolchain 后需要重置 CMake 缓存。项目会拒绝使用其他版本的 MSVC，避免主程序和
+依赖库混用不同工具链。
+
+CUDA 发布包包含项目自身的 `ggml-cuda.dll`，但不打包 NVIDIA 提供的
+`cudart64_110.dll`、`cublas64_11.dll`、`cublasLt64_11.dll` 和
+`nvcuda.dll`。目标电脑必须预先安装兼容的 NVIDIA 驱动和 CUDA Toolkit 11.8，
+并确保进程可通过 `PATH`（通常是 `%CUDA_PATH%\bin`）找到 CUDA 运行库。
+CPU 发布包不依赖 CUDA。GPU 版无法启动时，优先检查驱动、CUDA 版本和 `PATH`。
 
 项目的 `vcpkg-configuration.json` 会自动启用仓库内 overlay port。不要删除 overlay 后单独升级系统 `ggml`，因为 llama.cpp 与 ggml 的内部 API 需要按同一上游提交配套。
 
@@ -45,7 +71,11 @@ qtllm-worker.exe `
 "你好" | qtllm-worker.exe --model D:\models\model.gguf
 ```
 
-本阶段是 CPU runtime，因此 `--gpu-layers` 保持为 `0`。后续发布 Vulkan 或 CUDA runtime 时复用同一参数接口。
+CPU runtime 使用 `--gpu-layers 0`。CUDA runtime 默认使用
+`--gpu-layers -1` 将所有可卸载层放到 GPU 0；没有可用 CUDA 设备时自动回退
+CPU。模型权重仍放在仓库外，一个模型包只包含一个逻辑模型。当前单卡推荐模型为
+`DeepSeek-R1-Distill-Qwen-7B Q4_K_M`，模型目录例如
+`D:\qtLLM-models\deepseek-r1-distill-qwen-7b-q4km`。
 
 ## 验证记录
 
@@ -65,6 +95,23 @@ qtllm-worker.exe `
 | 首 token 延迟 | |
 
 当前 worker 会在 stderr 输出 `model_load_ms`、`prompt_eval_ms`、`first_token_ms`、`prompt_tokens`、`generated_tokens` 和 `generation_tokens_per_second`。`first_token_ms` 从 prompt 预填开始计时，不包含模型加载；峰值内存将在性能采集模块中补充。
+
+2026-08-13 的开发机基线如下。该结果用于确认 CUDA 链路和单卡约束，不替代
+完整的硬件兼容性、稳定性和回答质量验收。
+
+| 项目 | 实测值 |
+| --- | --- |
+| 模型 | DeepSeek-R1-Distill-Qwen-7B Q4_K_M |
+| 模型 SHA-256 | `731ece8d06dc7eda6f6572997feb9ee1258db0784827e642909d9b565641937b` |
+| 构建环境 | CUDA 11.8、Visual Studio 2019/v142 |
+| 上下文长度 | 8192 |
+| 推理设备 | GPU 0，RTX 3090 24 GB |
+| 模型加载时间 | 约 2.28 秒 |
+| Prompt 计算时间 | 约 38 ms |
+| 首 token 延迟 | 约 39 ms |
+| 生成速度 | 约 132.8 token/s |
+| GPU 0 峰值显存 | 约 5828 MiB |
+| GPU 1 显存 | 0 MiB |
 
 ## 阶段验收
 

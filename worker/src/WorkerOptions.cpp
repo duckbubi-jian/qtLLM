@@ -80,8 +80,9 @@ void configureParser(QCommandLineParser& parser)
          QStringLiteral("count"), QStringLiteral("0")});
     parser.addOption(
         {QStringLiteral("gpu-layers"),
-         QStringLiteral("Layers to offload; CPU build defaults to 0."),
-         QStringLiteral("count"), QStringLiteral("0")});
+         QStringLiteral(
+             "Layers to offload; -1 uses all layers when a GPU is available."),
+         QStringLiteral("count"), QStringLiteral("-1")});
     parser.addOption({QStringLiteral("temperature"),
                       QStringLiteral("Sampling temperature."),
                       QStringLiteral("value"), QStringLiteral("0.6")});
@@ -129,7 +130,7 @@ bool parseOptions(const QCommandLineParser& parser, WorkerOptions& options,
                       options.maxTokens, errorMessage) ||
         !parseInteger(parser, QStringLiteral("threads"), 0, 1024,
                       options.threads, errorMessage) ||
-        !parseInteger(parser, QStringLiteral("gpu-layers"), 0, 10'000,
+        !parseInteger(parser, QStringLiteral("gpu-layers"), -1, 10'000,
                       options.gpuLayers, errorMessage) ||
         !parseInteger(parser, QStringLiteral("top-k"), 0, 1'000'000,
                       options.topK, errorMessage) ||

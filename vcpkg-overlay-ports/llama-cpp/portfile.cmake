@@ -8,9 +8,24 @@ vcpkg_from_github(
 
 # llama.cpp and ggml evolve in lockstep. Building the bundled ggml prevents
 # ABI/API mismatches with an independently versioned system ggml package.
+vcpkg_check_features(OUT_FEATURE_OPTIONS feature_options
+    FEATURES
+        cuda GGML_CUDA
+)
+
+if("cuda" IN_LIST FEATURES)
+    vcpkg_find_cuda(OUT_CUDA_TOOLKIT_ROOT cuda_toolkit_root)
+    list(APPEND feature_options
+        "-DCMAKE_CUDA_COMPILER=${NVCC}"
+        "-DCMAKE_CUDA_ARCHITECTURES=86"
+        "-DCUDAToolkit_ROOT=${cuda_toolkit_root}"
+    )
+endif()
+
 vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
     OPTIONS
+        ${feature_options}
         -DGGML_BACKEND_DL=OFF
         -DGGML_CCACHE=OFF
         -DGGML_NATIVE=OFF

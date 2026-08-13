@@ -1,5 +1,6 @@
 #include "LlamaEngine.hpp"
 
+#include <ggml-backend.h>
 #include <llama.h>
 
 #include <QElapsedTimer>
@@ -229,7 +230,9 @@ class LlamaEngine::Impl
 {
    public:
     ModelPointer model;
+    std::vector<ggml_backend_dev_t> devices;
     QString modelPath;
+    QString deviceDescription = QStringLiteral("CPU");
 };
 
 LlamaEngine::LlamaEngine() : impl_(std::make_unique<Impl>())
@@ -254,7 +257,35 @@ bool LlamaEngine::loadModel(const QString& modelPath, int gpuLayers,
     loadTimer.start();
 
     auto modelParameters = llama_model_default_params();
-    modelParameters.n_gpu_layers = gpuLayers;
+    impl_->devices.clear();
+    if (gpuLayers != 0)
+    {
+        for (std::size_t index = 0; index < ggml_backend_dev_count(); ++index)
+        {
+            auto* device = ggml_backend_dev_get(index);
+            if (ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_GPU)
+            {
+                impl_->devices.push_back(device);
+                impl_->devices.push_back(nullptr);
+                break;
+            }
+        }
+    }
+
+    if (!impl_->devices.empty())
+    {
+        modelParameters.devices = impl_->devices.data();
+        modelParameters.n_gpu_layers = gpuLayers;
+        modelParameters.split_mode = LLAMA_SPLIT_MODE_NONE;
+        modelParameters.main_gpu = 0;
+        impl_->deviceDescription = QString::fromUtf8(
+            ggml_backend_dev_description(impl_->devices.front()));
+    }
+    else
+    {
+        modelParameters.n_gpu_layers = 0;
+        impl_->deviceDescription = QStringLiteral("CPU");
+    }
     modelParameters.use_mmap = true;
 
     const auto encodedPath = modelPath.toUtf8();
@@ -262,12 +293,16 @@ bool LlamaEngine::loadModel(const QString& modelPath, int gpuLayers,
         llama_model_load_from_file(encodedPath.constData(), modelParameters));
     if (!model)
     {
+        impl_->devices.clear();
+        impl_->deviceDescription = QStringLiteral("CPU");
         errorMessage = QStringLiteral("Unable to load GGUF model: %1")
                            .arg(QFileInfo(modelPath).fileName());
         return false;
     }
     if (llama_model_get_vocab(model.get()) == nullptr)
     {
+        impl_->devices.clear();
+        impl_->deviceDescription = QStringLiteral("CPU");
         errorMessage = QStringLiteral("The loaded model has no vocabulary.");
         return false;
     }
@@ -284,7 +319,9 @@ bool LlamaEngine::loadModel(const QString& modelPath, int gpuLayers,
 void LlamaEngine::unloadModel()
 {
     impl_->model.reset();
+    impl_->devices.clear();
     impl_->modelPath.clear();
+    impl_->deviceDescription = QStringLiteral("CPU");
 }
 
 bool LlamaEngine::isModelLoaded() const
@@ -295,6 +332,11 @@ bool LlamaEngine::isModelLoaded() const
 QString LlamaEngine::modelPath() const
 {
     return impl_->modelPath;
+}
+
+QString LlamaEngine::deviceDescription() const
+{
+    return impl_->deviceDescription;
 }
 
 bool LlamaEngine::generate(const WorkerOptions& options,

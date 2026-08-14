@@ -76,6 +76,8 @@ void AgentActionTest::providesGenerationGrammar()
     QVERIFY(grammar.contains("root ::="));
     QVERIFY(grammar.contains("call_tool"));
     QVERIFY(grammar.contains("final"));
+    QVERIFY(grammar.contains("ws ::= [ \\t\\n\\r]{0,8}"));
+    QVERIFY(!grammar.contains("ws ::= [ \\t\\n\\r]*"));
 }
 }  // namespace qtllm::tests
 

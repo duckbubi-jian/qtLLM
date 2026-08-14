@@ -62,7 +62,7 @@ bool shouldAbort(void* userData)
 
 void logErrors(ggml_log_level level, const char* text, void*)
 {
-    if (level >= GGML_LOG_LEVEL_ERROR)
+    if (level == GGML_LOG_LEVEL_ERROR)
     {
         logging::error(QStringLiteral("llama.cpp: %1")
                            .arg(QString::fromUtf8(text).trimmed()));
@@ -414,15 +414,6 @@ bool LlamaEngine::generate(const WorkerOptions& options,
         return false;
     }
 
-    llama_sampler_chain_add(
-        sampler.get(),
-        llama_sampler_init_penalties(-1, options.repeatPenalty, 0.0F, 0.0F));
-    llama_sampler_chain_add(sampler.get(),
-                            llama_sampler_init_top_k(options.topK));
-    llama_sampler_chain_add(sampler.get(),
-                            llama_sampler_init_top_p(options.topP, 1));
-    llama_sampler_chain_add(sampler.get(),
-                            llama_sampler_init_temp(options.temperature));
     if (!options.grammar.isEmpty())
     {
         logging::info(QStringLiteral("llama.cpp initializing grammar sampler"));
@@ -434,9 +425,21 @@ bool LlamaEngine::generate(const WorkerOptions& options,
             errorMessage = QStringLiteral("Unable to parse response grammar.");
             return false;
         }
+
+        // Grammar must filter the full vocabulary before top-k/top-p can
+        // discard every valid structural token.
         llama_sampler_chain_add(sampler.get(), grammarSampler);
         logging::info(QStringLiteral("llama.cpp grammar sampler initialized"));
     }
+    llama_sampler_chain_add(
+        sampler.get(),
+        llama_sampler_init_penalties(-1, options.repeatPenalty, 0.0F, 0.0F));
+    llama_sampler_chain_add(sampler.get(),
+                            llama_sampler_init_top_k(options.topK));
+    llama_sampler_chain_add(sampler.get(),
+                            llama_sampler_init_top_p(options.topP, 1));
+    llama_sampler_chain_add(sampler.get(),
+                            llama_sampler_init_temp(options.temperature));
     llama_sampler_chain_add(sampler.get(),
                             llama_sampler_init_dist(options.seed));
 

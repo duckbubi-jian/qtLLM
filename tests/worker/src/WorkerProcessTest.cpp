@@ -231,13 +231,13 @@ void WorkerProcessTest::modelLifecycle()
                 response.payload.value(QStringLiteral("device")).toString()));
     }
 
+    auto structuredPayload = generationPayload(QStringLiteral("hello"), 256);
+    structuredPayload.insert(QStringLiteral("responseMode"),
+                             QStringLiteral("agent_action"));
     QVERIFY2(send(protocol::makeMessage(
                       QStringLiteral("generation-cancelled"),
                       QString::fromLatin1(protocol::message_type::generate),
-                      generationPayload(
-                          QStringLiteral("Please explain local language "
-                                         "models in detail."),
-                          256)),
+                      structuredPayload),
                   errorMessage),
              qPrintable(errorMessage));
     QVERIFY2(

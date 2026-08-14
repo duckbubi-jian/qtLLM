@@ -100,7 +100,7 @@ characters ::= ([^"\\\x7F\x00-\x1F] | "\\" escape)*
 escape ::= ["\\/bfnrt] | "u" hex hex hex hex
 hex ::= [0-9a-fA-F]
 number ::= "-"? ("0" | [1-9] [0-9]*) ("." [0-9]+)? ([eE] [+-]? [0-9]+)?
-ws ::= [ \t\n\r]*
+ws ::= [ \t\n\r]{0,8}
 )GBNF");
 }
 }  // namespace qtllm::agent

@@ -90,20 +90,24 @@ void WorkerClient::unloadModel()
 void WorkerClient::generate(const QString& prompt, const QString& systemPrompt,
                             int contextSize, int maxTokens, int threads,
                             float temperature, float topP, int topK,
-                            float repeatPenalty)
+                            float repeatPenalty,
+                            inference::ResponseMode responseMode,
+                            const QString& grammar)
 {
     QList<chat::Message> messages;
     if (!systemPrompt.isEmpty())
         messages.append({chat::Role::System, systemPrompt});
     messages.append({chat::Role::User, prompt});
     generate(messages, contextSize, maxTokens, threads, temperature, topP, topK,
-             repeatPenalty);
+             repeatPenalty, responseMode, grammar);
 }
 
 void WorkerClient::generate(const QList<chat::Message>& messages,
                             int contextSize, int maxTokens, int threads,
                             float temperature, float topP, int topK,
-                            float repeatPenalty)
+                            float repeatPenalty,
+                            inference::ResponseMode responseMode,
+                            const QString& grammar)
 {
     if (state_ != State::ModelReady)
     {
@@ -129,7 +133,10 @@ void WorkerClient::generate(const QList<chat::Message>& messages,
               {QStringLiteral("temperature"), temperature},
               {QStringLiteral("topP"), topP},
               {QStringLiteral("topK"), topK},
-              {QStringLiteral("repeatPenalty"), repeatPenalty}});
+              {QStringLiteral("repeatPenalty"), repeatPenalty},
+              {QStringLiteral("responseMode"),
+               inference::responseModeName(responseMode)},
+              {QStringLiteral("grammar"), grammar}});
     setState(State::Generating);
 }
 
@@ -155,11 +162,16 @@ QString WorkerClient::activeGenerationRequestId() const
     return generationRequestId_;
 }
 
+WorkerClient::Capabilities WorkerClient::capabilities() const
+{
+    return capabilities_;
+}
+
 void WorkerClient::onStarted()
 {
     helloRequestId_ =
         send(QString::fromLatin1(protocol::message_type::hello),
-             {{QStringLiteral("clientVersion"), QStringLiteral("0.1.0")}});
+             {{QStringLiteral("clientVersion"), QStringLiteral("0.2.0")}});
 }
 
 void WorkerClient::onReadyReadStandardOutput()
@@ -201,6 +213,7 @@ void WorkerClient::onFinished(int exitCode, QProcess::ExitStatus exitStatus)
 {
     modelPath_.clear();
     generationRequestId_.clear();
+    capabilities_ = {};
     if (stopping_)
     {
         setState(State::Stopped);
@@ -237,6 +250,12 @@ void WorkerClient::handleMessage(const protocol::Message& message)
     if (message.type == QLatin1String(protocol::message_type::hello) &&
         message.requestId == helloRequestId_)
     {
+        const auto capabilities =
+            message.payload.value(QStringLiteral("capabilities")).toObject();
+        capabilities_.structuredGeneration =
+            capabilities.value(QStringLiteral("structuredGeneration")).toBool();
+        capabilities_.grammar =
+            capabilities.value(QStringLiteral("grammar")).toBool();
         setState(State::Ready);
     }
     else if (message.type ==

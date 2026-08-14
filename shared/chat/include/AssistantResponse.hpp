@@ -3,7 +3,7 @@
 #include <QString>
 #include <QStringView>
 
-namespace qtllm::ui
+namespace qtllm::chat
 {
 struct AssistantResponse
 {
@@ -15,4 +15,4 @@ struct AssistantResponse
 
 AssistantResponse parseAssistantResponse(QStringView rawResponse);
 QString assistantHistoryText(QStringView rawResponse);
-}  // namespace qtllm::ui
+}  // namespace qtllm::chat

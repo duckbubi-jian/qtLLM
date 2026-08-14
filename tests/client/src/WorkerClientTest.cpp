@@ -22,6 +22,7 @@ class WorkerClientTest final : public QObject
     void cachesVerifiedModelFingerprint();
     void defaultsToApplicationDirectory();
     void startsHandshakesAndStopsWorker();
+    void storesMcpServerConfiguration();
 };
 
 void WorkerClientTest::storesLastModelPathInExplicitIniFile()
@@ -92,11 +93,37 @@ void WorkerClientTest::startsHandshakesAndStopsWorker()
     QTRY_COMPARE_WITH_TIMEOUT(client.state(),
                               infrastructure::WorkerClient::State::Ready, 5000);
     QCOMPARE(errorSpy.count(), 0);
+    QCOMPARE(client.capabilities().structuredGeneration, true);
+    QCOMPARE(client.capabilities().grammar, true);
 
     client.stop();
     QTRY_COMPARE_WITH_TIMEOUT(
         client.state(), infrastructure::WorkerClient::State::Stopped, 5000);
     QCOMPARE(errorSpy.count(), 0);
+}
+
+void WorkerClientTest::storesMcpServerConfiguration()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto settingsPath =
+        QDir(directory.path()).filePath(QStringLiteral("qtLLM.ini"));
+    infrastructure::mcp::McpServerConfig config;
+    config.serverId = QStringLiteral("fake");
+    config.program = QCoreApplication::applicationFilePath();
+    config.arguments = {QStringLiteral("--stdio")};
+    config.environment.insert(QStringLiteral("TOKEN"), QStringLiteral("value"));
+    config.toolAllowlist = {QStringLiteral("echo")};
+
+    infrastructure::SettingsStore settings(settingsPath);
+    QVERIFY(settings.setMcpServerConfigs({config}));
+    const auto loaded = settings.mcpServerConfigs();
+    QCOMPARE(loaded.size(), 1);
+    QCOMPARE(loaded.constFirst().serverId, config.serverId);
+    QCOMPARE(loaded.constFirst().program, config.program);
+    QCOMPARE(loaded.constFirst().arguments, config.arguments);
+    QCOMPARE(loaded.constFirst().environment, config.environment);
+    QCOMPARE(loaded.constFirst().toolAllowlist, config.toolAllowlist);
 }
 }  // namespace qtllm::tests
 

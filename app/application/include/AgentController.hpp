@@ -1,0 +1,99 @@
+#pragma once
+
+#include "AgentAction.hpp"
+#include "AgentRun.hpp"
+#include "ModelPackage.hpp"
+#include "ToolDefinition.hpp"
+#include "ToolPolicy.hpp"
+#include "ToolResult.hpp"
+
+#include <QByteArray>
+#include <QJsonObject>
+#include <QObject>
+#include <QTimer>
+
+#include <functional>
+#include <optional>
+
+namespace qtllm::application
+{
+class AgentController final : public QObject
+{
+    Q_OBJECT
+
+   public:
+    using GenerateHandler = std::function<void(
+        const QList<chat::Message>&, const models::InferencePreset&, int)>;
+    using CancelGenerationHandler = std::function<void()>;
+    using ToolCallHandler =
+        std::function<QString(const QString&, const QJsonObject&)>;
+    using CancelToolHandler = std::function<void(const QString&)>;
+    using ValidateToolHandler =
+        std::function<bool(const QString&, const QJsonObject&, QString&)>;
+    using ToolPolicyHandler =
+        std::function<infrastructure::mcp::ToolDecision(const QString&)>;
+
+    struct Dependencies
+    {
+        GenerateHandler generate;
+        CancelGenerationHandler cancelGeneration;
+        ToolCallHandler callTool;
+        CancelToolHandler cancelTool;
+        ValidateToolHandler validateTool;
+        ToolPolicyHandler toolPolicy;
+    };
+
+    explicit AgentController(Dependencies dependencies = {},
+                             QObject* parent = nullptr);
+
+    bool start(const QString& userRequest,
+               const models::InferencePreset& preset,
+               const QList<agent::ToolDefinition>& tools);
+    void cancel();
+    void resolveApproval(bool approved);
+
+    [[nodiscard]] AgentRun::State state() const;
+    [[nodiscard]] bool hasActiveRun() const;
+    [[nodiscard]] const std::optional<AgentRun>& activeRun() const;
+
+   public slots:
+    void receiveToken(const QByteArray& bytes);
+    void completeGeneration(bool cancelled, const QJsonObject& metrics = {});
+    void handleGenerationError(const QString& code, const QString& message);
+    void receiveToolResult(const qtllm::agent::ToolResult& result);
+
+   signals:
+    void stateChanged(qtllm::application::AgentRun::State state);
+    void eventRecorded(const qtllm::agent::Event& event);
+    void userRequestAccepted(const QString& runId, const QString& request);
+    void approvalRequested(const QString& runId, const QString& toolName,
+                           const QJsonObject& arguments);
+    void finalAnswerReady(const QString& runId, const QString& content);
+    void runFinished(const QString& runId,
+                     qtllm::application::AgentRun::State state,
+                     const QString& code, const QString& message);
+
+   private:
+    static bool isTerminal(AgentRun::State state);
+    void requestDecision();
+    void handleAction(const agent::Action& action, const QByteArray& rawAction);
+    void executeTool(const agent::Action& action);
+    void retryInvalidAction(const QByteArray& rawAction,
+                            const QString& errorMessage);
+    void setState(AgentRun::State state);
+    void recordEvent(agent::EventType type, const QString& message = {},
+                     const QString& toolName = {},
+                     const QJsonObject& data = {});
+    void completeRun(const QString& content);
+    void failRun(const QString& code, const QString& message);
+
+    Dependencies dependencies_;
+    AgentRun::State state_ = AgentRun::State::Idle;
+    std::optional<AgentRun> activeRun_;
+    models::InferencePreset preset_;
+    QList<agent::ToolDefinition> availableTools_;
+    std::optional<agent::Action> pendingApproval_;
+    QByteArray decisionBytes_;
+    QTimer runTimer_;
+};
+}  // namespace qtllm::application

@@ -2,7 +2,9 @@
 
 #include "WorkerOptions.hpp"
 
+#include "AgentAction.hpp"
 #include "ProtocolVersion.hpp"
+#include "ResponseMode.hpp"
 
 #include <QFileInfo>
 #include <QJsonArray>
@@ -151,11 +153,42 @@ bool readMessages(const QJsonObject& payload, WorkerOptions& options,
     return true;
 }
 
+bool readResponseFormat(const QJsonObject& payload, WorkerOptions& options,
+                        QString& errorMessage)
+{
+    const auto modeValue = payload.value(QStringLiteral("responseMode"));
+    if (!modeValue.isUndefined())
+    {
+        if (!modeValue.isString() ||
+            !inference::parseResponseMode(modeValue.toString(),
+                                          options.responseMode))
+        {
+            errorMessage = QStringLiteral(
+                "payload.responseMode must be text or agent_action.");
+            return false;
+        }
+    }
+
+    if (!readString(payload, QStringLiteral("grammar"), options.grammar,
+                    errorMessage))
+        return false;
+    if (options.grammar.size() > 65'536)
+    {
+        errorMessage = QStringLiteral(
+            "payload.grammar exceeds the 65536 character limit.");
+        return false;
+    }
+    if (options.responseMode == inference::ResponseMode::AgentAction)
+        options.grammar = QString::fromUtf8(agent::actionGrammar());
+    return true;
+}
+
 bool parseGenerationOptions(const QJsonObject& payload, WorkerOptions& options,
                             QString& errorMessage)
 {
     options.threads = qMax(1, QThread::idealThreadCount());
     return readMessages(payload, options, errorMessage) &&
+           readResponseFormat(payload, options, errorMessage) &&
            readInteger(payload, QStringLiteral("contextSize"), 256, 1'048'576,
                        options.contextSize, errorMessage) &&
            readInteger(payload, QStringLiteral("maxTokens"), 1, 1'048'576,
@@ -242,8 +275,11 @@ void WorkerSession::handleHello(const protocol::Message& message)
 {
     send(protocol::makeMessage(
         message.requestId, QString::fromLatin1(protocol::message_type::hello),
-        {{QStringLiteral("workerVersion"), QStringLiteral("0.1.0")},
-         {QStringLiteral("protocolVersion"), protocol::version}}));
+        {{QStringLiteral("workerVersion"), QStringLiteral("0.2.0")},
+         {QStringLiteral("protocolVersion"), protocol::version},
+         {QStringLiteral("capabilities"),
+          QJsonObject{{QStringLiteral("structuredGeneration"), true},
+                      {QStringLiteral("grammar"), true}}}}));
 }
 
 void WorkerSession::handleLoadModel(const protocol::Message& message)

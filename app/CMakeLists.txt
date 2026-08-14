@@ -9,6 +9,16 @@ qtllm_collect_include_directories(
     app_include_directories
 )
 qtllm_collect_module_files(
+    "${CMAKE_CURRENT_SOURCE_DIR}/application"
+    application_sources
+    application_headers
+    application_forms
+)
+qtllm_collect_include_directories(
+    "${CMAKE_CURRENT_SOURCE_DIR}/application"
+    application_include_directories
+)
+qtllm_collect_module_files(
     "${CMAKE_CURRENT_SOURCE_DIR}/infrastructure"
     infrastructure_sources
     infrastructure_headers
@@ -32,6 +42,9 @@ qtllm_collect_include_directories(
 list(REMOVE_ITEM app_sources ${infrastructure_sources})
 list(REMOVE_ITEM app_headers ${infrastructure_headers})
 list(REMOVE_ITEM app_forms ${infrastructure_forms})
+list(REMOVE_ITEM app_sources ${application_sources})
+list(REMOVE_ITEM app_headers ${application_headers})
+list(REMOVE_ITEM app_forms ${application_forms})
 list(REMOVE_ITEM app_sources ${ui_sources})
 list(REMOVE_ITEM app_headers ${ui_headers})
 list(REMOVE_ITEM app_forms ${ui_forms})
@@ -51,6 +64,22 @@ target_link_libraries(qtllm_app_infrastructure
         qtllm_shared
 )
 
+add_library(qtllm_app_application STATIC
+    ${application_sources}
+    ${application_headers}
+    ${application_forms}
+)
+target_include_directories(qtllm_app_application
+    PUBLIC
+        ${application_include_directories}
+)
+target_link_libraries(qtllm_app_application
+    PUBLIC
+        Qt6::Core
+        qtllm_app_infrastructure
+        qtllm_shared
+)
+
 add_library(qtllm_app_ui STATIC
     ${ui_sources}
     ${ui_headers}
@@ -64,6 +93,7 @@ target_link_libraries(qtllm_app_ui
     PUBLIC
         Qt6::Concurrent
         Qt6::Widgets
+        qtllm_app_application
         qtllm_app_infrastructure
 )
 

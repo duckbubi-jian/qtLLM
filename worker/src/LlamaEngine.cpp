@@ -403,6 +403,18 @@ bool LlamaEngine::generate(const WorkerOptions& options,
                             llama_sampler_init_top_p(options.topP, 1));
     llama_sampler_chain_add(sampler.get(),
                             llama_sampler_init_temp(options.temperature));
+    if (!options.grammar.isEmpty())
+    {
+        const auto grammar = options.grammar.toUtf8();
+        auto* grammarSampler =
+            llama_sampler_init_grammar(vocabulary, grammar.constData(), "root");
+        if (grammarSampler == nullptr)
+        {
+            errorMessage = QStringLiteral("Unable to parse response grammar.");
+            return false;
+        }
+        llama_sampler_chain_add(sampler.get(), grammarSampler);
+    }
     llama_sampler_chain_add(sampler.get(),
                             llama_sampler_init_dist(options.seed));
 

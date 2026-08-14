@@ -42,7 +42,7 @@ void AssistantResponseTest::initTestCase()
 
 void AssistantResponseTest::parsesCompletedReasoning()
 {
-    const auto response = ui::parseAssistantResponse(
+    const auto response = chat::parseAssistantResponse(
         QStringLiteral("<think>internal notes</think>\nFinal **answer**"));
     QVERIFY(response.hasReasoning);
     QVERIFY(response.reasoningComplete);
@@ -53,7 +53,7 @@ void AssistantResponseTest::parsesCompletedReasoning()
 void AssistantResponseTest::parsesStreamingReasoning()
 {
     const auto response =
-        ui::parseAssistantResponse(QStringLiteral("<think>still working"));
+        chat::parseAssistantResponse(QStringLiteral("<think>still working"));
     QVERIFY(response.hasReasoning);
     QVERIFY(!response.reasoningComplete);
     QCOMPARE(response.reasoning, QStringLiteral("still working"));
@@ -62,7 +62,7 @@ void AssistantResponseTest::parsesStreamingReasoning()
 
 void AssistantResponseTest::preservesPlainAnswer()
 {
-    const auto response = ui::parseAssistantResponse(
+    const auto response = chat::parseAssistantResponse(
         QStringLiteral("```python\nprint('ok')\n```"));
     QVERIFY(!response.hasReasoning);
     QCOMPARE(response.answer, QStringLiteral("```python\nprint('ok')\n```"));
@@ -70,12 +70,12 @@ void AssistantResponseTest::preservesPlainAnswer()
 
 void AssistantResponseTest::excludesIncompleteReasoningFromHistory()
 {
-    QVERIFY(ui::assistantHistoryText(QStringLiteral("<think>still working"))
+    QVERIFY(chat::assistantHistoryText(QStringLiteral("<think>still working"))
                 .isEmpty());
-    QCOMPARE(ui::assistantHistoryText(
+    QCOMPARE(chat::assistantHistoryText(
                  QStringLiteral("<think>notes</think>Final answer")),
              QStringLiteral("Final answer"));
-    QCOMPARE(ui::assistantHistoryText(QStringLiteral("Plain answer")),
+    QCOMPARE(chat::assistantHistoryText(QStringLiteral("Plain answer")),
              QStringLiteral("Plain answer"));
 }
 

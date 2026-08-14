@@ -3,7 +3,12 @@
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonParseError>
+#include <QSaveFile>
 #include <QSettings>
 
 #include <utility>
@@ -90,6 +95,57 @@ bool SettingsStore::setModelFileVerified(const QString& modelPath,
     settings.endGroup();
     settings.sync();
     return settings.status() == QSettings::NoError;
+}
+
+QList<mcp::McpServerConfig> SettingsStore::mcpServerConfigs() const
+{
+    QByteArray serialized;
+    QFile configFile(mcpConfigFilePath());
+    if (configFile.open(QIODevice::ReadOnly)) serialized = configFile.readAll();
+    if (serialized.isEmpty())
+    {
+        const QSettings settings(filePath_, QSettings::IniFormat);
+        serialized = settings.value(QStringLiteral("mcp/serversJson"))
+                         .toString()
+                         .toUtf8();
+    }
+    QJsonParseError parseError;
+    const auto document = QJsonDocument::fromJson(serialized, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isArray())
+        return {};
+
+    QList<mcp::McpServerConfig> configurations;
+    for (const auto& value : document.array())
+    {
+        if (!value.isObject()) continue;
+        mcp::McpServerConfig config;
+        QString errorMessage;
+        if (mcp::parseServerConfig(value.toObject(), config, errorMessage))
+            configurations.append(std::move(config));
+    }
+    return configurations;
+}
+
+bool SettingsStore::setMcpServerConfigs(
+    const QList<mcp::McpServerConfig>& configurations) const
+{
+    QJsonArray array;
+    for (const auto& config : configurations)
+        array.append(mcp::serializeServerConfig(config));
+    QSaveFile configFile(mcpConfigFilePath());
+    if (!configFile.open(QIODevice::WriteOnly)) return false;
+    const auto serialized =
+        QJsonDocument(array).toJson(QJsonDocument::Indented);
+    if (configFile.write(serialized) != serialized.size() ||
+        !configFile.commit())
+        return false;
+    return true;
+}
+
+QString SettingsStore::mcpConfigFilePath() const
+{
+    return QFileInfo(filePath_).absoluteDir().filePath(
+        QStringLiteral("mcp-servers.json"));
 }
 
 QString SettingsStore::verificationKey(const QString& modelPath)

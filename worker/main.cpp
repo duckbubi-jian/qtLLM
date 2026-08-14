@@ -58,7 +58,7 @@ int main(int argc, char* argv[])
     QCoreApplication application(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("qtllm-worker"));
     QCoreApplication::setApplicationVersion(
-        QStringLiteral("0.1.0 (protocol %1)").arg(qtllm::protocol::version));
+        QStringLiteral("0.2.0 (protocol %1)").arg(qtllm::protocol::version));
 
     QCommandLineParser parser;
     qtllm::worker::configureParser(parser);

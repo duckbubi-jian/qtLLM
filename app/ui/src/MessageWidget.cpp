@@ -282,7 +282,7 @@ void MessageWidget::setAssistantText(const QString& rawText, bool final)
 {
     if (role_ != Role::Assistant) return;
 
-    const auto response = parseAssistantResponse(rawText);
+    const auto response = chat::parseAssistantResponse(rawText);
     const auto reasoningOnly =
         final && response.answer.isEmpty() && !response.reasoning.isEmpty();
     if (response.hasReasoning && !reasoningOnly)

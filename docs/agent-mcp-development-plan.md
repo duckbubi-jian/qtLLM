@@ -466,3 +466,16 @@ user: <tool_result name="filesystem.read_file">...</tool_result>
 - 文件修改预览、差异展示和可回滚操作。
 - 后台任务、计划任务和人工接管机制。
 - 针对不同模型的工具调用模板和能力评测。
+
+## 15. 当前实现状态
+
+截至 2026-08-14，当前分支已完成：
+
+- 阶段 1：应用层重构、`ChatController` 和 Agent 基础事件模型。
+- 阶段 2：IPC v3、`responseMode`、Agent Action JSON 校验和 llama.cpp grammar。
+- 阶段 3：stdio MCP JSON-RPC client，覆盖 initialize、tools/list、tools/call、超时、取消、stderr 和进程退出。
+- 阶段 4：工具注册表、JSON Schema 参数校验、白名单、策略决策、配置持久化和结果大小限制。
+- 阶段 5：Agent 决策循环、工具结果回填、审批、纠错、循环检测、步数限制和取消语义。
+- 阶段 6：Chat/Agent 模式切换、最终答案展示、执行状态和工具确认对话框。
+
+阶段 7 的持续工作仍包括完整配置管理页面、更多 fake server 故障场景、安装包验收和 CUDA Agent 场景。

@@ -39,6 +39,25 @@ target_link_libraries(qtllm-model-tests
 add_test(NAME model_package_validation COMMAND qtllm-model-tests)
 
 qtllm_collect_module_files(
+    "${CMAKE_CURRENT_SOURCE_DIR}/agent"
+    agent_test_sources
+    agent_test_headers
+    agent_test_forms
+)
+
+qt_add_executable(qtllm-agent-tests
+    ${agent_test_sources}
+    ${agent_test_headers}
+    ${agent_test_forms}
+)
+target_link_libraries(qtllm-agent-tests
+    PRIVATE
+        Qt6::Test
+        qtllm_shared
+)
+add_test(NAME agent_action_validation COMMAND qtllm-agent-tests)
+
+qtllm_collect_module_files(
     "${CMAKE_CURRENT_SOURCE_DIR}/ui"
     ui_test_sources
     ui_test_headers
@@ -76,6 +95,73 @@ target_link_libraries(qtllm-client-tests
 )
 add_dependencies(qtllm-client-tests qtllm-worker)
 add_test(NAME client_worker_lifecycle COMMAND qtllm-client-tests)
+
+qtllm_collect_module_files(
+    "${CMAKE_CURRENT_SOURCE_DIR}/application"
+    application_test_sources
+    application_test_headers
+    application_test_forms
+)
+
+qt_add_executable(qtllm-application-tests
+    ${application_test_sources}
+    ${application_test_headers}
+    ${application_test_forms}
+)
+target_link_libraries(qtllm-application-tests
+    PRIVATE
+        Qt6::Test
+        qtllm_app_application
+)
+add_test(NAME application_chat_controller COMMAND qtllm-application-tests)
+
+qtllm_collect_module_files(
+    "${CMAKE_CURRENT_SOURCE_DIR}/agent_controller"
+    agent_controller_test_sources
+    agent_controller_test_headers
+    agent_controller_test_forms
+)
+
+qt_add_executable(qtllm-agent-controller-tests
+    ${agent_controller_test_sources}
+    ${agent_controller_test_headers}
+    ${agent_controller_test_forms}
+)
+target_link_libraries(qtllm-agent-controller-tests
+    PRIVATE
+        Qt6::Test
+        qtllm_app_application
+)
+add_test(NAME application_agent_controller COMMAND qtllm-agent-controller-tests)
+
+qtllm_collect_module_files(
+    "${CMAKE_CURRENT_SOURCE_DIR}/mcp"
+    mcp_test_sources
+    mcp_test_headers
+    mcp_test_forms
+)
+
+qt_add_executable(qtllm-mcp-tests
+    ${mcp_test_sources}
+    ${mcp_test_headers}
+    ${mcp_test_forms}
+)
+target_link_libraries(qtllm-mcp-tests
+    PRIVATE
+        Qt6::Test
+        qtllm_app_infrastructure
+        qtllm_shared
+)
+
+qt_add_executable(qtllm-fake-mcp-server
+    "${CMAKE_CURRENT_SOURCE_DIR}/fake_mcp_server/FakeMcpServer.cpp"
+)
+target_link_libraries(qtllm-fake-mcp-server PRIVATE Qt6::Core)
+add_dependencies(qtllm-mcp-tests qtllm-fake-mcp-server)
+add_test(NAME mcp_stdio_transport COMMAND qtllm-mcp-tests)
+set_tests_properties(mcp_stdio_transport PROPERTIES
+    ENVIRONMENT "QTLLM_TEST_MCP_SERVER=$<TARGET_FILE:qtllm-fake-mcp-server>"
+)
 
 qtllm_collect_module_files(
     "${CMAKE_CURRENT_SOURCE_DIR}/worker"

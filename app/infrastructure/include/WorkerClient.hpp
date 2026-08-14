@@ -3,6 +3,7 @@
 #include "ChatMessage.hpp"
 #include "InferenceDefaults.hpp"
 #include "JsonLineProtocol.hpp"
+#include "ResponseMode.hpp"
 
 #include <QByteArray>
 #include <QList>
@@ -17,6 +18,12 @@ class WorkerClient final : public QObject
     Q_OBJECT
 
    public:
+    struct Capabilities
+    {
+        bool structuredGeneration = false;
+        bool grammar = false;
+    };
+
     enum class State
     {
         Stopped,
@@ -36,21 +43,28 @@ class WorkerClient final : public QObject
     void stop();
     void loadModel(const QString& modelPath, int gpuLayers = -1);
     void unloadModel();
-    void generate(const QList<chat::Message>& messages,
-                  int contextSize = inference::defaultContextSize,
-                  int maxTokens = inference::defaultMaxOutputTokens,
-                  int threads = 0, float temperature = 0.6F, float topP = 0.95F,
-                  int topK = 40, float repeatPenalty = 1.05F);
-    void generate(const QString& prompt, const QString& systemPrompt,
-                  int contextSize = inference::defaultContextSize,
-                  int maxTokens = inference::defaultMaxOutputTokens,
-                  int threads = 0, float temperature = 0.6F, float topP = 0.95F,
-                  int topK = 40, float repeatPenalty = 1.05F);
+    void generate(
+        const QList<chat::Message>& messages,
+        int contextSize = inference::defaultContextSize,
+        int maxTokens = inference::defaultMaxOutputTokens, int threads = 0,
+        float temperature = 0.6F, float topP = 0.95F, int topK = 40,
+        float repeatPenalty = 1.05F,
+        inference::ResponseMode responseMode = inference::ResponseMode::Text,
+        const QString& grammar = {});
+    void generate(
+        const QString& prompt, const QString& systemPrompt,
+        int contextSize = inference::defaultContextSize,
+        int maxTokens = inference::defaultMaxOutputTokens, int threads = 0,
+        float temperature = 0.6F, float topP = 0.95F, int topK = 40,
+        float repeatPenalty = 1.05F,
+        inference::ResponseMode responseMode = inference::ResponseMode::Text,
+        const QString& grammar = {});
     void cancel();
 
     [[nodiscard]] State state() const;
     [[nodiscard]] QString modelPath() const;
     [[nodiscard]] QString activeGenerationRequestId() const;
+    [[nodiscard]] Capabilities capabilities() const;
 
    signals:
     void stateChanged(qtllm::infrastructure::WorkerClient::State state);
@@ -83,6 +97,7 @@ class WorkerClient final : public QObject
     QString unloadRequestId_;
     QString generationRequestId_;
     QString modelPath_;
+    Capabilities capabilities_;
     bool stopping_ = false;
 };
 }  // namespace qtllm::infrastructure

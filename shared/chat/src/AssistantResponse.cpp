@@ -1,6 +1,6 @@
 #include "AssistantResponse.hpp"
 
-namespace qtllm::ui
+namespace qtllm::chat
 {
 namespace
 {
@@ -56,4 +56,4 @@ QString assistantHistoryText(QStringView rawResponse)
     if (response.hasReasoning && !response.reasoningComplete) return {};
     return response.answer.trimmed();
 }
-}  // namespace qtllm::ui
+}  // namespace qtllm::chat

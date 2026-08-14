@@ -1,0 +1,22 @@
+[
+  {
+    "serverId": "filesystem",
+    "program": "C:/absolute/path/to/mcp-server.exe",
+    "arguments": [
+      "--root",
+      "D:/safe/project"
+    ],
+    "environment": {
+      "MCP_TOKEN": "set-a-value-here"
+    },
+    "workingDirectory": "D:/safe/project",
+    "enabled": true,
+    "toolAllowlist": [
+      "read_file",
+      "list_directory"
+    ],
+    "initializeTimeoutMs": 10000,
+    "requestTimeoutMs": 30000,
+    "maxResultBytes": 65536
+  }
+]

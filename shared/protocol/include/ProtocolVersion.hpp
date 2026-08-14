@@ -2,5 +2,5 @@
 
 namespace qtllm::protocol
 {
-inline constexpr int version = 2;
+inline constexpr int version = 3;
 }  // namespace qtllm::protocol

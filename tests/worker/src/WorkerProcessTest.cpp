@@ -24,6 +24,7 @@ class WorkerProcessTest final : public QObject
     void rejectsProtocolMismatch();
     void rejectsGenerationBeforeModelLoad();
     void rejectsInvalidMessageHistory();
+    void rejectsInvalidResponseMode();
     void reportsIdleStatus();
     void modelLifecycle();
     void cleanupTestCase();
@@ -78,6 +79,12 @@ void WorkerProcessTest::hello()
     QVERIFY(!response.payload.value(QStringLiteral("workerVersion"))
                  .toString()
                  .isEmpty());
+    const auto capabilities =
+        response.payload.value(QStringLiteral("capabilities")).toObject();
+    QCOMPARE(
+        capabilities.value(QStringLiteral("structuredGeneration")).toBool(),
+        true);
+    QCOMPARE(capabilities.value(QStringLiteral("grammar")).toBool(), true);
 }
 
 void WorkerProcessTest::rejectsInvalidJson()
@@ -140,6 +147,23 @@ void WorkerProcessTest::rejectsInvalidMessageHistory()
                   errorMessage),
              qPrintable(errorMessage));
     QVERIFY2(expectError(QStringLiteral("invalid-history"),
+                         QStringLiteral("invalid_payload"), errorMessage),
+             qPrintable(errorMessage));
+}
+
+void WorkerProcessTest::rejectsInvalidResponseMode()
+{
+    auto payload = generationPayload(QStringLiteral("hello"), 8);
+    payload.insert(QStringLiteral("responseMode"), QStringLiteral("invalid"));
+
+    QString errorMessage;
+    QVERIFY2(send(protocol::makeMessage(
+                      QStringLiteral("invalid-response-mode"),
+                      QString::fromLatin1(protocol::message_type::generate),
+                      payload),
+                  errorMessage),
+             qPrintable(errorMessage));
+    QVERIFY2(expectError(QStringLiteral("invalid-response-mode"),
                          QStringLiteral("invalid_payload"), errorMessage),
              qPrintable(errorMessage));
 }

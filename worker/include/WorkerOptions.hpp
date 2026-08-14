@@ -2,6 +2,7 @@
 
 #include "ChatMessage.hpp"
 #include "InferenceDefaults.hpp"
+#include "ResponseMode.hpp"
 
 #include <QList>
 #include <QString>
@@ -18,6 +19,8 @@ struct WorkerOptions
     QString prompt;
     QString systemPrompt = QStringLiteral("You are a helpful assistant.");
     QList<chat::Message> messages;
+    inference::ResponseMode responseMode = inference::ResponseMode::Text;
+    QString grammar;
     int contextSize = inference::defaultContextSize;
     int maxTokens = inference::defaultMaxOutputTokens;
     int threads = 0;

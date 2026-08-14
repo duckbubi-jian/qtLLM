@@ -1,0 +1,72 @@
+set(runtime_directory "$ENV{DESTDIR}${CMAKE_INSTALL_PREFIX}")
+
+set(required_runtime_files
+    README.md
+    qt.conf
+    qtLLM.exe
+    qtllm-worker.exe
+    Qt6Core.dll
+    Qt6Gui.dll
+    Qt6Widgets.dll
+    plugins/platforms/qwindows.dll
+    llama.dll
+    ggml.dll
+    ggml-base.dll
+    ggml-cpu.dll
+    brotlicommon.dll
+    brotlidec.dll
+    bz2.dll
+    double-conversion.dll
+    freetype.dll
+    harfbuzz.dll
+    icudt74.dll
+    icuin74.dll
+    icuuc74.dll
+    libcrypto-3-x64.dll
+    libpng16.dll
+    pcre2-16.dll
+    zlib1.dll
+    zstd.dll
+    concrt140.dll
+    msvcp140.dll
+    vcomp140.dll
+    vcruntime140.dll
+    D3Dcompiler_47.dll
+    licenses/llama-cpp.txt
+    licenses/openssl.txt
+    licenses/qtbase.txt
+)
+if(@QTLLM_ENABLE_CUDA@)
+    list(APPEND required_runtime_files ggml-cuda.dll)
+endif()
+
+set(missing_runtime_files)
+foreach(relative_path IN LISTS required_runtime_files)
+    if(NOT EXISTS "${runtime_directory}/${relative_path}")
+        list(APPEND missing_runtime_files "${relative_path}")
+    endif()
+endforeach()
+if(missing_runtime_files)
+    list(JOIN missing_runtime_files ", " missing_runtime_files_text)
+    message(FATAL_ERROR
+        "Incomplete qtLLM runtime install. Missing: ${missing_runtime_files_text}"
+    )
+endif()
+
+file(GLOB prohibited_runtime_files
+    "${runtime_directory}/*-tests.exe"
+    "${runtime_directory}/*.gguf"
+    "${runtime_directory}/qtLLM.ini"
+    "${runtime_directory}/cudart64_*.dll"
+    "${runtime_directory}/cublas64_*.dll"
+    "${runtime_directory}/cublasLt64_*.dll"
+    "${runtime_directory}/nvcuda.dll"
+)
+if(prohibited_runtime_files)
+    list(JOIN prohibited_runtime_files ", " prohibited_runtime_files_text)
+    message(FATAL_ERROR
+        "Prohibited files found in qtLLM runtime: ${prohibited_runtime_files_text}"
+    )
+endif()
+
+message(STATUS "qtLLM runtime install verified: ${runtime_directory}")

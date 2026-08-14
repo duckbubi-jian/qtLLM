@@ -38,6 +38,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
+include(GNUInstallDirs)
+set(QTLLM_RUNTIME_INSTALL_DIR "${CMAKE_INSTALL_BINDIR}")
+if(WIN32)
+    # Keep the portable Windows runtime flat: executables and DLLs live beside
+    # each other, while Qt plugins remain under plugins/.
+    set(QTLLM_RUNTIME_INSTALL_DIR ".")
+    set(CMAKE_INSTALL_BINDIR ".")
+endif()
+
 find_package(Qt6 6.5 REQUIRED COMPONENTS Concurrent Core Gui Widgets)
 qt_standard_project_setup()
 
@@ -115,6 +124,112 @@ endfunction()
 add_subdirectory(shared)
 add_subdirectory(app)
 add_subdirectory(worker)
+
+if(MSVC)
+    set(CMAKE_INSTALL_OPENMP_LIBRARIES TRUE)
+    set(CMAKE_INSTALL_SYSTEM_RUNTIME_DESTINATION
+        "${QTLLM_RUNTIME_INSTALL_DIR}"
+    )
+    include(InstallRequiredSystemLibraries)
+endif()
+
+if(WIN32)
+    set(qtllm_runtime_dependency_directories)
+    if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+        list(APPEND qtllm_runtime_dependency_directories
+            "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin"
+        )
+    endif()
+
+    install(TARGETS qtLLM qtllm-worker
+        RUNTIME_DEPENDENCIES
+            DIRECTORIES ${qtllm_runtime_dependency_directories}
+            PRE_EXCLUDE_REGEXES
+                "^api-ms-.*"
+                "^ext-ms-.*"
+                "^[Cc][Uu][Dd][Aa][Rr][Tt]64_.*\\.dll$"
+                "^[Cc][Uu][Bb][Ll][Aa][Ss]([Ll][Tt])?64_.*\\.dll$"
+                "^[Nn][Vv][Cc][Uu][Dd][Aa]\\.dll$"
+            POST_EXCLUDE_REGEXES
+                ".*[\\\\/][Ww][Ii][Nn][Dd][Oo][Ww][Ss][\\\\/][Ss][Yy][Ss][Tt][Ee][Mm]32[\\\\/].*"
+        RUNTIME DESTINATION "${QTLLM_RUNTIME_INSTALL_DIR}"
+    )
+
+    qt_generate_deploy_script(
+        TARGET qtLLM
+        OUTPUT_SCRIPT qtllm_qt_deploy_script
+        CONTENT "
+set(__qt_deploy_tool_extra_options
+    --skip-plugin-types
+    generic,imageformats,networkinformation,styles,tls
+)
+qt_deploy_runtime_dependencies(
+    EXECUTABLE $<TARGET_FILE:qtLLM>
+    GENERATE_QT_CONF
+    NO_TRANSLATIONS
+    NO_COMPILER_RUNTIME
+)
+"
+    )
+    install(SCRIPT "${qtllm_qt_deploy_script}")
+else()
+    install(TARGETS qtLLM qtllm-worker
+        RUNTIME DESTINATION "${QTLLM_RUNTIME_INSTALL_DIR}"
+    )
+endif()
+
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/packaging/runtime/README.md"
+    DESTINATION .
+)
+
+set(qtllm_runtime_license_packages
+    brotli
+    bzip2
+    double-conversion
+    freetype
+    harfbuzz
+    icu
+    libpng
+    llama-cpp
+    openssl
+    pcre2
+    qtbase
+    zlib
+    zstd
+)
+if(DEFINED VCPKG_INSTALLED_DIR AND DEFINED VCPKG_TARGET_TRIPLET)
+    set(qtllm_vcpkg_share_directory
+        "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share"
+    )
+    foreach(package IN LISTS qtllm_runtime_license_packages)
+        set(copyright_file
+            "${qtllm_vcpkg_share_directory}/${package}/copyright"
+        )
+        if(EXISTS "${copyright_file}")
+            install(FILES "${copyright_file}"
+                DESTINATION licenses
+                RENAME "${package}.txt"
+            )
+        else()
+            message(WARNING
+                "Runtime license notice not found: ${copyright_file}"
+            )
+        endif()
+    endforeach()
+else()
+    message(WARNING
+        "Vcpkg paths are unavailable; runtime license notices will not be installed."
+    )
+endif()
+
+if(WIN32)
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/runtime/VerifyRuntimeInstall.cmake.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/VerifyRuntimeInstall.cmake"
+        @ONLY
+    )
+    install(SCRIPT "${CMAKE_CURRENT_BINARY_DIR}/VerifyRuntimeInstall.cmake")
+endif()
 
 include(CTest)
 if(BUILD_TESTING)

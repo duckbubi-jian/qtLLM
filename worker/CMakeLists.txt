@@ -28,7 +28,3 @@ target_link_libraries(qtllm-worker
         llama
         qtllm_shared
 )
-
-install(TARGETS qtllm-worker
-    RUNTIME DESTINATION .
-)

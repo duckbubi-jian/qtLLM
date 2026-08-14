@@ -1,19 +1,17 @@
 #include "MainWindow.hpp"
 
 #include "MessageWidget.hpp"
+#include "ToolApprovalWidget.hpp"
 
-#include <QComboBox>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QHBoxLayout>
-#include <QJsonDocument>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
-#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
@@ -35,16 +33,6 @@ namespace qtllm::ui
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent),
       mcpManager_(this),
-      chatController_(
-          [this](const QList<chat::Message>& messages,
-                 const models::InferencePreset& preset)
-          {
-              workerClient_.generate(messages, preset.contextSize,
-                                     preset.maxOutputTokens, 0,
-                                     preset.temperature, preset.topP,
-                                     preset.topK, preset.repeatPenalty);
-          },
-          [this] { workerClient_.cancel(); }, this),
       agentController_(
           application::AgentController::Dependencies{
               [this](const QList<chat::Message>& messages,
@@ -105,71 +93,46 @@ MainWindow::MainWindow(QWidget* parent)
             &MainWindow::finishModelPackageVerification);
     connect(&workerClient_, &infrastructure::WorkerClient::tokenReceived, this,
             [this](const QByteArray& bytes)
-            {
-                if (agentRunActive_)
-                    agentController_.receiveToken(bytes);
-                else
-                    chatController_.receiveToken(bytes);
-            });
+            { agentController_.receiveToken(bytes); });
     connect(&workerClient_, &infrastructure::WorkerClient::generationFinished,
-            this,
-            [this](bool cancelled, const QJsonObject& metrics)
-            {
-                if (agentRunActive_)
-                    agentController_.completeGeneration(cancelled, metrics);
-                else
-                    chatController_.completeGeneration(cancelled, metrics);
-            });
+            this, [this](bool cancelled, const QJsonObject& metrics)
+            { agentController_.completeGeneration(cancelled, metrics); });
     connect(&workerClient_, &infrastructure::WorkerClient::errorOccurred, this,
             [this](const QString& code, const QString& message)
-            {
-                if (agentRunActive_)
-                    agentController_.handleGenerationError(code, message);
-                else
-                    chatController_.handleError(code, message);
-            });
-    connect(&chatController_, &application::ChatController::userMessageAccepted,
-            this,
-            [this](const QString& prompt)
-            {
-                appendUserMessage(prompt);
-                promptEdit_->clear();
-                pendingUtf8_.clear();
-                currentAssistantText_.clear();
-            });
-    connect(&chatController_,
-            &application::ChatController::assistantResponseStarted, this,
-            &MainWindow::beginAssistantMessage);
-    connect(&chatController_, &application::ChatController::tokenReceived, this,
-            &MainWindow::appendToken);
-    connect(&chatController_, &application::ChatController::generationFinished,
-            this, &MainWindow::finishGeneration);
-    connect(&chatController_, &application::ChatController::errorOccurred, this,
-            &MainWindow::showError);
+            { agentController_.handleGenerationError(code, message); });
     connect(&agentController_,
             &application::AgentController::userRequestAccepted, this,
             [this](const QString&, const QString& prompt)
             {
                 appendUserMessage(prompt);
                 promptEdit_->clear();
+                pendingUtf8_.clear();
+                currentAssistantText_.clear();
             });
     connect(&agentController_, &application::AgentController::finalAnswerReady,
             this, [this](const QString&, const QString& answer)
             { appendAgentAnswer(answer); });
-    connect(&agentController_, &application::AgentController::approvalRequested,
-            this,
-            [this](const QString&, const QString& toolName,
-                   const QJsonObject& arguments)
-            {
-                const auto summary = QString::fromUtf8(
-                    QJsonDocument(arguments).toJson(QJsonDocument::Indented));
-                const auto decision = QMessageBox::question(
-                    this, tr("Confirm tool call"),
-                    tr("Allow %1 to run with these arguments?\n\n%2")
-                        .arg(toolName, summary),
-                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
-                agentController_.resolveApproval(decision == QMessageBox::Yes);
-            });
+    connect(
+        &agentController_, &application::AgentController::approvalRequested,
+        this,
+        [this](const QString&, const QString& toolName,
+               const QJsonObject& arguments)
+        {
+            auto* approval = new ToolApprovalWidget(toolPolicy_.risk(toolName),
+                                                    toolName, arguments);
+            pendingToolApproval_ = approval;
+            conversationLayout_->insertWidget(conversationLayout_->count() - 1,
+                                              approval);
+            appendRawText(tr("Tool approval requested: %1\n\n").arg(toolName));
+            connect(approval, &ToolApprovalWidget::decisionMade, this,
+                    [this, approval](bool approved)
+                    {
+                        if (pendingToolApproval_ != approval) return;
+                        pendingToolApproval_ = nullptr;
+                        agentController_.resolveApproval(approved);
+                    });
+            scrollConversationToBottom();
+        });
     connect(&agentController_, &application::AgentController::eventRecorded,
             this,
             [this](const agent::Event& event)
@@ -184,10 +147,24 @@ MainWindow::MainWindow(QWidget* parent)
                    const QString& code, const QString& message)
             {
                 agentRunActive_ = false;
+                if (pendingToolApproval_ != nullptr)
+                {
+                    pendingToolApproval_->markCancelled();
+                    pendingToolApproval_ = nullptr;
+                }
                 if (state == application::AgentRun::State::Completed)
-                    statusLabel_->setText(tr("Agent completed"));
+                    statusLabel_->setText(tr("Ready"));
                 else if (!message.isEmpty())
+                {
+                    if (code != QLatin1String("approval_denied") &&
+                        promptEdit_->toPlainText().isEmpty() &&
+                        agentController_.activeRun().has_value())
+                    {
+                        promptEdit_->setPlainText(
+                            agentController_.activeRun()->userRequest);
+                    }
                     showError(code, message);
+                }
                 updateState(workerClient_.state());
             });
     connect(&mcpManager_, &infrastructure::mcp::McpClientManager::serverStarted,
@@ -205,8 +182,9 @@ MainWindow::MainWindow(QWidget* parent)
     connect(
         &mcpManager_, &infrastructure::mcp::McpClientManager::toolResultReady,
         &agentController_, &application::AgentController::receiveToolResult);
-    connect(&chatController_, &application::ChatController::conversationCleared,
-            this, &MainWindow::resetConversationView);
+    connect(&agentController_,
+            &application::AgentController::conversationCleared, this,
+            &MainWindow::resetConversationView);
     connect(&workerClient_, &infrastructure::WorkerClient::diagnosticReceived,
             this,
             [](const QString& text) { qInfo().noquote() << text.trimmed(); });
@@ -297,27 +275,18 @@ void MainWindow::sendPrompt()
 {
     const auto prompt = promptEdit_->toPlainText().trimmed();
     if (prompt.isEmpty()) return;
-
-    if (modeCombo_ != nullptr && modeCombo_->currentIndex() == 1)
-    {
-        beginAgentPrompt(prompt);
-        return;
-    }
-    chatController_.sendPrompt(prompt, activeModelSelection_.preset);
+    beginAgentPrompt(prompt);
 }
 
 void MainWindow::stopGeneration()
 {
-    if (agentRunActive_)
-        agentController_.cancel();
-    else
-        chatController_.cancel();
+    if (agentRunActive_) agentController_.cancel();
 }
 
 void MainWindow::clearConversation()
 {
     if (agentRunActive_) return;
-    chatController_.clearConversation();
+    agentController_.clearConversation();
 }
 
 void MainWindow::resetConversationView()
@@ -332,6 +301,7 @@ void MainWindow::resetConversationView()
     rawTranscript_->clear();
     renderTimer_->stop();
     currentAssistant_ = nullptr;
+    pendingToolApproval_ = nullptr;
     currentAssistantText_.clear();
     pendingUtf8_.clear();
     statusLabel_->setText(tr("Conversation cleared"));
@@ -356,7 +326,6 @@ void MainWindow::updateState(infrastructure::WorkerClient::State state)
     promptEdit_->setEnabled(modelReady && !agentRunActive_);
     sendButton_->setEnabled(modelReady && !agentRunActive_);
     stopButton_->setEnabled(generating || agentRunActive_);
-    modeCombo_->setEnabled(!generating && !agentRunActive_);
     updateClearButton();
 
     if (verifyingModelPackage_)
@@ -468,11 +437,6 @@ void MainWindow::buildUi()
     modelPathEdit_->setPlaceholderText(tr("Model package or local GGUF path"));
     browseButton_ = new QPushButton(tr("Browse"), central);
     loadButton_ = new QPushButton(tr("Load"), central);
-    modeCombo_ = new QComboBox(central);
-    modeCombo_->addItem(tr("Chat"));
-    modeCombo_->addItem(tr("Agent"));
-    modeCombo_->setToolTip(
-        tr("Choose normal chat or controlled tool execution"));
     browseButton_->setIcon(style()->standardIcon(QStyle::SP_DirOpenIcon));
     loadButton_->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
     browseButton_->setToolTip(tr("Select a model package or GGUF file"));
@@ -481,7 +445,6 @@ void MainWindow::buildUi()
     auto* ggufAction = browseMenu->addAction(tr("GGUF file"));
     browseButton_->setMenu(browseMenu);
     modelRow->addWidget(modelPathEdit_, 1);
-    modelRow->addWidget(modeCombo_);
     modelRow->addWidget(browseButton_);
     modelRow->addWidget(loadButton_);
     layout->addWidget(modelBar);
@@ -591,8 +554,6 @@ void MainWindow::buildUi()
                          infrastructure::WorkerClient::State::ModelReady) &&
                     !modelPathEdit_->text().trimmed().isEmpty());
             });
-    connect(modeCombo_, &QComboBox::currentIndexChanged, this,
-            [this] { updateState(workerClient_.state()); });
     updateState(infrastructure::WorkerClient::State::Stopped);
 }
 
@@ -698,8 +659,8 @@ void MainWindow::updateClearButton()
     if (clearButton_ == nullptr || conversationLayout_ == nullptr) return;
     const auto hasVisibleMessages = conversationLayout_->count() > 1;
     clearButton_->setEnabled(
-        !chatController_.isGenerating() && !agentRunActive_ &&
-        (chatController_.hasConversation() || hasVisibleMessages));
+        !agentRunActive_ &&
+        (agentController_.hasConversation() || hasVisibleMessages));
 }
 
 void MainWindow::beginAgentPrompt(const QString& prompt)
@@ -725,7 +686,7 @@ void MainWindow::appendAgentAnswer(const QString& answer)
                                       message);
     if (!rawTranscript_->document()->isEmpty())
         appendRawText(QStringLiteral("\n"));
-    appendRawText(tr("Agent") + QStringLiteral("\n") + answer +
+    appendRawText(tr("Assistant") + QStringLiteral("\n") + answer +
                   QStringLiteral("\n\n"));
     updateClearButton();
     scrollConversationToBottom();
@@ -736,16 +697,16 @@ void MainWindow::updateAgentState(application::AgentRun::State state)
     switch (state)
     {
         case application::AgentRun::State::Deciding:
-            statusLabel_->setText(tr("Agent is deciding..."));
+            statusLabel_->setText(tr("Thinking..."));
             break;
         case application::AgentRun::State::WaitingForApproval:
-            statusLabel_->setText(tr("Agent is waiting for approval"));
+            statusLabel_->setText(tr("Waiting for tool approval"));
             break;
         case application::AgentRun::State::ExecutingTool:
-            statusLabel_->setText(tr("Agent is executing a tool..."));
+            statusLabel_->setText(tr("Using a tool..."));
             break;
         case application::AgentRun::State::GeneratingAnswer:
-            statusLabel_->setText(tr("Agent is preparing the answer..."));
+            statusLabel_->setText(tr("Preparing the answer..."));
             break;
         default:
             break;

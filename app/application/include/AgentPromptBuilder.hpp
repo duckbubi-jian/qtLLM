@@ -13,7 +13,8 @@ class AgentPromptBuilder final
 {
    public:
     static QList<chat::Message> initialMessages(
-        const QString& userRequest, const QList<agent::ToolDefinition>& tools);
+        const QString& userRequest, const QList<agent::ToolDefinition>& tools,
+        const QList<chat::Message>& conversationHistory = {});
     static chat::Message toolResultMessage(const agent::ToolResult& result);
     static chat::Message correctionMessage(const QString& errorMessage);
 };

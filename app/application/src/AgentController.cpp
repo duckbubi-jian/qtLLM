@@ -14,7 +14,7 @@ namespace
 {
 constexpr auto maximumToolCalls = 5;
 constexpr auto maximumDecisionBytes = 65'536;
-constexpr auto maximumDecisionTokens = 256;
+constexpr auto minimumDecisionTokens = 256;
 constexpr auto runTimeoutMilliseconds = 120'000;
 }  // namespace
 
@@ -46,7 +46,8 @@ bool AgentController::start(const QString& userRequest,
     run.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     run.userRequest = request;
     run.startedAt = QDateTime::currentDateTimeUtc();
-    run.inferenceMessages = AgentPromptBuilder::initialMessages(request, tools);
+    run.inferenceMessages = AgentPromptBuilder::initialMessages(
+        request, tools, conversationMessages_);
     activeRun_ = std::move(run);
     preset_ = preset;
     availableTools_ = tools;
@@ -98,6 +99,14 @@ void AgentController::resolveApproval(bool approved)
     executeTool(action);
 }
 
+bool AgentController::clearConversation()
+{
+    if (hasActiveRun()) return false;
+    conversationMessages_.clear();
+    emit conversationCleared();
+    return true;
+}
+
 AgentRun::State AgentController::state() const
 {
     return state_;
@@ -111,6 +120,16 @@ bool AgentController::hasActiveRun() const
 const std::optional<AgentRun>& AgentController::activeRun() const
 {
     return activeRun_;
+}
+
+const QList<chat::Message>& AgentController::conversationMessages() const
+{
+    return conversationMessages_;
+}
+
+bool AgentController::hasConversation() const
+{
+    return !conversationMessages_.isEmpty();
 }
 
 void AgentController::receiveToken(const QByteArray& bytes)
@@ -186,8 +205,9 @@ void AgentController::requestDecision()
     setState(AgentRun::State::Deciding);
     recordEvent(agent::EventType::DecisionStarted,
                 QStringLiteral("Generating the next agent decision."));
-    dependencies_.generate(activeRun_->inferenceMessages, preset_,
-                           maximumDecisionTokens);
+    dependencies_.generate(
+        activeRun_->inferenceMessages, preset_,
+        qMax(minimumDecisionTokens, preset_.maxOutputTokens));
 }
 
 void AgentController::handleAction(const agent::Action& action,
@@ -327,6 +347,8 @@ void AgentController::completeRun(const QString& content)
     recordEvent(agent::EventType::AnswerStarted,
                 QStringLiteral("Preparing final answer."));
     emit finalAnswerReady(activeRun_->id, content);
+    conversationMessages_.append({chat::Role::User, activeRun_->userRequest});
+    conversationMessages_.append({chat::Role::Assistant, content});
     setState(AgentRun::State::Completed);
     runTimer_.stop();
     recordEvent(agent::EventType::Completed,

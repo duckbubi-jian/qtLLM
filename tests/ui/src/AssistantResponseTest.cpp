@@ -2,6 +2,7 @@
 #include "MainWindow.hpp"
 #include "MessageWidget.hpp"
 #include "Theme.hpp"
+#include "ToolApprovalWidget.hpp"
 
 #include <QApplication>
 #include <QColor>
@@ -31,6 +32,7 @@ class AssistantResponseTest final : public QObject
     void usesDistinctMessageLayoutsAndMarkdownStyle();
     void rendersConversationPreview();
     void reasoningOnlyResponseFallsBackToVisibleAnswer();
+    void showsInlineToolApprovalAndRedactsSecrets();
     void restoresPromptAfterGenerationError();
     void clearsVisibleAndInMemoryConversation();
 };
@@ -158,6 +160,15 @@ void AssistantResponseTest::rendersConversationPreview()
     user->setUserText(QStringLiteral("Please show a short C++ example."));
     layout->addWidget(user);
 
+    auto* approval = new ui::ToolApprovalWidget(
+        infrastructure::mcp::ToolRisk::ModifiesData,
+        QStringLiteral("filesystem.write_file"),
+        {{QStringLiteral("path"), QStringLiteral("D:/safe/example.cpp")},
+         {QStringLiteral("content"),
+          QStringLiteral("int add(int left, int right);")}},
+        &preview);
+    layout->addWidget(approval);
+
     auto* assistant =
         new ui::MessageWidget(ui::MessageWidget::Role::Assistant, &preview);
     assistant->setAssistantText(
@@ -207,6 +218,38 @@ void AssistantResponseTest::reasoningOnlyResponseFallsBackToVisibleAnswer()
             visibleAnswer->fontMetrics().height());
 }
 
+void AssistantResponseTest::showsInlineToolApprovalAndRedactsSecrets()
+{
+    ui::ToolApprovalWidget approval(
+        infrastructure::mcp::ToolRisk::Destructive,
+        QStringLiteral("filesystem.delete_file"),
+        {{QStringLiteral("path"), QStringLiteral("D:/safe/file.txt")},
+         {QStringLiteral("apiToken"), QStringLiteral("do-not-display")},
+         {QStringLiteral("nested"),
+          QJsonObject{
+              {QStringLiteral("password"), QStringLiteral("also-hidden")}}}});
+    approval.show();
+    QSignalSpy decisionSpy(&approval, &ui::ToolApprovalWidget::decisionMade);
+
+    auto* arguments = approval.findChild<QPlainTextEdit*>(
+        QStringLiteral("toolApprovalArguments"));
+    auto* allow =
+        approval.findChild<QPushButton*>(QStringLiteral("allowToolButton"));
+    QVERIFY(arguments != nullptr);
+    QVERIFY(allow != nullptr);
+    QVERIFY(
+        arguments->toPlainText().contains(QStringLiteral("D:/safe/file.txt")));
+    QVERIFY(arguments->toPlainText().contains(QStringLiteral("[redacted]")));
+    QVERIFY(
+        !arguments->toPlainText().contains(QStringLiteral("do-not-display")));
+    QVERIFY(!arguments->toPlainText().contains(QStringLiteral("also-hidden")));
+
+    allow->click();
+    QCOMPARE(decisionSpy.count(), 1);
+    QVERIFY(decisionSpy.constFirst().constFirst().toBool());
+    QVERIFY(!allow->isVisible());
+}
+
 void AssistantResponseTest::restoresPromptAfterGenerationError()
 {
     ui::MainWindow window;
@@ -236,7 +279,7 @@ void AssistantResponseTest::clearsVisibleAndInMemoryConversation()
 
     prompt->setPlainText(QStringLiteral("temporary message"));
     QVERIFY(QMetaObject::invokeMethod(&window, "sendPrompt"));
-    QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 2);
+    QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 1);
     QVERIFY(clearButton->isEnabled());
 
     clearButton->click();

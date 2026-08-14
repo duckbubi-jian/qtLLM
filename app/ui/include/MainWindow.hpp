@@ -1,7 +1,6 @@
 #pragma once
 
 #include "AgentController.hpp"
-#include "ChatController.hpp"
 #include "McpClientManager.hpp"
 #include "ModelPackage.hpp"
 #include "SettingsStore.hpp"
@@ -13,7 +12,6 @@
 #include <QString>
 
 class QLabel;
-class QComboBox;
 class QLineEdit;
 class QPlainTextEdit;
 class QPushButton;
@@ -25,6 +23,7 @@ class QVBoxLayout;
 namespace qtllm::ui
 {
 class MessageWidget;
+class ToolApprovalWidget;
 
 class MainWindow final : public QMainWindow
 {
@@ -72,7 +71,6 @@ class MainWindow final : public QMainWindow
     infrastructure::WorkerClient workerClient_;
     infrastructure::mcp::McpClientManager mcpManager_;
     infrastructure::mcp::ToolPolicy toolPolicy_;
-    application::ChatController chatController_;
     application::AgentController agentController_;
     QFutureWatcher<models::ModelPackageResult> modelVerificationWatcher_;
     QLineEdit* modelPathEdit_ = nullptr;
@@ -84,13 +82,13 @@ class MainWindow final : public QMainWindow
     QVBoxLayout* conversationLayout_ = nullptr;
     QPlainTextEdit* rawTranscript_ = nullptr;
     QPlainTextEdit* promptEdit_ = nullptr;
-    QComboBox* modeCombo_ = nullptr;
     QPushButton* clearButton_ = nullptr;
     QPushButton* sendButton_ = nullptr;
     QPushButton* stopButton_ = nullptr;
     QLabel* statusLabel_ = nullptr;
     QTimer* renderTimer_ = nullptr;
     MessageWidget* currentAssistant_ = nullptr;
+    ToolApprovalWidget* pendingToolApproval_ = nullptr;
     QString currentAssistantText_;
     QByteArray pendingUtf8_;
     models::ModelSelection pendingModelSelection_;

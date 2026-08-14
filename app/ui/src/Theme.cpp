@@ -139,6 +139,64 @@ QTextBrowser#assistantMessageBody {
     background: transparent;
     border: none;
 }
+QWidget#toolApprovalCard {
+    margin: 8px 12px;
+    background: #fffaf0;
+    border: 1px solid #e5b94f;
+    border-radius: 6px;
+}
+QWidget#toolApprovalCard[riskLevel="read"] {
+    background: #f4f8ff;
+    border-color: #8bb4e8;
+}
+QWidget#toolApprovalCard[riskLevel="destructive"] {
+    background: #fff5f4;
+    border-color: #d6655a;
+}
+QLabel#toolApprovalHeading {
+    color: #202124;
+    font-weight: 600;
+}
+QLabel#toolApprovalDescription,
+QLabel#toolApprovalArgumentLabel {
+    color: #5f6368;
+}
+QLabel#toolApprovalArgumentLabel {
+    font-size: 9pt;
+    font-weight: 600;
+}
+QLabel#toolApprovalName {
+    color: #334155;
+    font-family: "Cascadia Mono", "Consolas", monospace;
+}
+QPlainTextEdit#toolApprovalArguments {
+    padding: 6px 8px;
+    color: #334155;
+    background: #ffffff;
+    border: 1px solid #d7dbe0;
+    border-radius: 4px;
+    selection-background-color: #2563eb;
+}
+QPushButton#allowToolButton {
+    color: #ffffff;
+    background: #2563eb;
+    border-color: #2563eb;
+    font-weight: 600;
+}
+QPushButton#allowToolButton:hover {
+    background: #1d4ed8;
+    border-color: #1d4ed8;
+}
+QPushButton#rejectToolButton {
+    color: #b42318;
+}
+QLabel#toolApprovalStatus {
+    color: #b42318;
+    font-weight: 600;
+}
+QLabel#toolApprovalStatus[approved="true"] {
+    color: #18794e;
+}
 QToolButton#reasoningToggle {
     min-height: 26px;
     padding: 0 7px;

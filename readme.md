@@ -28,12 +28,15 @@ Qt-to-worker protocol and its verification steps are documented in
 
 ## Agent and MCP
 
-The Agent mode is a local, bounded execution loop. The model can propose only
-`call_tool` or `final` JSON actions; Qt validates the tool name and arguments,
-applies the local policy, and asks for confirmation before non-read-only work.
-MCP servers run as direct stdio child processes. No shell command is built from
-model output, and server stdout is treated as JSON-RPC data while stderr is
-diagnostic output.
+The conversation has one input path for normal answers and tool-assisted work.
+Internally, every request uses a local, bounded execution loop. The model can
+propose only `call_tool` or `final` JSON actions; Qt validates the tool name and
+arguments and applies the local policy. Calls that require approval appear as
+inline conversation cards with a risk explanation, redacted arguments, and
+one-time Allow or Reject actions. Unknown tools are treated as data-modifying
+operations. MCP servers run as direct stdio child processes. No shell command
+is built from model output, and server stdout is treated as JSON-RPC data while
+stderr is diagnostic output.
 
 To configure servers, copy [the example](docs/mcp-servers.example.json) to
 `mcp-servers.json` beside the application and replace the absolute executable

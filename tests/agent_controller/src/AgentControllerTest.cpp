@@ -14,6 +14,7 @@ class AgentControllerTest final : public QObject
     void waitsForApprovalAndHonorsRejection();
     void repairsOnlyOneInvalidAction();
     void cancelsAndIgnoresLateResponses();
+    void keepsConversationHistoryAndClearsIt();
 };
 
 agent::ToolDefinition echoTool()
@@ -38,7 +39,7 @@ void AgentControllerTest::completesMultiStepToolRun()
             {
                 ++generationCount;
                 lastMessages = messages;
-                QCOMPARE(maxTokens, 256);
+                QCOMPARE(maxTokens, 4'096);
             },
             [] {},
             [&](const QString& name, const QJsonObject& arguments)
@@ -91,6 +92,7 @@ void AgentControllerTest::completesMultiStepToolRun()
     QCOMPARE(finalSpy.at(0).at(1).toString(), QStringLiteral("Task complete"));
     QCOMPARE(finishedSpy.count(), 1);
     QVERIFY(!controller.hasActiveRun());
+    QCOMPARE(controller.conversationMessages().size(), 2);
 }
 
 void AgentControllerTest::waitsForApprovalAndHonorsRejection()
@@ -190,6 +192,40 @@ void AgentControllerTest::cancelsAndIgnoresLateResponses()
     controller.completeGeneration(false);
     QCOMPARE(controller.state(), application::AgentRun::State::Cancelled);
     QCOMPARE(finalSpy.count(), 0);
+}
+
+void AgentControllerTest::keepsConversationHistoryAndClearsIt()
+{
+    QList<chat::Message> generatedMessages;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>& messages,
+                const models::InferencePreset&, int)
+            { generatedMessages = messages; },
+            [] {}, [](const QString&, const QJsonObject&)
+            { return QStringLiteral("unused"); }, [](const QString&) {},
+            [](const QString&, const QJsonObject&, QString&) { return true; },
+            [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+    QSignalSpy clearedSpy(&controller,
+                          &application::AgentController::conversationCleared);
+
+    QVERIFY(controller.start(QStringLiteral("First question"), {}, {}));
+    controller.receiveToken(
+        QByteArrayLiteral(R"({"action":"final","content":"First answer"})"));
+    controller.completeGeneration(false);
+    QVERIFY(controller.hasConversation());
+
+    QVERIFY(controller.start(QStringLiteral("Follow-up"), {}, {}));
+    QCOMPARE(generatedMessages.size(), 4);
+    QCOMPARE(generatedMessages.at(1).content, QStringLiteral("First question"));
+    QCOMPARE(generatedMessages.at(2).content, QStringLiteral("First answer"));
+    QCOMPARE(generatedMessages.at(3).content, QStringLiteral("Follow-up"));
+    controller.cancel();
+
+    QVERIFY(controller.clearConversation());
+    QVERIFY(!controller.hasConversation());
+    QCOMPARE(clearedSpy.count(), 1);
 }
 }  // namespace qtllm::tests
 

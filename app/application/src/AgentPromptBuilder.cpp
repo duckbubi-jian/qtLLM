@@ -35,10 +35,13 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools)
 }  // namespace
 
 QList<chat::Message> AgentPromptBuilder::initialMessages(
-    const QString& userRequest, const QList<agent::ToolDefinition>& tools)
+    const QString& userRequest, const QList<agent::ToolDefinition>& tools,
+    const QList<chat::Message>& conversationHistory)
 {
-    return {{chat::Role::System, systemPrompt(tools)},
-            {chat::Role::User, userRequest.trimmed()}};
+    QList<chat::Message> messages{{chat::Role::System, systemPrompt(tools)}};
+    messages.append(conversationHistory);
+    messages.append({chat::Role::User, userRequest.trimmed()});
+    return messages;
 }
 
 chat::Message AgentPromptBuilder::toolResultMessage(

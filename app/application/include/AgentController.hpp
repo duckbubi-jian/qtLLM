@@ -51,10 +51,13 @@ class AgentController final : public QObject
                const QList<agent::ToolDefinition>& tools);
     void cancel();
     void resolveApproval(bool approved);
+    bool clearConversation();
 
     [[nodiscard]] AgentRun::State state() const;
     [[nodiscard]] bool hasActiveRun() const;
     [[nodiscard]] const std::optional<AgentRun>& activeRun() const;
+    [[nodiscard]] const QList<chat::Message>& conversationMessages() const;
+    [[nodiscard]] bool hasConversation() const;
 
    public slots:
     void receiveToken(const QByteArray& bytes);
@@ -72,6 +75,7 @@ class AgentController final : public QObject
     void runFinished(const QString& runId,
                      qtllm::application::AgentRun::State state,
                      const QString& code, const QString& message);
+    void conversationCleared();
 
    private:
     static bool isTerminal(AgentRun::State state);
@@ -92,6 +96,7 @@ class AgentController final : public QObject
     std::optional<AgentRun> activeRun_;
     models::InferencePreset preset_;
     QList<agent::ToolDefinition> availableTools_;
+    QList<chat::Message> conversationMessages_;
     std::optional<agent::Action> pendingApproval_;
     QByteArray decisionBytes_;
     QTimer runTimer_;

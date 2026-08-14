@@ -222,6 +222,12 @@ void MainWindow::finishGeneration(bool cancelled, const QJsonObject& metrics)
 
 void MainWindow::showError(const QString& code, const QString& message)
 {
+    QString retryPrompt;
+    if (hasPendingHistoryMessage_ && !conversationMessages_.isEmpty() &&
+        conversationMessages_.constLast().role == chat::Role::User)
+    {
+        retryPrompt = conversationMessages_.constLast().content;
+    }
     statusLabel_->setText(tr("Error: %1").arg(message));
     if (currentAssistant_ != nullptr)
     {
@@ -233,6 +239,11 @@ void MainWindow::showError(const QString& code, const QString& message)
         currentAssistant_ = nullptr;
     }
     discardPendingHistoryMessage();
+    if (!retryPrompt.isEmpty() && promptEdit_->toPlainText().isEmpty())
+    {
+        promptEdit_->setPlainText(retryPrompt);
+        promptEdit_->setFocus();
+    }
     qWarning().noquote() << code << message;
 }
 

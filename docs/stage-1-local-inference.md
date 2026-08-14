@@ -60,8 +60,8 @@ CPU 发布包不依赖 CUDA。GPU 版无法启动时，优先检查驱动、CUDA
 qtllm-worker.exe `
   --model D:\qtLLM-models\deepseek-r1-distill-qwen-7b-q4km\model.gguf `
   --prompt "请用三句话说明什么是本地大模型" `
-  --context-size 8192 `
-  --max-tokens 1024 `
+  --context-size 32768 `
+  --max-tokens 4096 `
   --threads 8
 ```
 
@@ -73,9 +73,17 @@ qtllm-worker.exe `
 
 CPU runtime 使用 `--gpu-layers 0`。CUDA runtime 默认使用
 `--gpu-layers -1` 将所有可卸载层放到 GPU 0；没有可用 CUDA 设备时自动回退
-CPU。模型权重仍放在仓库外，一个模型包只包含一个逻辑模型。当前单卡推荐模型为
-`DeepSeek-R1-Distill-Qwen-7B Q4_K_M`，模型目录例如
-`D:\qtLLM-models\deepseek-r1-distill-qwen-7b-q4km`。
+CPU。模型权重仍放在仓库外，一个模型包只包含一个逻辑模型。当前轻量默认模型为
+`DeepSeek-R1-Distill-Qwen-7B Q4_K_M`；配备 24 GB 显存时可选择质量更高、速度
+较低的 `DeepSeek-R1-Distill-Qwen-14B Q4_K_M`。模型目录例如
+`D:\qtLLM-models\deepseek-r1-distill-qwen-7b-q4km` 和
+`D:\qtLLM-models\deepseek-r1-distill-qwen-14b-q4km`。
+
+该 7B 模型在 RTX 3090 上的产品默认值为 32768 token 上下文，并为单次回答
+预留 4096 token。系统提示词、历史消息、本次输入和回答预留共同占用上下文。
+worker 只会按完整问答轮次裁剪旧历史，绝不会截断最新用户输入；如果最新输入仍然
+放不下，会返回实际 prompt token、回答预留和上下文上限，要求用户缩短输入、降低
+回答上限或增大上下文。
 
 ## 验证记录
 
@@ -104,14 +112,34 @@ CPU。模型权重仍放在仓库外，一个模型包只包含一个逻辑模�
 | 模型 | DeepSeek-R1-Distill-Qwen-7B Q4_K_M |
 | 模型 SHA-256 | `731ece8d06dc7eda6f6572997feb9ee1258db0784827e642909d9b565641937b` |
 | 构建环境 | CUDA 11.8、Visual Studio 2019/v142 |
-| 上下文长度 | 8192 |
+| 上下文长度 | 32768 |
 | 推理设备 | GPU 0，RTX 3090 24 GB |
-| 模型加载时间 | 约 2.28 秒 |
-| Prompt 计算时间 | 约 38 ms |
-| 首 token 延迟 | 约 39 ms |
-| 生成速度 | 约 132.8 token/s |
-| GPU 0 峰值显存 | 约 5828 MiB |
+| 模型加载时间 | 约 2.31 秒 |
+| 首 token 延迟 | 约 42 ms |
+| 生成速度 | 约 119.77 token/s |
+| GPU 0 基线 / 峰值显存 | 1239 / 7765 MiB |
+| GPU 0 新增峰值显存 | 约 6526 MiB |
+| Worker 峰值工作集 / 私有内存 | 4552.8 / 7127.7 MiB |
 | GPU 1 显存 | 0 MiB |
+
+2026-08-14 使用同一台开发机和 32K 产品配置验证了 14B 增强包。该次短提示
+最多允许生成 512 token，模型自行在 298 token 结束。
+
+| 项目 | 实测值 |
+| --- | --- |
+| 模型 | DeepSeek-R1-Distill-Qwen-14B Q4_K_M |
+| 模型 SHA-256 | `0b319bd0572f2730bfe11cc751defe82045fad5085b4e60591ac2cd2d9633181` |
+| 构建环境 | CUDA 11.8、Visual Studio 2019/v142 |
+| 上下文长度 | 32768 |
+| 推理设备 | GPU 0，RTX 3090 24 GB |
+| 模型加载时间 | 约 4.04 秒 |
+| Prompt token / 生成 token | 16 / 298 |
+| Prompt 计算 / 首 token 延迟 | 49 / 51 ms |
+| 生成速度 | 约 65.96 token/s |
+| GPU 0 基线 / 峰值显存 | 1155 / 16033 MiB |
+| GPU 0 新增峰值显存 | 约 14878 MiB |
+| Worker 峰值工作集 / 私有内存 | 8543.4 / 15457.4 MiB |
+| GPU 1 峰值显存 | 0 MiB |
 
 ## 阶段验收
 

@@ -26,6 +26,8 @@ must not copy these NVIDIA DLLs into the application directory.
 See `examples/model-package` for the package layout and
 `docs/model-package-spec.md` for validation rules.
 
-`models/deepseek-r1-distill-qwen-7b-q4km` contains the pinned metadata used for
-the 7B CUDA development baseline. It contains no model weight and must be
-combined with a hash-verified `model.gguf` only outside the source repository.
+`models/deepseek-r1-distill-qwen-7b-q4km` and
+`models/deepseek-r1-distill-qwen-14b-q4km` contain the pinned metadata used for
+the CUDA development baselines. They contain no model weights and must each be
+combined with their hash-verified `model.gguf` only outside the source
+repository.

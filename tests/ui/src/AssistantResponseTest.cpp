@@ -20,6 +20,7 @@ class AssistantResponseTest final : public QObject
     void excludesIncompleteReasoningFromHistory();
     void userMessageDisplaysItsText();
     void reasoningOnlyResponseFallsBackToVisibleAnswer();
+    void restoresPromptAfterGenerationError();
     void clearsVisibleAndInMemoryConversation();
 };
 
@@ -107,6 +108,19 @@ void AssistantResponseTest::reasoningOnlyResponseFallsBackToVisibleAnswer()
     QVERIFY(visibleAnswer != nullptr);
     QVERIFY(visibleAnswer->viewport()->height() >=
             visibleAnswer->fontMetrics().height());
+}
+
+void AssistantResponseTest::restoresPromptAfterGenerationError()
+{
+    ui::MainWindow window;
+    auto* prompt =
+        window.findChild<QPlainTextEdit*>(QStringLiteral("promptEditor"));
+    QVERIFY(prompt != nullptr);
+
+    const auto originalPrompt = QStringLiteral("keep this input for retry");
+    prompt->setPlainText(originalPrompt);
+    QVERIFY(QMetaObject::invokeMethod(&window, "sendPrompt"));
+    QCOMPARE(prompt->toPlainText(), originalPrompt);
 }
 
 void AssistantResponseTest::clearsVisibleAndInMemoryConversation()

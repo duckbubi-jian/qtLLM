@@ -168,8 +168,10 @@ bool preparePrompt(const llama_model* model, const llama_vocab* vocabulary,
 
     errorMessage =
         QStringLiteral(
-            "The latest message (%1 prompt tokens) plus the %2-token "
-            "response reserve exceeds the %3-token context window.")
+            "The latest user input cannot fit without truncation: the "
+            "formatted prompt uses %1 tokens, the response reserves %2 "
+            "tokens, and the context window is %3 tokens. Shorten the input, "
+            "reduce the response limit, or increase the context size.")
             .arg(promptTokens.size())
             .arg(options.maxTokens)
             .arg(options.contextSize);

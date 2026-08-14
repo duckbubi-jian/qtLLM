@@ -264,7 +264,7 @@ error
   ],
   "minimumRuntimeVersion": "0.1.0",
   "recommendedRamGb": 16,
-  "defaultContextSize": 8192,
+  "defaultContextSize": 32768,
   "presetFile": "preset.json",
   "licenseFile": "LICENSE.txt"
 }

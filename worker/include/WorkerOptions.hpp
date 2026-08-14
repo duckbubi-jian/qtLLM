@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ChatMessage.hpp"
+#include "InferenceDefaults.hpp"
 
 #include <QList>
 #include <QString>
@@ -17,8 +18,8 @@ struct WorkerOptions
     QString prompt;
     QString systemPrompt = QStringLiteral("You are a helpful assistant.");
     QList<chat::Message> messages;
-    int contextSize = 8192;
-    int maxTokens = 1024;
+    int contextSize = inference::defaultContextSize;
+    int maxTokens = inference::defaultMaxOutputTokens;
     int threads = 0;
     int gpuLayers = -1;
     int topK = 40;

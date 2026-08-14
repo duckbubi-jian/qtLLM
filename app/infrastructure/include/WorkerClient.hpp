@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ChatMessage.hpp"
+#include "InferenceDefaults.hpp"
 #include "JsonLineProtocol.hpp"
 
 #include <QByteArray>
@@ -35,14 +36,16 @@ class WorkerClient final : public QObject
     void stop();
     void loadModel(const QString& modelPath, int gpuLayers = -1);
     void unloadModel();
-    void generate(const QList<chat::Message>& messages, int contextSize = 8192,
-                  int maxTokens = 1024, int threads = 0,
-                  float temperature = 0.6F, float topP = 0.95F, int topK = 40,
-                  float repeatPenalty = 1.05F);
+    void generate(const QList<chat::Message>& messages,
+                  int contextSize = inference::defaultContextSize,
+                  int maxTokens = inference::defaultMaxOutputTokens,
+                  int threads = 0, float temperature = 0.6F, float topP = 0.95F,
+                  int topK = 40, float repeatPenalty = 1.05F);
     void generate(const QString& prompt, const QString& systemPrompt,
-                  int contextSize = 8192, int maxTokens = 1024, int threads = 0,
-                  float temperature = 0.6F, float topP = 0.95F, int topK = 40,
-                  float repeatPenalty = 1.05F);
+                  int contextSize = inference::defaultContextSize,
+                  int maxTokens = inference::defaultMaxOutputTokens,
+                  int threads = 0, float temperature = 0.6F, float topP = 0.95F,
+                  int topK = 40, float repeatPenalty = 1.05F);
     void cancel();
 
     [[nodiscard]] State state() const;

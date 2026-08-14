@@ -392,6 +392,46 @@ void WorkerProcessTest::modelLifecycle()
                 response.payload.value(QStringLiteral("message")).toString()));
         }
     }
+
+    auto oversizedInputPayload = generationPayload({}, 64);
+    oversizedInputPayload.remove(QStringLiteral("prompt"));
+    oversizedInputPayload.remove(QStringLiteral("systemPrompt"));
+    oversizedInputPayload.insert(QStringLiteral("contextSize"), 256);
+    oversizedInputPayload.insert(
+        QStringLiteral("messages"),
+        QJsonArray{
+            QJsonObject{{QStringLiteral("role"), QStringLiteral("system")},
+                        {QStringLiteral("content"),
+                         QStringLiteral("You are a concise assistant.")}},
+            QJsonObject{
+                {QStringLiteral("role"), QStringLiteral("user")},
+                {QStringLiteral("content"),
+                 QStringLiteral("oversized latest input ").repeated(1000)}}});
+    QVERIFY2(send(protocol::makeMessage(
+                      QStringLiteral("generation-oversized"),
+                      QString::fromLatin1(protocol::message_type::generate),
+                      oversizedInputPayload),
+                  errorMessage),
+             qPrintable(errorMessage));
+    QVERIFY2(
+        expect(QStringLiteral("generation-oversized"),
+               QString::fromLatin1(protocol::message_type::generationStarted),
+               response, errorMessage, 120000),
+        qPrintable(errorMessage));
+    QVERIFY2(expect(QStringLiteral("generation-oversized"),
+                    QString::fromLatin1(protocol::message_type::error),
+                    response, errorMessage, 120000),
+             qPrintable(errorMessage));
+    QCOMPARE(response.payload.value(QStringLiteral("code")).toString(),
+             QStringLiteral("generation_failed"));
+    const auto overflowMessage =
+        response.payload.value(QStringLiteral("message")).toString();
+    QVERIFY2(overflowMessage.contains(QStringLiteral("without truncation")),
+             qPrintable(overflowMessage));
+    QVERIFY2(overflowMessage.contains(QStringLiteral("64 tokens")),
+             qPrintable(overflowMessage));
+    QVERIFY2(overflowMessage.contains(QStringLiteral("256 tokens")),
+             qPrintable(overflowMessage));
 }
 
 void WorkerProcessTest::cleanupTestCase()

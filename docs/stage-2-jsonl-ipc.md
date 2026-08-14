@@ -69,6 +69,10 @@ worker 响应或事件：
 始终保留 system 消息和最新用户问题。`generation_finished.discardedMessages` 返回本次
 裁剪的消息数量。旧版 `prompt` 和 `systemPrompt` 载荷仍作为单轮兼容格式接受。
 
+当前 7B/RTX 3090 默认预算为 32768 token 上下文和 4096 token 最大输出。若裁掉
+全部可移除历史后，最新用户输入加输出预留仍超过窗口，worker 返回
+`generation_failed`，不会静默截断最新输入。
+
 ## 构建与普通测试
 
 使用 MSVC x64 开发环境构建后运行：

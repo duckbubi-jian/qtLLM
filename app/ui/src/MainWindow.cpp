@@ -16,7 +16,9 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QShortcut>
 #include <QStatusBar>
+#include <QStyle>
 #include <QTabWidget>
 #include <QTextCursor>
 #include <QTimer>
@@ -31,7 +33,7 @@ namespace qtllm::ui
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
 {
     setWindowTitle(tr("qtLLM"));
-    resize(980, 700);
+    resize(1080, 760);
     setMinimumSize(720, 520);
 
     buildUi();
@@ -340,15 +342,23 @@ void MainWindow::showError(const QString& code, const QString& message)
 void MainWindow::buildUi()
 {
     auto* central = new QWidget(this);
+    central->setObjectName(QStringLiteral("centralView"));
     auto* layout = new QVBoxLayout(central);
     layout->setContentsMargins(16, 16, 16, 12);
-    layout->setSpacing(10);
+    layout->setSpacing(9);
 
-    auto* modelRow = new QHBoxLayout;
+    auto* modelBar = new QWidget(central);
+    modelBar->setObjectName(QStringLiteral("modelBar"));
+    auto* modelRow = new QHBoxLayout(modelBar);
+    modelRow->setContentsMargins(0, 0, 0, 0);
+    modelRow->setSpacing(8);
     modelPathEdit_ = new QLineEdit(central);
+    modelPathEdit_->setObjectName(QStringLiteral("modelPathEdit"));
     modelPathEdit_->setPlaceholderText(tr("Model package or local GGUF path"));
     browseButton_ = new QPushButton(tr("Browse"), central);
     loadButton_ = new QPushButton(tr("Load"), central);
+    browseButton_->setIcon(style()->standardIcon(QStyle::SP_DirOpenIcon));
+    loadButton_->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
     browseButton_->setToolTip(tr("Select a model package or GGUF file"));
     auto* browseMenu = new QMenu(browseButton_);
     auto* packageAction = browseMenu->addAction(tr("Model package folder"));
@@ -357,20 +367,24 @@ void MainWindow::buildUi()
     modelRow->addWidget(modelPathEdit_, 1);
     modelRow->addWidget(browseButton_);
     modelRow->addWidget(loadButton_);
-    layout->addLayout(modelRow);
+    layout->addWidget(modelBar);
 
     modelInfoLabel_ = new QLabel(tr("Model not checked"), central);
+    modelInfoLabel_->setObjectName(QStringLiteral("modelInfoLabel"));
     modelInfoLabel_->setWordWrap(true);
     layout->addWidget(modelInfoLabel_);
 
     transcriptTabs_ = new QTabWidget(central);
+    transcriptTabs_->setObjectName(QStringLiteral("transcriptTabs"));
     conversationScroll_ = new QScrollArea(transcriptTabs_);
+    conversationScroll_->setObjectName(QStringLiteral("conversationScroll"));
     conversationScroll_->setWidgetResizable(true);
     conversationScroll_->setFrameShape(QFrame::NoFrame);
     auto* conversationContent = new QWidget(conversationScroll_);
+    conversationContent->setObjectName(QStringLiteral("conversationContent"));
     conversationLayout_ = new QVBoxLayout(conversationContent);
-    conversationLayout_->setContentsMargins(6, 6, 6, 6);
-    conversationLayout_->setSpacing(8);
+    conversationLayout_->setContentsMargins(8, 8, 8, 8);
+    conversationLayout_->setSpacing(2);
     conversationLayout_->addStretch();
     conversationScroll_->setWidget(conversationContent);
 
@@ -384,24 +398,39 @@ void MainWindow::buildUi()
     transcriptTabs_->addTab(rawTranscript_, tr("Raw"));
     layout->addWidget(transcriptTabs_, 1);
 
-    promptEdit_ = new QPlainTextEdit(central);
+    auto* promptComposer = new QWidget(central);
+    promptComposer->setObjectName(QStringLiteral("promptComposer"));
+    auto* promptLayout = new QVBoxLayout(promptComposer);
+    promptLayout->setContentsMargins(4, 4, 4, 4);
+    promptLayout->setSpacing(0);
+
+    promptEdit_ = new QPlainTextEdit(promptComposer);
     promptEdit_->setObjectName(QStringLiteral("promptEditor"));
-    promptEdit_->setPlaceholderText(tr("Message"));
-    promptEdit_->setMaximumHeight(110);
-    layout->addWidget(promptEdit_);
+    promptEdit_->setPlaceholderText(tr("Write a message"));
+    promptEdit_->setMinimumHeight(64);
+    promptEdit_->setMaximumHeight(130);
+    promptLayout->addWidget(promptEdit_);
 
     auto* actionRow = new QHBoxLayout;
-    clearButton_ = new QPushButton(tr("Clear"), central);
+    actionRow->setContentsMargins(6, 2, 4, 4);
+    actionRow->setSpacing(8);
+    clearButton_ = new QPushButton(tr("Clear"), promptComposer);
     clearButton_->setObjectName(QStringLiteral("clearConversationButton"));
+    clearButton_->setIcon(style()->standardIcon(QStyle::SP_DialogResetButton));
     clearButton_->setToolTip(tr("Clear the current conversation"));
     actionRow->addWidget(clearButton_);
     actionRow->addStretch();
-    stopButton_ = new QPushButton(tr("Stop"), central);
-    sendButton_ = new QPushButton(tr("Send"), central);
+    stopButton_ = new QPushButton(tr("Stop"), promptComposer);
+    stopButton_->setObjectName(QStringLiteral("stopButton"));
+    stopButton_->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
+    sendButton_ = new QPushButton(tr("Send"), promptComposer);
+    sendButton_->setObjectName(QStringLiteral("primaryActionButton"));
+    sendButton_->setIcon(style()->standardIcon(QStyle::SP_ArrowForward));
     sendButton_->setDefault(true);
     actionRow->addWidget(stopButton_);
     actionRow->addWidget(sendButton_);
-    layout->addLayout(actionRow);
+    promptLayout->addLayout(actionRow);
+    layout->addWidget(promptComposer);
 
     renderTimer_ = new QTimer(this);
     renderTimer_->setSingleShot(true);
@@ -424,6 +453,13 @@ void MainWindow::buildUi()
             &MainWindow::stopGeneration);
     connect(clearButton_, &QPushButton::clicked, this,
             &MainWindow::clearConversation);
+    auto* sendShortcut =
+        new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), this);
+    connect(sendShortcut, &QShortcut::activated, this,
+            [this]
+            {
+                if (sendButton_->isEnabled()) sendPrompt();
+            });
     connect(modelPathEdit_, &QLineEdit::textChanged, this,
             [this]
             {

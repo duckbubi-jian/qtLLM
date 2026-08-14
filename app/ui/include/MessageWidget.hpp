@@ -4,6 +4,7 @@
 #include <QWidget>
 
 class QLabel;
+class QResizeEvent;
 class QTextBrowser;
 class QToolButton;
 class QVBoxLayout;
@@ -26,7 +27,12 @@ class MessageWidget final : public QWidget
     void setUserText(const QString& text);
     void setAssistantText(const QString& rawText, bool final);
 
+   protected:
+    void resizeEvent(QResizeEvent* event) override;
+
    private:
+    void updateUserBubbleWidth();
+
     Role role_;
     QLabel* roleLabel_ = nullptr;
     QToolButton* reasoningToggle_ = nullptr;

@@ -2,7 +2,10 @@
 #include "SettingsStore.hpp"
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
+#include <QDateTime>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QSignalSpy>
 #include <QTemporaryDir>
@@ -16,6 +19,7 @@ class WorkerClientTest final : public QObject
 
    private slots:
     void storesLastModelPathInExplicitIniFile();
+    void cachesVerifiedModelFingerprint();
     void defaultsToApplicationDirectory();
     void startsHandshakesAndStopsWorker();
 };
@@ -43,6 +47,40 @@ void WorkerClientTest::defaultsToApplicationDirectory()
     const infrastructure::SettingsStore settings;
     QCOMPARE(settings.filePath(), QDir(QCoreApplication::applicationDirPath())
                                       .filePath(QStringLiteral("qtLLM.ini")));
+}
+
+void WorkerClientTest::cachesVerifiedModelFingerprint()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto settingsPath =
+        QDir(directory.path()).filePath(QStringLiteral("qtLLM.ini"));
+    const auto modelPath =
+        QDir(directory.path()).filePath(QStringLiteral("model.gguf"));
+    const auto contents = QByteArrayLiteral("GGUF-cache-test");
+    QFile model(modelPath);
+    QVERIFY(model.open(QIODevice::WriteOnly));
+    QCOMPARE(model.write(contents), contents.size());
+    model.close();
+    const auto sha256 = QString::fromLatin1(
+        QCryptographicHash::hash(contents, QCryptographicHash::Sha256).toHex());
+
+    infrastructure::SettingsStore settings(settingsPath);
+    QVERIFY(!settings.isModelFileVerified(modelPath, contents.size(), sha256));
+    QVERIFY(settings.setModelFileVerified(modelPath, contents.size(), sha256));
+    QVERIFY(settings.isModelFileVerified(modelPath, contents.size(), sha256));
+    QVERIFY(!settings.isModelFileVerified(modelPath, contents.size(),
+                                          QString(64, QLatin1Char('0'))));
+    QVERIFY(
+        !settings.isModelFileVerified(modelPath, contents.size() + 1, sha256));
+
+    QVERIFY(model.open(QIODevice::ReadWrite));
+    QVERIFY(model.seek(5));
+    QCOMPARE(model.write("X", 1), qint64{1});
+    QVERIFY(model.setFileTime(QDateTime::currentDateTimeUtc().addSecs(2),
+                              QFileDevice::FileModificationTime));
+    model.close();
+    QVERIFY(!settings.isModelFileVerified(modelPath, contents.size(), sha256));
 }
 
 void WorkerClientTest::startsHandshakesAndStopsWorker()

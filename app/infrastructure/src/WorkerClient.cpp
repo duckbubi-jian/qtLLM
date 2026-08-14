@@ -72,6 +72,7 @@ void WorkerClient::loadModel(const QString& modelPath, int gpuLayers)
              QStringLiteral("Worker is not ready to load a model."));
         return;
     }
+    modelPath_.clear();
     setState(State::LoadingModel);
     loadRequestId_ =
         send(QString::fromLatin1(protocol::message_type::loadModel),

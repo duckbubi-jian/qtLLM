@@ -20,6 +20,25 @@ target_link_libraries(qtllm-protocol-tests
 add_test(NAME protocol_jsonl COMMAND qtllm-protocol-tests)
 
 qtllm_collect_module_files(
+    "${CMAKE_CURRENT_SOURCE_DIR}/models"
+    model_test_sources
+    model_test_headers
+    model_test_forms
+)
+
+qt_add_executable(qtllm-model-tests
+    ${model_test_sources}
+    ${model_test_headers}
+    ${model_test_forms}
+)
+target_link_libraries(qtllm-model-tests
+    PRIVATE
+        Qt6::Test
+        qtllm_shared
+)
+add_test(NAME model_package_validation COMMAND qtllm-model-tests)
+
+qtllm_collect_module_files(
     "${CMAKE_CURRENT_SOURCE_DIR}/ui"
     ui_test_sources
     ui_test_headers

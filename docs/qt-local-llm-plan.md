@@ -159,11 +159,13 @@ qtLLM/
 ### 阶段二：工程骨架（第 2 周）
 
 当前状态：版本 2 JSONL IPC、持久 worker、Qt `QProcess` 客户端、模型加载、
-流式 token、取消、结构化多轮历史与上下文自动裁剪已完成。协议单元测试和 worker
-进程集成测试已接入 CTest；本地 DeepSeek 1.5B Q4_K_M 已验证取消后继续生成、
-多轮消息和真实 tokenizer 裁剪。最后成功加载的模型路径已持久化到运行目录；日志、
-其余设置持久化、worker 崩溃自动恢复和 CI 仍待补充。操作与协议
-边界见 [阶段二 JSONL IPC](stage-2-jsonl-ipc.md)。
+流式 token、取消、结构化多轮历史与上下文自动裁剪已完成。模型包目录和裸 GGUF
+两种加载模式、后台 SHA-256、校验缓存及推荐 preset 应用已经接入。协议单元测试和
+worker 进程集成测试已接入 CTest；本地 DeepSeek 1.5B Q4_K_M 已验证取消后继续
+生成、多轮消息和真实 tokenizer 裁剪，14B Q4_K_M 已通过正式包哈希验证。最后
+成功加载的模型选择路径已持久化到运行目录；日志、其余设置持久化、模型包签名、
+worker 崩溃自动恢复和 CI 仍待补充。操作与协议边界见
+[阶段二 JSONL IPC](stage-2-jsonl-ipc.md)。
 
 任务：
 

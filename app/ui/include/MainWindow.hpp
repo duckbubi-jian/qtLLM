@@ -1,10 +1,12 @@
 #pragma once
 
 #include "ChatMessage.hpp"
+#include "ModelPackage.hpp"
 #include "SettingsStore.hpp"
 #include "WorkerClient.hpp"
 
 #include <QByteArray>
+#include <QFutureWatcher>
 #include <QList>
 #include <QMainWindow>
 #include <QString>
@@ -30,8 +32,10 @@ class MainWindow final : public QMainWindow
     explicit MainWindow(QWidget* parent = nullptr);
 
    private slots:
-    void selectModel();
+    void selectModelPackage();
+    void selectGgufModel();
     void loadSelectedModel();
+    void finishModelPackageVerification();
     void sendPrompt();
     void stopGeneration();
     void clearConversation();
@@ -51,10 +55,17 @@ class MainWindow final : public QMainWindow
     void flushPendingUtf8(bool final = false);
     void discardPendingHistoryMessage();
     void updateClearButton();
+    void beginModelLoad(models::ModelSelection selection);
+    [[nodiscard]] bool modelHashesAreCached(
+        const models::ModelSelection& selection) const;
+    bool cacheVerifiedModel(const models::ModelSelection& selection) const;
+    void updateModelInformation(const models::ModelSelection& selection);
 
     infrastructure::SettingsStore settingsStore_;
     infrastructure::WorkerClient workerClient_;
+    QFutureWatcher<models::ModelPackageResult> modelVerificationWatcher_;
     QLineEdit* modelPathEdit_ = nullptr;
+    QLabel* modelInfoLabel_ = nullptr;
     QPushButton* browseButton_ = nullptr;
     QPushButton* loadButton_ = nullptr;
     QTabWidget* transcriptTabs_ = nullptr;
@@ -71,6 +82,9 @@ class MainWindow final : public QMainWindow
     QList<chat::Message> conversationMessages_;
     QString currentAssistantText_;
     QByteArray pendingUtf8_;
+    models::ModelSelection pendingModelSelection_;
+    models::ModelSelection activeModelSelection_;
     bool hasPendingHistoryMessage_ = false;
+    bool verifyingModelPackage_ = false;
 };
 }  // namespace qtllm::ui

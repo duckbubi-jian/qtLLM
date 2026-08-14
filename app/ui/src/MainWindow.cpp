@@ -4,11 +4,14 @@
 #include "MessageWidget.hpp"
 
 #include <QCoreApplication>
+#include <QDir>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFontDatabase>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
@@ -19,6 +22,9 @@
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QWidget>
+#include <QtConcurrent/QtConcurrentRun>
+
+#include <utility>
 
 namespace qtllm::ui
 {
@@ -37,18 +43,25 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
         &workerClient_, &infrastructure::WorkerClient::modelLoaded, this,
         [this](const QString& path, qint64 milliseconds, const QString& device)
         {
+            Q_UNUSED(path)
+            activeModelSelection_ = pendingModelSelection_;
             statusLabel_->setText(
                 tr("Model ready on %1 - loaded in %2 ms")
                     .arg(device.isEmpty() ? tr("CPU") : device)
                     .arg(milliseconds));
-            modelPathEdit_->setText(path);
-            if (!settingsStore_.setLastModelPath(path))
+            modelPathEdit_->setText(activeModelSelection_.selectedPath);
+            updateModelInformation(activeModelSelection_);
+            if (!settingsStore_.setLastModelPath(
+                    activeModelSelection_.selectedPath))
             {
                 statusLabel_->setText(
                     tr("Model ready, but the model path could not be "
                        "saved beside the application."));
             }
         });
+    connect(&modelVerificationWatcher_,
+            &QFutureWatcher<models::ModelPackageResult>::finished, this,
+            &MainWindow::finishModelPackageVerification);
     connect(&workerClient_, &infrastructure::WorkerClient::tokenReceived, this,
             &MainWindow::appendToken);
     connect(&workerClient_, &infrastructure::WorkerClient::generationFinished,
@@ -62,17 +75,82 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent)
     workerClient_.start();
 }
 
-void MainWindow::selectModel()
+void MainWindow::selectModelPackage()
 {
+    const QFileInfo current(modelPathEdit_->text());
+    const auto initialDirectory =
+        current.isDir() ? current.absoluteFilePath() : current.absolutePath();
+    const auto selected = QFileDialog::getExistingDirectory(
+        this, tr("Select model package"), initialDirectory,
+        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+    if (!selected.isEmpty()) modelPathEdit_->setText(selected);
+}
+
+void MainWindow::selectGgufModel()
+{
+    const QFileInfo current(modelPathEdit_->text());
     const auto selected = QFileDialog::getOpenFileName(
-        this, tr("Select GGUF model"), modelPathEdit_->text(),
+        this, tr("Select GGUF model"), current.absoluteFilePath(),
         tr("GGUF models (*.gguf);;All files (*)"));
     if (!selected.isEmpty()) modelPathEdit_->setText(selected);
 }
 
 void MainWindow::loadSelectedModel()
 {
-    workerClient_.loadModel(modelPathEdit_->text().trimmed());
+    if (verifyingModelPackage_) return;
+
+    auto result =
+        models::ModelPackage::inspect(modelPathEdit_->text().trimmed(),
+                                      QCoreApplication::applicationVersion());
+    if (!result.succeeded())
+    {
+        modelInfoLabel_->setText(tr("Invalid model selection"));
+        showError(result.errorCode, result.errorMessage);
+        return;
+    }
+
+    if (result.selection.descriptor.origin == models::ModelOrigin::DirectGguf)
+    {
+        beginModelLoad(std::move(result.selection));
+        return;
+    }
+
+    if (modelHashesAreCached(result.selection))
+    {
+        result.selection.descriptor.verificationStatus =
+            models::VerificationStatus::Verified;
+        beginModelLoad(std::move(result.selection));
+        return;
+    }
+
+    pendingModelSelection_ = result.selection;
+    verifyingModelPackage_ = true;
+    modelInfoLabel_->setText(tr("Verifying package - %1")
+                                 .arg(result.selection.descriptor.displayName));
+    updateState(workerClient_.state());
+    modelVerificationWatcher_.setFuture(QtConcurrent::run(
+        [selection = std::move(result.selection)]() mutable
+        { return models::ModelPackage::verify(std::move(selection)); }));
+}
+
+void MainWindow::finishModelPackageVerification()
+{
+    auto result = modelVerificationWatcher_.result();
+    verifyingModelPackage_ = false;
+    if (!result.succeeded())
+    {
+        pendingModelSelection_ = {};
+        modelInfoLabel_->setText(tr("Invalid model package"));
+        updateState(workerClient_.state());
+        showError(result.errorCode, result.errorMessage);
+        return;
+    }
+
+    if (!cacheVerifiedModel(result.selection))
+    {
+        qWarning() << "Unable to persist the model verification cache.";
+    }
+    beginModelLoad(std::move(result.selection));
 }
 
 void MainWindow::sendPrompt()
@@ -91,7 +169,10 @@ void MainWindow::sendPrompt()
     auto requestMessages = conversationMessages_;
     requestMessages.prepend(
         {chat::Role::System, QStringLiteral("You are a helpful assistant.")});
-    workerClient_.generate(requestMessages);
+    const auto& preset = activeModelSelection_.preset;
+    workerClient_.generate(requestMessages, preset.contextSize,
+                           preset.maxOutputTokens, 0, preset.temperature,
+                           preset.topP, preset.topK, preset.repeatPenalty);
 }
 
 void MainWindow::stopGeneration()
@@ -125,10 +206,13 @@ void MainWindow::clearConversation()
 
 void MainWindow::updateState(infrastructure::WorkerClient::State state)
 {
-    const auto ready = state == infrastructure::WorkerClient::State::Ready ||
-                       state == infrastructure::WorkerClient::State::ModelReady;
-    const auto modelReady =
+    const auto workerReady =
+        state == infrastructure::WorkerClient::State::Ready ||
         state == infrastructure::WorkerClient::State::ModelReady;
+    const auto ready = workerReady && !verifyingModelPackage_;
+    const auto modelReady =
+        state == infrastructure::WorkerClient::State::ModelReady &&
+        !verifyingModelPackage_;
     const auto generating =
         state == infrastructure::WorkerClient::State::Generating;
 
@@ -140,6 +224,12 @@ void MainWindow::updateState(infrastructure::WorkerClient::State state)
     sendButton_->setEnabled(modelReady);
     stopButton_->setEnabled(generating);
     updateClearButton();
+
+    if (verifyingModelPackage_)
+    {
+        statusLabel_->setText(tr("Verifying model package..."));
+        return;
+    }
 
     switch (state)
     {
@@ -256,14 +346,22 @@ void MainWindow::buildUi()
 
     auto* modelRow = new QHBoxLayout;
     modelPathEdit_ = new QLineEdit(central);
-    modelPathEdit_->setPlaceholderText(tr("Local GGUF model path"));
+    modelPathEdit_->setPlaceholderText(tr("Model package or local GGUF path"));
     browseButton_ = new QPushButton(tr("Browse"), central);
     loadButton_ = new QPushButton(tr("Load"), central);
-    browseButton_->setToolTip(tr("Select local GGUF model"));
+    browseButton_->setToolTip(tr("Select a model package or GGUF file"));
+    auto* browseMenu = new QMenu(browseButton_);
+    auto* packageAction = browseMenu->addAction(tr("Model package folder"));
+    auto* ggufAction = browseMenu->addAction(tr("GGUF file"));
+    browseButton_->setMenu(browseMenu);
     modelRow->addWidget(modelPathEdit_, 1);
     modelRow->addWidget(browseButton_);
     modelRow->addWidget(loadButton_);
     layout->addLayout(modelRow);
+
+    modelInfoLabel_ = new QLabel(tr("Model not checked"), central);
+    modelInfoLabel_->setWordWrap(true);
+    layout->addWidget(modelInfoLabel_);
 
     transcriptTabs_ = new QTabWidget(central);
     conversationScroll_ = new QScrollArea(transcriptTabs_);
@@ -315,8 +413,10 @@ void MainWindow::buildUi()
     statusBar()->addWidget(statusLabel_, 1);
     setCentralWidget(central);
 
-    connect(browseButton_, &QPushButton::clicked, this,
-            &MainWindow::selectModel);
+    connect(packageAction, &QAction::triggered, this,
+            &MainWindow::selectModelPackage);
+    connect(ggufAction, &QAction::triggered, this,
+            &MainWindow::selectGgufModel);
     connect(loadButton_, &QPushButton::clicked, this,
             &MainWindow::loadSelectedModel);
     connect(sendButton_, &QPushButton::clicked, this, &MainWindow::sendPrompt);
@@ -327,6 +427,10 @@ void MainWindow::buildUi()
     connect(modelPathEdit_, &QLineEdit::textChanged, this,
             [this]
             {
+                const auto path = modelPathEdit_->text().trimmed();
+                if (path != pendingModelSelection_.selectedPath &&
+                    path != activeModelSelection_.selectedPath)
+                    modelInfoLabel_->setText(tr("Model not checked"));
                 loadButton_->setEnabled(
                     (workerClient_.state() ==
                          infrastructure::WorkerClient::State::Ready ||
@@ -451,5 +555,70 @@ void MainWindow::updateClearButton()
     const auto generating = workerClient_.state() ==
                             infrastructure::WorkerClient::State::Generating;
     clearButton_->setEnabled(!generating && conversationLayout_->count() > 1);
+}
+
+void MainWindow::beginModelLoad(models::ModelSelection selection)
+{
+    pendingModelSelection_ = std::move(selection);
+    updateModelInformation(pendingModelSelection_);
+    updateState(workerClient_.state());
+    workerClient_.loadModel(pendingModelSelection_.modelPath);
+}
+
+bool MainWindow::modelHashesAreCached(
+    const models::ModelSelection& selection) const
+{
+    const QDir packageDirectory(selection.descriptor.packageDirectory);
+    for (const auto& modelFile : selection.descriptor.modelFiles)
+    {
+        if (!settingsStore_.isModelFileVerified(
+                packageDirectory.filePath(modelFile.path), modelFile.sizeBytes,
+                modelFile.sha256))
+            return false;
+    }
+    return !selection.descriptor.modelFiles.isEmpty();
+}
+
+bool MainWindow::cacheVerifiedModel(
+    const models::ModelSelection& selection) const
+{
+    const QDir packageDirectory(selection.descriptor.packageDirectory);
+    auto saved = true;
+    for (const auto& modelFile : selection.descriptor.modelFiles)
+    {
+        saved = settingsStore_.setModelFileVerified(
+                    packageDirectory.filePath(modelFile.path),
+                    modelFile.sizeBytes, modelFile.sha256) &&
+                saved;
+    }
+    return saved;
+}
+
+void MainWindow::updateModelInformation(const models::ModelSelection& selection)
+{
+    qint64 totalSize = 0;
+    for (const auto& modelFile : selection.descriptor.modelFiles)
+        totalSize += modelFile.sizeBytes;
+    const auto sizeGiB =
+        static_cast<double>(totalSize) / (1024.0 * 1024.0 * 1024.0);
+
+    if (selection.descriptor.origin == models::ModelOrigin::DirectGguf)
+    {
+        modelInfoLabel_->setText(tr("Unverified GGUF - %1 - %2 GiB")
+                                     .arg(selection.descriptor.displayName)
+                                     .arg(sizeGiB, 0, 'f', 2));
+        return;
+    }
+
+    const auto verification = selection.descriptor.verificationStatus ==
+                                      models::VerificationStatus::Verified
+                                  ? tr("Verified package")
+                                  : tr("Package not yet verified");
+    modelInfoLabel_->setText(
+        tr("%1 - %2 - %3 GiB - %4 GB RAM - %5 token context")
+            .arg(verification, selection.descriptor.displayName)
+            .arg(sizeGiB, 0, 'f', 2)
+            .arg(selection.descriptor.recommendedRamGb)
+            .arg(selection.preset.contextSize));
 }
 }  // namespace qtllm::ui

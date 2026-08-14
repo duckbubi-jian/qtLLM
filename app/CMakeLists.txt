@@ -62,6 +62,7 @@ target_include_directories(qtllm_app_ui
 )
 target_link_libraries(qtllm_app_ui
     PUBLIC
+        Qt6::Concurrent
         Qt6::Widgets
         qtllm_app_infrastructure
 )

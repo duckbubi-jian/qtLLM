@@ -31,3 +31,10 @@ See `examples/model-package` for the package layout and
 the CUDA development baselines. They contain no model weights and must each be
 combined with their hash-verified `model.gguf` only outside the source
 repository.
+
+When a package directory is selected, the application validates its manifest,
+paths, file types, sizes, GGUF headers, runtime requirement, license and preset
+before hashing model weights in the background. A matching file fingerprint is
+cached in `qtLLM.ini`; changing the path, size, modification time or expected
+hash forces verification again. This consistency check is not a substitute for
+package signing and publisher authentication in a commercial release.

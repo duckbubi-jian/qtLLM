@@ -119,6 +119,15 @@ ctest --test-dir cmake-build-release --output-on-failure `
 未设置 `QTLLM_TEST_MODEL` 时，该用例的模型生命周期部分会跳过，协议错误路径仍
 正常执行。
 
+模型包解析与 worker 生命周期分开测试。`QTLLM_TEST_MODEL_PACKAGE` 指向正式
+模型包目录时，`model_package_validation` 会执行真实权重 SHA-256 校验：
+
+```powershell
+$env:QTLLM_TEST_MODEL_PACKAGE = "D:\qtLLM-models\deepseek-r1-distill-qwen-14b-q4km"
+ctest --test-dir cmake-build-release-cuda `
+  -R "^model_package_validation$" --output-on-failure
+```
+
 ## 当前验收记录
 
 2026-08-13 使用本地 `DeepSeek-R1-Distill-Qwen-1.5B Q4_K_M` CPU 模型完成：
@@ -129,7 +138,7 @@ ctest --test-dir cmake-build-release --output-on-failure `
 - 生成取消通过。
 - 同一模型不重新加载的结构化多轮生成通过。
 - 超限历史按完整问答轮次裁剪通过。
-- 无模型 CTest 共 9 项全部通过。
+- 无模型 CTest 共 10 项全部通过。
 
 该记录验证架构链路，不代表商业模型许可证、7B 性能、多轮对话质量或全硬件矩阵
 已经验收。

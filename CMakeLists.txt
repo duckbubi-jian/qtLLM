@@ -38,7 +38,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 
-find_package(Qt6 6.5 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(Qt6 6.5 REQUIRED COMPONENTS Concurrent Core Gui Widgets)
 qt_standard_project_setup()
 
 set(QTLLM_MODULE_DIRECTORIES

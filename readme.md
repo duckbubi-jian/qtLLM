@@ -3,6 +3,10 @@
 qtLLM is a Windows desktop shell for running local GGUF language models. The
 application runtime and model weights are distributed separately.
 
+## Interface
+
+![qtLLM desktop interface](qtLLM_UI.png)
+
 ## Distribution model
 
 - `qtLLM-runtime-<version>.exe` contains the Qt application, `qtllm-worker`,

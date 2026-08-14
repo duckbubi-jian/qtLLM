@@ -1,3 +1,5 @@
+find_package(spdlog CONFIG REQUIRED)
+
 qtllm_collect_module_files(
     "${CMAKE_CURRENT_SOURCE_DIR}"
     shared_sources
@@ -23,4 +25,5 @@ target_include_directories(qtllm_shared
 target_link_libraries(qtllm_shared
     PUBLIC
         Qt6::Core
+        spdlog::spdlog
 )

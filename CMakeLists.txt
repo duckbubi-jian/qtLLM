@@ -186,6 +186,7 @@ set(qtllm_runtime_license_packages
     brotli
     bzip2
     double-conversion
+    fmt
     freetype
     harfbuzz
     icu
@@ -194,6 +195,7 @@ set(qtllm_runtime_license_packages
     openssl
     pcre2
     qtbase
+    spdlog
     zlib
     zstd
 )

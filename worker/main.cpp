@@ -3,6 +3,7 @@
 #include "WorkerOptions.hpp"
 #include "WorkerSession.hpp"
 
+#include "Logging.hpp"
 #include "ProtocolVersion.hpp"
 
 #include <QCommandLineParser>
@@ -17,6 +18,15 @@
 namespace
 {
 std::atomic_bool interrupted = false;
+
+class LoggingGuard final
+{
+   public:
+    ~LoggingGuard()
+    {
+        qtllm::logging::shutdown();
+    }
+};
 
 void handleInterrupt(int)
 {
@@ -59,6 +69,17 @@ int main(int argc, char* argv[])
     QCoreApplication::setApplicationName(QStringLiteral("qtllm-worker"));
     QCoreApplication::setApplicationVersion(
         QStringLiteral("0.2.0 (protocol %1)").arg(qtllm::protocol::version));
+
+    QString loggingError;
+    if (!qtllm::logging::initialize(QStringLiteral("qtllm-worker"),
+                                    &loggingError))
+        QTextStream(stderr) << "warning: " << loggingError << Qt::endl;
+    qtllm::logging::installQtMessageHandler();
+    const LoggingGuard loggingGuard;
+    qtllm::logging::info(
+        QStringLiteral("qtllm-worker 0.2.0 starting; protocol=%1 log=%2")
+            .arg(qtllm::protocol::version)
+            .arg(qtllm::logging::logFilePath()));
 
     QCommandLineParser parser;
     qtllm::worker::configureParser(parser);

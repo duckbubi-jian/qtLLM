@@ -10,6 +10,9 @@
     {
       "name": "qtbase",
       "version>=": "6.5.2#1"
+    },
+    {
+      "name": "spdlog"
     }
   ],
   "overrides": [

@@ -20,6 +20,25 @@ target_link_libraries(qtllm-protocol-tests
 add_test(NAME protocol_jsonl COMMAND qtllm-protocol-tests)
 
 qtllm_collect_module_files(
+    "${CMAKE_CURRENT_SOURCE_DIR}/logging"
+    logging_test_sources
+    logging_test_headers
+    logging_test_forms
+)
+
+qt_add_executable(qtllm-logging-tests
+    ${logging_test_sources}
+    ${logging_test_headers}
+    ${logging_test_forms}
+)
+target_link_libraries(qtllm-logging-tests
+    PRIVATE
+        Qt6::Test
+        qtllm_shared
+)
+add_test(NAME logging_file_output COMMAND qtllm-logging-tests)
+
+qtllm_collect_module_files(
     "${CMAKE_CURRENT_SOURCE_DIR}/models"
     model_test_sources
     model_test_headers
@@ -75,6 +94,9 @@ target_link_libraries(qtllm-ui-tests
         qtllm_app_ui
 )
 add_test(NAME ui_assistant_response COMMAND qtllm-ui-tests)
+set_tests_properties(ui_assistant_response PROPERTIES
+    ENVIRONMENT "QTLLM_LOG_DIR=${CMAKE_CURRENT_BINARY_DIR}/test-logs"
+)
 
 qtllm_collect_module_files(
     "${CMAKE_CURRENT_SOURCE_DIR}/client"
@@ -95,6 +117,9 @@ target_link_libraries(qtllm-client-tests
 )
 add_dependencies(qtllm-client-tests qtllm-worker)
 add_test(NAME client_worker_lifecycle COMMAND qtllm-client-tests)
+set_tests_properties(client_worker_lifecycle PROPERTIES
+    ENVIRONMENT "QTLLM_LOG_DIR=${CMAKE_CURRENT_BINARY_DIR}/test-logs"
+)
 
 qtllm_collect_module_files(
     "${CMAKE_CURRENT_SOURCE_DIR}/application"
@@ -183,7 +208,8 @@ target_link_libraries(qtllm-worker-tests
 add_dependencies(qtllm-worker-tests qtllm-worker)
 add_test(NAME worker_jsonl_ipc COMMAND qtllm-worker-tests)
 set_tests_properties(worker_jsonl_ipc PROPERTIES
-    ENVIRONMENT "QTLLM_TEST_WORKER=$<TARGET_FILE:qtllm-worker>"
+    ENVIRONMENT
+        "QTLLM_TEST_WORKER=$<TARGET_FILE:qtllm-worker>;QTLLM_LOG_DIR=${CMAKE_CURRENT_BINARY_DIR}/test-logs"
 )
 
 add_test(NAME worker_help COMMAND qtllm-worker --help)
@@ -209,4 +235,14 @@ add_test(NAME worker_rejects_invalid_model
         -DCASE=invalid_model
         -DMODEL=${CMAKE_SOURCE_DIR}/CMakeLists.txt
         -P ${CMAKE_CURRENT_SOURCE_DIR}/AssertWorkerFailure.cmake
+)
+
+set_tests_properties(
+    worker_help
+    worker_version
+    worker_requires_model
+    worker_rejects_invalid_number
+    worker_rejects_invalid_model
+    PROPERTIES
+        ENVIRONMENT "QTLLM_LOG_DIR=${CMAKE_CURRENT_BINARY_DIR}/test-logs"
 )

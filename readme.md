@@ -46,6 +46,14 @@ called. Unknown tools, invalid arguments, timeouts, repeated calls, and late
 responses are rejected or ignored. The default Agent limit is five tool calls
 and two minutes per request.
 
+## Diagnostics
+
+The application and worker write separate 5 MiB rotating logs using `spdlog`.
+On Windows they are stored under `%LOCALAPPDATA%/qtLLM/logs` as `qtLLM.log`
+and `qtllm-worker.log`; set `QTLLM_LOG_DIR` to use another directory. Worker
+stdout remains reserved for JSONL IPC, while stderr and process exit details
+are copied into the application log.
+
 ## Build
 
 Configure CMake with the vcpkg toolchain:

@@ -3,6 +3,7 @@
 #include "WorkerOptions.hpp"
 
 #include "AgentAction.hpp"
+#include "Logging.hpp"
 #include "ProtocolVersion.hpp"
 #include "ResponseMode.hpp"
 
@@ -273,6 +274,10 @@ void WorkerSession::dispatch(const protocol::Message& message)
 
 void WorkerSession::handleHello(const protocol::Message& message)
 {
+    logging::info(
+        QStringLiteral("IPC handshake received; clientVersion=%1")
+            .arg(message.payload.value(QStringLiteral("clientVersion"))
+                     .toString()));
     send(protocol::makeMessage(
         message.requestId, QString::fromLatin1(protocol::message_type::hello),
         {{QStringLiteral("workerVersion"), QStringLiteral("0.2.0")},
@@ -313,6 +318,9 @@ void WorkerSession::handleLoadModel(const protocol::Message& message)
     }
 
     qint64 loadMilliseconds = 0;
+    logging::info(QStringLiteral("Worker loading model: %1; gpuLayers=%2")
+                      .arg(modelInfo.absoluteFilePath())
+                      .arg(gpuLayers));
     if (!engine_.loadModel(modelInfo.absoluteFilePath(), gpuLayers,
                            errorMessage, &loadMilliseconds))
     {
@@ -320,6 +328,9 @@ void WorkerSession::handleLoadModel(const protocol::Message& message)
                   errorMessage);
         return;
     }
+    logging::info(QStringLiteral("Model loaded: device=%1 elapsedMs=%2")
+                      .arg(engine_.deviceDescription())
+                      .arg(loadMilliseconds));
     send(protocol::makeMessage(
         message.requestId,
         QString::fromLatin1(protocol::message_type::modelLoaded),
@@ -364,6 +375,18 @@ void WorkerSession::handleGenerate(const protocol::Message& message)
                   QStringLiteral("Load a model before generating."));
         return;
     }
+
+    logging::info(
+        QStringLiteral(
+            "Worker generation accepted: request=%1 mode=%2 messages=%3 "
+            "context=%4 maxTokens=%5 threads=%6 grammarBytes=%7")
+            .arg(message.requestId,
+                 inference::responseModeName(options.responseMode))
+            .arg(options.messages.size())
+            .arg(options.contextSize)
+            .arg(options.maxTokens)
+            .arg(options.threads)
+            .arg(options.grammar.toUtf8().size()));
 
     if (generationThread_.joinable()) generationThread_.join();
     generating_ = true;
@@ -443,6 +466,14 @@ void WorkerSession::finishGeneration(const QString& requestId, bool generated,
         sendError(requestId, QStringLiteral("generation_failed"), errorMessage);
         return;
     }
+    logging::info(
+        QStringLiteral("Worker generation finished: request=%1 cancelled=%2 "
+                       "promptTokens=%3 generatedTokens=%4 tokensPerSecond=%5")
+            .arg(requestId)
+            .arg(cancelled)
+            .arg(metrics.promptTokens)
+            .arg(metrics.generatedTokens)
+            .arg(metrics.generationTokensPerSecond, 0, 'f', 2));
     send(protocol::makeMessage(
         requestId,
         QString::fromLatin1(protocol::message_type::generationFinished),
@@ -468,6 +499,9 @@ void WorkerSession::send(const protocol::Message& message)
 void WorkerSession::sendError(const QString& requestId, const QString& code,
                               const QString& message)
 {
+    logging::error(QStringLiteral("Worker request failed: request=%1 code=%2 "
+                                  "message=%3")
+                       .arg(requestId, code, message));
     send(protocol::makeMessage(
         requestId, QString::fromLatin1(protocol::message_type::error),
         {{QStringLiteral("code"), code},

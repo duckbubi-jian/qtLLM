@@ -14,6 +14,12 @@ plugins. Model weights are distributed separately.
 first setting. It is user-specific and is intentionally not included in the
 runtime package.
 
+Runtime diagnostics are written to `%LOCALAPPDATA%/qtLLM/logs`. `qtLLM.log`
+records application and worker-process lifecycle events, while
+`qtllm-worker.log` records model loading and inference stages. Logs rotate at
+5 MiB and keep three older files. Set `QTLLM_LOG_DIR` before starting the
+application to use another directory.
+
 ## NVIDIA GPU build
 
 The GPU runtime contains qtLLM's `ggml-cuda.dll`, but intentionally does not

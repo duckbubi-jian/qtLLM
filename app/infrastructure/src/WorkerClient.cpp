@@ -1,5 +1,6 @@
 #include "WorkerClient.hpp"
 
+#include "Logging.hpp"
 #include "ProtocolVersion.hpp"
 
 #include <QCoreApplication>
@@ -7,6 +8,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QProcessEnvironment>
 #include <QThread>
 #include <QUuid>
 
@@ -47,8 +49,14 @@ void WorkerClient::start(const QString& workerPath)
     stopping_ = false;
     standardOutputBuffer_.clear();
     setState(State::Starting);
+    auto environment = QProcessEnvironment::systemEnvironment();
+    if (!logging::logDirectory().isEmpty())
+        environment.insert(QStringLiteral("QTLLM_LOG_DIR"),
+                           logging::logDirectory());
+    process_.setProcessEnvironment(environment);
     process_.setProgram(executable);
     process_.setArguments({QStringLiteral("--ipc")});
+    logging::info(QStringLiteral("Starting worker: %1 --ipc").arg(executable));
     process_.start();
 }
 
@@ -74,6 +82,9 @@ void WorkerClient::loadModel(const QString& modelPath, int gpuLayers)
     }
     modelPath_.clear();
     setState(State::LoadingModel);
+    logging::info(QStringLiteral("Loading model: %1; gpuLayers=%2")
+                      .arg(modelPath)
+                      .arg(gpuLayers));
     loadRequestId_ =
         send(QString::fromLatin1(protocol::message_type::loadModel),
              {{QStringLiteral("modelPath"), modelPath},
@@ -116,6 +127,15 @@ void WorkerClient::generate(const QList<chat::Message>& messages,
         return;
     }
     if (threads <= 0) threads = qMax(1, QThread::idealThreadCount());
+
+    logging::info(
+        QStringLiteral("Starting generation: mode=%1 messages=%2 context=%3 "
+                       "maxTokens=%4 threads=%5")
+            .arg(inference::responseModeName(responseMode))
+            .arg(messages.size())
+            .arg(contextSize)
+            .arg(maxTokens)
+            .arg(threads));
 
     QJsonArray serializedMessages;
     for (const auto& message : messages)
@@ -169,6 +189,8 @@ WorkerClient::Capabilities WorkerClient::capabilities() const
 
 void WorkerClient::onStarted()
 {
+    logging::info(QStringLiteral("Worker process started; pid=%1")
+                      .arg(process_.processId()));
     helloRequestId_ =
         send(QString::fromLatin1(protocol::message_type::hello),
              {{QStringLiteral("clientVersion"), QStringLiteral("0.2.0")}});
@@ -206,7 +228,12 @@ void WorkerClient::onReadyReadStandardOutput()
 void WorkerClient::onReadyReadStandardError()
 {
     const auto text = QString::fromUtf8(process_.readAllStandardError());
-    if (!text.isEmpty()) emit diagnosticReceived(text);
+    if (!text.isEmpty())
+    {
+        logging::warning(
+            QStringLiteral("Worker stderr: %1").arg(text.trimmed()));
+        emit diagnosticReceived(text);
+    }
 }
 
 void WorkerClient::onFinished(int exitCode, QProcess::ExitStatus exitStatus)
@@ -216,9 +243,16 @@ void WorkerClient::onFinished(int exitCode, QProcess::ExitStatus exitStatus)
     capabilities_ = {};
     if (stopping_)
     {
+        logging::info(
+            QStringLiteral("Worker stopped with exit code %1").arg(exitCode));
         setState(State::Stopped);
         return;
     }
+    logging::critical(
+        QStringLiteral("Worker exited unexpectedly: code=%1 status=%2")
+            .arg(exitCode)
+            .arg(exitStatus == QProcess::CrashExit ? QStringLiteral("crashed")
+                                                   : QStringLiteral("normal")));
     setState(State::Failed);
     emit errorOccurred(
         QStringLiteral("worker_exited"),
@@ -231,6 +265,9 @@ void WorkerClient::onFinished(int exitCode, QProcess::ExitStatus exitStatus)
 void WorkerClient::onProcessError(QProcess::ProcessError error)
 {
     if (stopping_) return;
+    logging::error(QStringLiteral("Worker process error %1: %2")
+                       .arg(static_cast<int>(error))
+                       .arg(process_.errorString()));
     fail(QStringLiteral("process_error"),
          QStringLiteral("Worker process error %1: %2")
              .arg(static_cast<int>(error))

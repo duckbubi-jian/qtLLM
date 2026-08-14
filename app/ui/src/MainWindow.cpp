@@ -5,10 +5,12 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QHBoxLayout>
+#include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -16,7 +18,6 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
-#include <QShortcut>
 #include <QStatusBar>
 #include <QStyle>
 #include <QTabWidget>
@@ -185,12 +186,25 @@ MainWindow::MainWindow(QWidget* parent)
     connect(&agentController_,
             &application::AgentController::conversationCleared, this,
             &MainWindow::resetConversationView);
-    connect(&workerClient_, &infrastructure::WorkerClient::diagnosticReceived,
-            this,
-            [](const QString& text) { qInfo().noquote() << text.trimmed(); });
-
     loadMcpServers();
     workerClient_.start();
+}
+
+bool MainWindow::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == promptEdit_ && event->type() == QEvent::KeyPress)
+    {
+        const auto* keyEvent = static_cast<QKeyEvent*>(event);
+        const auto isEnter = keyEvent->key() == Qt::Key_Return ||
+                             keyEvent->key() == Qt::Key_Enter;
+        if (isEnter && !(keyEvent->modifiers() & Qt::ShiftModifier))
+        {
+            if (sendButton_->isEnabled()) sendPrompt();
+            return true;
+        }
+    }
+
+    return QMainWindow::eventFilter(watched, event);
 }
 
 void MainWindow::selectModelPackage()
@@ -489,6 +503,7 @@ void MainWindow::buildUi()
     promptEdit_->setPlaceholderText(tr("Write a message"));
     promptEdit_->setMinimumHeight(64);
     promptEdit_->setMaximumHeight(130);
+    promptEdit_->installEventFilter(this);
     promptLayout->addWidget(promptEdit_);
 
     auto* actionRow = new QHBoxLayout;
@@ -533,13 +548,6 @@ void MainWindow::buildUi()
             &MainWindow::stopGeneration);
     connect(clearButton_, &QPushButton::clicked, this,
             &MainWindow::clearConversation);
-    auto* sendShortcut =
-        new QShortcut(QKeySequence(Qt::CTRL | Qt::Key_Return), this);
-    connect(sendShortcut, &QShortcut::activated, this,
-            [this]
-            {
-                if (sendButton_->isEnabled()) sendPrompt();
-            });
     connect(modelPathEdit_, &QLineEdit::textChanged, this,
             [this]
             {

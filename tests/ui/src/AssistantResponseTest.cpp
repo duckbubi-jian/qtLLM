@@ -33,6 +33,7 @@ class AssistantResponseTest final : public QObject
     void rendersConversationPreview();
     void reasoningOnlyResponseFallsBackToVisibleAnswer();
     void showsInlineToolApprovalAndRedactsSecrets();
+    void enterSendsAndShiftEnterAddsNewline();
     void restoresPromptAfterGenerationError();
     void clearsVisibleAndInMemoryConversation();
 };
@@ -248,6 +249,30 @@ void AssistantResponseTest::showsInlineToolApprovalAndRedactsSecrets()
     QCOMPARE(decisionSpy.count(), 1);
     QVERIFY(decisionSpy.constFirst().constFirst().toBool());
     QVERIFY(!allow->isVisible());
+}
+
+void AssistantResponseTest::enterSendsAndShiftEnterAddsNewline()
+{
+    ui::MainWindow window;
+    auto* prompt =
+        window.findChild<QPlainTextEdit*>(QStringLiteral("promptEditor"));
+    auto* send =
+        window.findChild<QPushButton*>(QStringLiteral("primaryActionButton"));
+    QVERIFY(prompt != nullptr);
+    QVERIFY(send != nullptr);
+
+    prompt->setEnabled(true);
+    send->setEnabled(true);
+    prompt->setPlainText(QStringLiteral("first line"));
+    prompt->moveCursor(QTextCursor::End);
+
+    QTest::keyClick(prompt, Qt::Key_Return, Qt::ShiftModifier);
+    QCOMPARE(prompt->toPlainText(), QStringLiteral("first line\n"));
+    QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 0);
+
+    QTest::keyClick(prompt, Qt::Key_Return);
+    QCOMPARE(prompt->toPlainText(), QStringLiteral("first line"));
+    QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 1);
 }
 
 void AssistantResponseTest::restoresPromptAfterGenerationError()

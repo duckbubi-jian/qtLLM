@@ -1,5 +1,7 @@
 #include "LlamaEngine.hpp"
 
+#include "Logging.hpp"
+
 #include <ggml-backend.h>
 #include <llama.h>
 
@@ -9,7 +11,6 @@
 #include <QTextStream>
 
 #include <algorithm>
-#include <cstdio>
 #include <memory>
 #include <vector>
 
@@ -63,8 +64,8 @@ void logErrors(ggml_log_level level, const char* text, void*)
 {
     if (level >= GGML_LOG_LEVEL_ERROR)
     {
-        std::fputs(text, stderr);
-        std::fflush(stderr);
+        logging::error(QStringLiteral("llama.cpp: %1")
+                           .arg(QString::fromUtf8(text).trimmed()));
     }
 }
 
@@ -290,6 +291,12 @@ bool LlamaEngine::loadModel(const QString& modelPath, int gpuLayers,
     }
     modelParameters.use_mmap = true;
 
+    logging::info(
+        QStringLiteral("llama.cpp loading model: file=%1 gpuLayers=%2 "
+                       "device=%3")
+            .arg(modelPath)
+            .arg(modelParameters.n_gpu_layers)
+            .arg(impl_->deviceDescription));
     const auto encodedPath = modelPath.toUtf8();
     ModelPointer model(
         llama_model_load_from_file(encodedPath.constData(), modelParameters));
@@ -311,6 +318,7 @@ bool LlamaEngine::loadModel(const QString& modelPath, int gpuLayers,
 
     impl_->model = std::move(model);
     impl_->modelPath = QFileInfo(modelPath).absoluteFilePath();
+    logging::info(QStringLiteral("llama.cpp model load completed"));
     if (loadMilliseconds != nullptr)
     {
         *loadMilliseconds = loadTimer.elapsed();
@@ -366,6 +374,17 @@ bool LlamaEngine::generate(const WorkerOptions& options,
         return false;
     }
 
+    logging::info(
+        QStringLiteral(
+            "llama.cpp prompt prepared: messages=%1 promptTokens=%2 "
+            "discardedMessages=%3 context=%4 maxTokens=%5 grammarBytes=%6")
+            .arg(requestMessages(options).size())
+            .arg(promptTokens.size())
+            .arg(discardedMessages)
+            .arg(options.contextSize)
+            .arg(options.maxTokens)
+            .arg(options.grammar.toUtf8().size()));
+
     auto contextParameters = llama_context_default_params();
     contextParameters.n_ctx = options.contextSize;
     contextParameters.n_batch =
@@ -384,6 +403,7 @@ bool LlamaEngine::generate(const WorkerOptions& options,
             QStringLiteral("Unable to create the inference context.");
         return false;
     }
+    logging::info(QStringLiteral("llama.cpp inference context created"));
 
     auto samplerParameters = llama_sampler_chain_default_params();
     samplerParameters.no_perf = false;
@@ -405,6 +425,7 @@ bool LlamaEngine::generate(const WorkerOptions& options,
                             llama_sampler_init_temp(options.temperature));
     if (!options.grammar.isEmpty())
     {
+        logging::info(QStringLiteral("llama.cpp initializing grammar sampler"));
         const auto grammar = options.grammar.toUtf8();
         auto* grammarSampler =
             llama_sampler_init_grammar(vocabulary, grammar.constData(), "root");
@@ -414,6 +435,7 @@ bool LlamaEngine::generate(const WorkerOptions& options,
             return false;
         }
         llama_sampler_chain_add(sampler.get(), grammarSampler);
+        logging::info(QStringLiteral("llama.cpp grammar sampler initialized"));
     }
     llama_sampler_chain_add(sampler.get(),
                             llama_sampler_init_dist(options.seed));

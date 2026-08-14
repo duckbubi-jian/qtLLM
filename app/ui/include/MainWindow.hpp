@@ -32,6 +32,9 @@ class MainWindow final : public QMainWindow
    public:
     explicit MainWindow(QWidget* parent = nullptr);
 
+   protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
+
    private slots:
     void selectModelPackage();
     void selectGgufModel();

@@ -331,7 +331,17 @@ ModelPackageResult ModelPackage::inspect(const QString& selectedPath,
         return failure(
             QStringLiteral("model_path_not_found"),
             QStringLiteral("Model path does not exist: %1").arg(selectedPath));
-    if (selectedInfo.isFile()) return inspectDirectGguf(selectedInfo);
+    if (selectedInfo.isFile())
+    {
+        const auto manifestPath =
+            QDir(selectedInfo.absolutePath())
+                .filePath(QStringLiteral("manifest.json"));
+        if (selectedInfo.suffix().compare(QStringLiteral("gguf"),
+                                          Qt::CaseInsensitive) == 0 &&
+            QFileInfo::exists(manifestPath))
+            return inspect(selectedInfo.absolutePath(), runtimeVersion);
+        return inspectDirectGguf(selectedInfo);
+    }
     if (!selectedInfo.isDir())
         return failure(QStringLiteral("invalid_model_path"),
                        QStringLiteral("Model path is neither a file nor a "

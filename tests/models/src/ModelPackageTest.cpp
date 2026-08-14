@@ -3,6 +3,7 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -90,6 +91,8 @@ class ModelPackageTest final : public QObject
     void rejectsUndeclaredGguf();
     void rejectsMismatchedPreset();
     void rejectsNewerRuntimeRequirement();
+    void upgradesPackageGgufSelectionToPackage();
+    void rejectsBrokenAdjacentManifest();
     void acceptsDirectGgufAsUnverified();
     void verifiesExternalPackageWhenConfigured();
 };
@@ -218,6 +221,48 @@ void ModelPackageTest::rejectsNewerRuntimeRequirement()
                                                       QStringLiteral("0.1.0"));
     QVERIFY(!result.succeeded());
     QCOMPARE(result.errorCode, QStringLiteral("runtime_too_old"));
+}
+
+void ModelPackageTest::upgradesPackageGgufSelectionToPackage()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto model = QByteArrayLiteral("GGUF-test-model");
+    QVERIFY(writePackage(directory.path(), model, validManifest(model)));
+    const auto modelPath =
+        QDir(directory.path()).filePath(QStringLiteral("model.gguf"));
+
+    auto result =
+        models::ModelPackage::inspect(modelPath, QStringLiteral("0.1.0"));
+    QVERIFY2(result.succeeded(), qPrintable(result.errorMessage));
+    QCOMPARE(result.selection.descriptor.origin,
+             models::ModelOrigin::ExternalPackage);
+    QCOMPARE(result.selection.selectedPath,
+             QFileInfo(directory.path()).absoluteFilePath());
+    QCOMPARE(result.selection.descriptor.displayName,
+             QStringLiteral("Test Model Q4_K_M"));
+
+    result = models::ModelPackage::verify(std::move(result.selection));
+    QVERIFY2(result.succeeded(), qPrintable(result.errorMessage));
+    QCOMPARE(result.selection.descriptor.verificationStatus,
+             models::VerificationStatus::Verified);
+}
+
+void ModelPackageTest::rejectsBrokenAdjacentManifest()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto modelPath =
+        QDir(directory.path()).filePath(QStringLiteral("model.gguf"));
+    QVERIFY(writeFile(modelPath, QByteArrayLiteral("GGUF-test-model")));
+    QVERIFY(writeFile(
+        QDir(directory.path()).filePath(QStringLiteral("manifest.json")),
+        QByteArrayLiteral("{}")));
+
+    const auto result =
+        models::ModelPackage::inspect(modelPath, QStringLiteral("0.1.0"));
+    QVERIFY(!result.succeeded());
+    QCOMPARE(result.errorCode, QStringLiteral("invalid_manifest"));
 }
 
 void ModelPackageTest::acceptsDirectGgufAsUnverified()

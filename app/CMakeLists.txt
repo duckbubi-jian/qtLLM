@@ -103,7 +103,3 @@ if(WIN32 AND TARGET Qt6::QWindowsIntegrationPlugin)
         VERBATIM
     )
 endif()
-
-install(TARGETS qtLLM
-    RUNTIME DESTINATION .
-)

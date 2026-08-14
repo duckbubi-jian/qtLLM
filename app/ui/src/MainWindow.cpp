@@ -1,6 +1,7 @@
 #include "MainWindow.hpp"
 
 #include "MessageWidget.hpp"
+#include "SensitiveData.hpp"
 #include "ToolApprovalWidget.hpp"
 
 #include <QCoreApplication>
@@ -10,6 +11,7 @@
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QHBoxLayout>
+#include <QJsonDocument>
 #include <QKeyEvent>
 #include <QLabel>
 #include <QLineEdit>
@@ -19,6 +21,7 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QStatusBar>
+#include <QStringList>
 #include <QStyle>
 #include <QTabWidget>
 #include <QTextCursor>
@@ -106,6 +109,7 @@ MainWindow::MainWindow(QWidget* parent)
             [this](const QString&, const QString& prompt)
             {
                 appendUserMessage(prompt);
+                showAgentActivity();
                 promptEdit_->clear();
                 pendingUtf8_.clear();
                 currentAssistantText_.clear();
@@ -113,31 +117,30 @@ MainWindow::MainWindow(QWidget* parent)
     connect(&agentController_, &application::AgentController::finalAnswerReady,
             this, [this](const QString&, const QString& answer)
             { appendAgentAnswer(answer); });
-    connect(
-        &agentController_, &application::AgentController::approvalRequested,
-        this,
-        [this](const QString&, const QString& toolName,
-               const QJsonObject& arguments)
-        {
-            auto* approval = new ToolApprovalWidget(toolPolicy_.risk(toolName),
-                                                    toolName, arguments);
-            pendingToolApproval_ = approval;
-            conversationLayout_->insertWidget(conversationLayout_->count() - 1,
-                                              approval);
-            appendRawText(tr("Tool approval requested: %1\n\n").arg(toolName));
-            connect(approval, &ToolApprovalWidget::decisionMade, this,
-                    [this, approval](bool approved)
-                    {
-                        if (pendingToolApproval_ != approval) return;
-                        pendingToolApproval_ = nullptr;
-                        agentController_.resolveApproval(approved);
-                    });
-            scrollConversationToBottom();
-        });
+    connect(&agentController_, &application::AgentController::approvalRequested,
+            this,
+            [this](const QString&, const QString& toolName,
+                   const QJsonObject& arguments)
+            {
+                auto* approval = new ToolApprovalWidget(
+                    toolPolicy_.risk(toolName), toolName, arguments);
+                pendingToolApproval_ = approval;
+                conversationLayout_->insertWidget(
+                    conversationLayout_->count() - 1, approval);
+                connect(approval, &ToolApprovalWidget::decisionMade, this,
+                        [this, approval](bool approved)
+                        {
+                            if (pendingToolApproval_ != approval) return;
+                            pendingToolApproval_ = nullptr;
+                            agentController_.resolveApproval(approved);
+                        });
+                scrollConversationToBottom();
+            });
     connect(&agentController_, &application::AgentController::eventRecorded,
             this,
             [this](const agent::Event& event)
             {
+                appendAgentEvent(event);
                 if (!event.message.isEmpty())
                     statusLabel_->setText(event.message);
             });
@@ -148,6 +151,7 @@ MainWindow::MainWindow(QWidget* parent)
                    const QString& code, const QString& message)
             {
                 agentRunActive_ = false;
+                removeAgentActivity();
                 if (pendingToolApproval_ != nullptr)
                 {
                     pendingToolApproval_->markCancelled();
@@ -312,9 +316,10 @@ void MainWindow::resetConversationView()
         delete item;
     }
 
-    rawTranscript_->clear();
+    activityLog_->clear();
     renderTimer_->stop();
     currentAssistant_ = nullptr;
+    agentActivityMessage_ = nullptr;
     pendingToolApproval_ = nullptr;
     currentAssistantText_.clear();
     pendingUtf8_.clear();
@@ -385,7 +390,6 @@ void MainWindow::finishGeneration(bool cancelled, const QJsonObject& metrics)
     flushPendingUtf8(true);
     renderTimer_->stop();
     renderAssistant(true);
-    appendRawText(QStringLiteral("\n"));
     currentAssistant_ = nullptr;
 
     if (cancelled)
@@ -414,12 +418,12 @@ void MainWindow::finishGeneration(bool cancelled, const QJsonObject& metrics)
 void MainWindow::showError(const QString& code, const QString& message,
                            const QString& retryPrompt)
 {
+    removeAgentActivity();
     statusLabel_->setText(tr("Error: %1").arg(message));
     if (currentAssistant_ != nullptr)
     {
         currentAssistantText_ +=
             QStringLiteral("\n\n**%1:** %2").arg(tr("Error"), message);
-        appendRawText(QStringLiteral("\nError: %1\n").arg(message));
         renderTimer_->stop();
         renderAssistant(true);
         currentAssistant_ = nullptr;
@@ -482,14 +486,13 @@ void MainWindow::buildUi()
     conversationLayout_->addStretch();
     conversationScroll_->setWidget(conversationContent);
 
-    rawTranscript_ = new QPlainTextEdit(transcriptTabs_);
-    rawTranscript_->setObjectName(QStringLiteral("rawTranscript"));
-    rawTranscript_->setReadOnly(true);
-    rawTranscript_->setFont(
-        QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    activityLog_ = new QPlainTextEdit(transcriptTabs_);
+    activityLog_->setObjectName(QStringLiteral("activityLog"));
+    activityLog_->setReadOnly(true);
+    activityLog_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
 
     transcriptTabs_->addTab(conversationScroll_, tr("Conversation"));
-    transcriptTabs_->addTab(rawTranscript_, tr("Raw"));
+    transcriptTabs_->addTab(activityLog_, tr("Activity"));
     layout->addWidget(transcriptTabs_, 1);
 
     auto* promptComposer = new QWidget(central);
@@ -572,10 +575,6 @@ void MainWindow::appendUserMessage(const QString& text)
     conversationLayout_->insertWidget(conversationLayout_->count() - 1,
                                       message);
 
-    if (!rawTranscript_->document()->isEmpty())
-        appendRawText(QStringLiteral("\n"));
-    appendRawText(tr("You") + QStringLiteral("\n") + text +
-                  QStringLiteral("\n\n"));
     updateClearButton();
     scrollConversationToBottom();
 }
@@ -586,17 +585,45 @@ void MainWindow::beginAssistantMessage()
     currentAssistant_->setAssistantText({}, false);
     conversationLayout_->insertWidget(conversationLayout_->count() - 1,
                                       currentAssistant_);
-    appendRawText(tr("Assistant") + QStringLiteral("\n"));
     scrollConversationToBottom();
 }
 
-void MainWindow::appendRawText(const QString& text)
+void MainWindow::appendActivityText(const QString& text)
 {
-    auto cursor = rawTranscript_->textCursor();
+    auto cursor = activityLog_->textCursor();
     cursor.movePosition(QTextCursor::End);
     cursor.insertText(text);
-    rawTranscript_->setTextCursor(cursor);
-    rawTranscript_->ensureCursorVisible();
+    activityLog_->setTextCursor(cursor);
+    activityLog_->ensureCursorVisible();
+}
+
+void MainWindow::appendAgentEvent(const agent::Event& event)
+{
+    QStringList lines;
+    if (event.type == agent::EventType::RunStarted)
+    {
+        if (!activityLog_->document()->isEmpty()) lines.append(QString{});
+        lines.append(QStringLiteral("===================="));
+    }
+
+    const auto timestamp =
+        event.timestamp.toLocalTime().toString(QStringLiteral("HH:mm:ss"));
+    const auto message = event.message.isEmpty()
+                             ? agent::eventTypeName(event.type)
+                             : event.message;
+    lines.append(QStringLiteral("[%1] %2").arg(timestamp, message));
+    if (!event.toolName.isEmpty())
+        lines.append(tr("Tool: %1").arg(event.toolName));
+    if (!event.data.isEmpty())
+    {
+        lines.append(tr("Data:"));
+        lines.append(
+            QString::fromUtf8(
+                QJsonDocument(redactSensitiveValues(event.data).toObject())
+                    .toJson(QJsonDocument::Indented))
+                .trimmed());
+    }
+    appendActivityText(lines.join(QLatin1Char('\n')) + QStringLiteral("\n\n"));
 }
 
 void MainWindow::renderAssistant(bool final)
@@ -658,7 +685,6 @@ void MainWindow::flushPendingUtf8(bool final)
     const auto text = QString::fromUtf8(pendingUtf8_.constData(), validLength);
     pendingUtf8_.remove(0, validLength);
     currentAssistantText_ += text;
-    appendRawText(text);
     if (!final && !renderTimer_->isActive()) renderTimer_->start();
 }
 
@@ -688,16 +714,40 @@ void MainWindow::beginAgentPrompt(const QString& prompt)
 
 void MainWindow::appendAgentAnswer(const QString& answer)
 {
+    removeAgentActivity();
     auto* message = new MessageWidget(MessageWidget::Role::Assistant);
     message->setAssistantText(answer, true);
     conversationLayout_->insertWidget(conversationLayout_->count() - 1,
                                       message);
-    if (!rawTranscript_->document()->isEmpty())
-        appendRawText(QStringLiteral("\n"));
-    appendRawText(tr("Assistant") + QStringLiteral("\n") + answer +
-                  QStringLiteral("\n\n"));
     updateClearButton();
     scrollConversationToBottom();
+}
+
+void MainWindow::showAgentActivity()
+{
+    if (agentActivityMessage_ != nullptr) return;
+    agentActivityMessage_ = new MessageWidget(MessageWidget::Role::Assistant);
+    agentActivityMessage_->setProperty("agentActivity", true);
+    agentActivityMessage_->setAssistantText(tr("Thinking..."), false);
+    conversationLayout_->insertWidget(conversationLayout_->count() - 1,
+                                      agentActivityMessage_);
+    scrollConversationToBottom();
+}
+
+void MainWindow::updateAgentActivity(const QString& text)
+{
+    if (agentActivityMessage_ == nullptr) return;
+    const auto followOutput = conversationIsAtBottom();
+    agentActivityMessage_->setAssistantText(text, false);
+    if (followOutput) scrollConversationToBottom();
+}
+
+void MainWindow::removeAgentActivity()
+{
+    if (agentActivityMessage_ == nullptr) return;
+    conversationLayout_->removeWidget(agentActivityMessage_);
+    delete agentActivityMessage_;
+    agentActivityMessage_ = nullptr;
 }
 
 void MainWindow::updateAgentState(application::AgentRun::State state)
@@ -706,15 +756,24 @@ void MainWindow::updateAgentState(application::AgentRun::State state)
     {
         case application::AgentRun::State::Deciding:
             statusLabel_->setText(tr("Thinking..."));
+            updateAgentActivity(tr("Thinking..."));
             break;
         case application::AgentRun::State::WaitingForApproval:
             statusLabel_->setText(tr("Waiting for tool approval"));
+            updateAgentActivity(tr("Waiting for tool approval..."));
             break;
         case application::AgentRun::State::ExecutingTool:
             statusLabel_->setText(tr("Using a tool..."));
+            updateAgentActivity(tr("Using a tool..."));
             break;
         case application::AgentRun::State::GeneratingAnswer:
             statusLabel_->setText(tr("Preparing the answer..."));
+            updateAgentActivity(tr("Preparing the answer..."));
+            break;
+        case application::AgentRun::State::Completed:
+        case application::AgentRun::State::Cancelled:
+        case application::AgentRun::State::Failed:
+            removeAgentActivity();
             break;
         default:
             break;

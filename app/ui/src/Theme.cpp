@@ -103,7 +103,7 @@ QTabBar::tab:selected {
 }
 QScrollArea#conversationScroll,
 QWidget#conversationContent,
-QPlainTextEdit#rawTranscript {
+QPlainTextEdit#activityLog {
     background: #ffffff;
     border: none;
 }

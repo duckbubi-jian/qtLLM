@@ -1,8 +1,9 @@
 #include "ToolApprovalWidget.hpp"
 
+#include "SensitiveData.hpp"
+
 #include <QFontDatabase>
 #include <QHBoxLayout>
-#include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
 #include <QPlainTextEdit>
@@ -56,43 +57,6 @@ RiskPresentation presentationFor(infrastructure::mcp::ToolRisk risk)
     }
 }
 
-bool isSensitiveKey(const QString& key)
-{
-    auto normalized = key.toLower();
-    normalized.remove(QLatin1Char('_'));
-    normalized.remove(QLatin1Char('-'));
-    return normalized.contains(QStringLiteral("password")) ||
-           normalized.contains(QStringLiteral("passwd")) ||
-           normalized.contains(QStringLiteral("token")) ||
-           normalized.contains(QStringLiteral("secret")) ||
-           normalized.contains(QStringLiteral("apikey")) ||
-           normalized.contains(QStringLiteral("authorization")) ||
-           normalized.contains(QStringLiteral("credential")) ||
-           normalized.contains(QStringLiteral("cookie"));
-}
-
-QJsonValue redactSensitiveValues(const QJsonValue& value)
-{
-    if (value.isArray())
-    {
-        QJsonArray redacted;
-        for (const auto& item : value.toArray())
-            redacted.append(redactSensitiveValues(item));
-        return redacted;
-    }
-    if (!value.isObject()) return value;
-
-    QJsonObject redacted;
-    const auto object = value.toObject();
-    for (auto item = object.constBegin(); item != object.constEnd(); ++item)
-    {
-        redacted.insert(item.key(),
-                        isSensitiveKey(item.key())
-                            ? QJsonValue(QStringLiteral("[redacted]"))
-                            : redactSensitiveValues(item.value()));
-    }
-    return redacted;
-}
 }  // namespace
 
 ToolApprovalWidget::ToolApprovalWidget(infrastructure::mcp::ToolRisk risk,

@@ -33,6 +33,8 @@ class AssistantResponseTest final : public QObject
     void rendersConversationPreview();
     void reasoningOnlyResponseFallsBackToVisibleAnswer();
     void showsInlineToolApprovalAndRedactsSecrets();
+    void showsAgentActivityUntilRunEnds();
+    void recordsRedactedAgentActivity();
     void enterSendsAndShiftEnterAddsNewline();
     void restoresPromptAfterGenerationError();
     void clearsVisibleAndInMemoryConversation();
@@ -251,6 +253,91 @@ void AssistantResponseTest::showsInlineToolApprovalAndRedactsSecrets()
     QVERIFY(!allow->isVisible());
 }
 
+void AssistantResponseTest::showsAgentActivityUntilRunEnds()
+{
+    ui::MainWindow window;
+    auto* controller = window.findChild<application::AgentController*>();
+    QVERIFY(controller != nullptr);
+
+    emit controller->userRequestAccepted(QStringLiteral("run-id"),
+                                         QStringLiteral("hello"));
+    auto activityMessages = window.findChildren<ui::MessageWidget*>();
+    QCOMPARE(activityMessages.size(), 2);
+    auto* activity = static_cast<ui::MessageWidget*>(nullptr);
+    for (auto* message : activityMessages)
+    {
+        if (message->property("agentActivity").toBool())
+        {
+            activity = message;
+            break;
+        }
+    }
+    QVERIFY(activity != nullptr);
+    auto* body = activity->findChild<QTextBrowser*>(
+        QStringLiteral("assistantMessageBody"));
+    QVERIFY(body != nullptr);
+    QCOMPARE(body->toPlainText(), QStringLiteral("Thinking..."));
+
+    emit controller->stateChanged(application::AgentRun::State::ExecutingTool);
+    QCOMPARE(body->toPlainText(), QStringLiteral("Using a tool..."));
+
+    emit controller->finalAnswerReady(QStringLiteral("run-id"),
+                                      QStringLiteral("Done."));
+    activityMessages = window.findChildren<ui::MessageWidget*>();
+    QCOMPARE(activityMessages.size(), 2);
+    for (auto* message : activityMessages)
+        QVERIFY(!message->property("agentActivity").toBool());
+
+    emit controller->userRequestAccepted(QStringLiteral("failed-run"),
+                                         QStringLiteral("try again"));
+    QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 4);
+    emit controller->stateChanged(application::AgentRun::State::Failed);
+    activityMessages = window.findChildren<ui::MessageWidget*>();
+    QCOMPARE(activityMessages.size(), 3);
+    for (auto* message : activityMessages)
+        QVERIFY(!message->property("agentActivity").toBool());
+}
+
+void AssistantResponseTest::recordsRedactedAgentActivity()
+{
+    ui::MainWindow window;
+    auto* controller = window.findChild<application::AgentController*>();
+    auto* activityLog =
+        window.findChild<QPlainTextEdit*>(QStringLiteral("activityLog"));
+    QVERIFY(controller != nullptr);
+    QVERIFY(activityLog != nullptr);
+
+    emit controller->eventRecorded(
+        {QStringLiteral("run-id"),
+         agent::EventType::RunStarted,
+         QStringLiteral("Agent run started."),
+         {},
+         {},
+         QDateTime::fromString(QStringLiteral("2026-08-14T02:03:04Z"),
+                               Qt::ISODate)});
+    emit controller->userRequestAccepted(QStringLiteral("run-id"),
+                                         QStringLiteral("hello"));
+    emit controller->eventRecorded(
+        {QStringLiteral("run-id"),
+         agent::EventType::ToolStarted,
+         QStringLiteral("Tool call started."),
+         QStringLiteral("filesystem.list_directory"),
+         {{QStringLiteral("path"), QStringLiteral("D:/")},
+          {QStringLiteral("apiToken"), QStringLiteral("do-not-display")}},
+         QDateTime::fromString(QStringLiteral("2026-08-14T02:03:05Z"),
+                               Qt::ISODate)});
+
+    const auto activity = activityLog->toPlainText();
+    QVERIFY(activity.contains(QStringLiteral("====================")));
+    QVERIFY(activity.contains(QStringLiteral("Agent run started.")));
+    QVERIFY(
+        activity.contains(QStringLiteral("Tool: filesystem.list_directory")));
+    QVERIFY(activity.contains(QStringLiteral("D:/")));
+    QVERIFY(activity.contains(QStringLiteral("[redacted]")));
+    QVERIFY(!activity.contains(QStringLiteral("do-not-display")));
+    QVERIFY(!activity.contains(QStringLiteral("hello")));
+}
+
 void AssistantResponseTest::enterSendsAndShiftEnterAddsNewline()
 {
     ui::MainWindow window;
@@ -293,12 +380,12 @@ void AssistantResponseTest::clearsVisibleAndInMemoryConversation()
     ui::MainWindow window;
     auto* prompt =
         window.findChild<QPlainTextEdit*>(QStringLiteral("promptEditor"));
-    auto* rawTranscript =
-        window.findChild<QPlainTextEdit*>(QStringLiteral("rawTranscript"));
+    auto* activityLog =
+        window.findChild<QPlainTextEdit*>(QStringLiteral("activityLog"));
     auto* clearButton = window.findChild<QPushButton*>(
         QStringLiteral("clearConversationButton"));
     QVERIFY(prompt != nullptr);
-    QVERIFY(rawTranscript != nullptr);
+    QVERIFY(activityLog != nullptr);
     QVERIFY(clearButton != nullptr);
     QVERIFY(!clearButton->isEnabled());
 
@@ -310,7 +397,7 @@ void AssistantResponseTest::clearsVisibleAndInMemoryConversation()
     clearButton->click();
     QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 0);
     QVERIFY(!clearButton->isEnabled());
-    QVERIFY(rawTranscript->toPlainText().isEmpty());
+    QVERIFY(activityLog->toPlainText().isEmpty());
 }
 }  // namespace qtllm::tests
 

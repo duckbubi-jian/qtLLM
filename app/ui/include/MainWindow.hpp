@@ -53,7 +53,8 @@ class MainWindow final : public QMainWindow
     void buildUi();
     void appendUserMessage(const QString& text);
     void beginAssistantMessage();
-    void appendRawText(const QString& text);
+    void appendActivityText(const QString& text);
+    void appendAgentEvent(const agent::Event& event);
     void renderAssistant(bool final = false);
     [[nodiscard]] bool conversationIsAtBottom() const;
     void scrollConversationToBottom();
@@ -66,6 +67,9 @@ class MainWindow final : public QMainWindow
     bool cacheVerifiedModel(const models::ModelSelection& selection) const;
     void updateModelInformation(const models::ModelSelection& selection);
     void beginAgentPrompt(const QString& prompt);
+    void showAgentActivity();
+    void updateAgentActivity(const QString& text);
+    void removeAgentActivity();
     void appendAgentAnswer(const QString& answer);
     void updateAgentState(application::AgentRun::State state);
     void loadMcpServers();
@@ -83,7 +87,7 @@ class MainWindow final : public QMainWindow
     QTabWidget* transcriptTabs_ = nullptr;
     QScrollArea* conversationScroll_ = nullptr;
     QVBoxLayout* conversationLayout_ = nullptr;
-    QPlainTextEdit* rawTranscript_ = nullptr;
+    QPlainTextEdit* activityLog_ = nullptr;
     QPlainTextEdit* promptEdit_ = nullptr;
     QPushButton* clearButton_ = nullptr;
     QPushButton* sendButton_ = nullptr;
@@ -91,6 +95,7 @@ class MainWindow final : public QMainWindow
     QLabel* statusLabel_ = nullptr;
     QTimer* renderTimer_ = nullptr;
     MessageWidget* currentAssistant_ = nullptr;
+    MessageWidget* agentActivityMessage_ = nullptr;
     ToolApprovalWidget* pendingToolApproval_ = nullptr;
     QString currentAssistantText_;
     QByteArray pendingUtf8_;

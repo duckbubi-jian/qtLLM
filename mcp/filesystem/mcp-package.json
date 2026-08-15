@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "qtllm.filesystem",
+  "serverId": "filesystem",
+  "name": "Filesystem",
+  "version": "0.2.0",
+  "publisher": "qtLLM",
+  "description": "Read and modify files within explicitly authorized directories.",
+  "builtIn": true,
+  "entrypoint": "qtllm-mcp-filesystem.exe",
+  "enabledByDefault": true,
+  "toolAllowlist": [
+    "read_text_file",
+    "read_multiple_files",
+    "list_directory",
+    "directory_tree",
+    "search_files",
+    "get_file_info",
+    "list_allowed_directories",
+    "create_directory",
+    "write_file",
+    "edit_file",
+    "move_file",
+    "delete_file",
+    "delete_directory"
+  ]
+}

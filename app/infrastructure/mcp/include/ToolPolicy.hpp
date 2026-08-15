@@ -4,6 +4,8 @@
 #include <QMetaType>
 #include <QString>
 
+#include <optional>
+
 namespace qtllm::infrastructure::mcp
 {
 enum class ToolRisk
@@ -25,8 +27,11 @@ struct ToolPolicyRule
 {
     ToolRisk risk = ToolRisk::ModifiesData;
     bool enabled = true;
-    bool allowAutomaticRead = false;
+    bool alwaysAllow = false;
 };
+
+[[nodiscard]] ToolPolicyRule defaultToolPolicyRule(
+    const QString& qualifiedToolName);
 
 class ToolPolicy final
 {
@@ -37,6 +42,8 @@ class ToolPolicy final
 
     [[nodiscard]] ToolDecision evaluate(const QString& qualifiedToolName) const;
     [[nodiscard]] ToolRisk risk(const QString& qualifiedToolName) const;
+    [[nodiscard]] std::optional<ToolPolicyRule> rule(
+        const QString& qualifiedToolName) const;
 
    private:
     QHash<QString, ToolPolicyRule> rules_;

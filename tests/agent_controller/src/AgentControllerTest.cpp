@@ -15,6 +15,7 @@ class AgentControllerTest final : public QObject
     void repairsOnlyOneInvalidAction();
     void cancelsAndIgnoresLateResponses();
     void keepsConversationHistoryAndClearsIt();
+    void emptyToolPromptForbidsToolCalls();
 };
 
 agent::ToolDefinition echoTool()
@@ -226,6 +227,29 @@ void AgentControllerTest::keepsConversationHistoryAndClearsIt()
     QVERIFY(controller.clearConversation());
     QVERIFY(!controller.hasConversation());
     QCOMPARE(clearedSpy.count(), 1);
+}
+
+void AgentControllerTest::emptyToolPromptForbidsToolCalls()
+{
+    QList<chat::Message> generatedMessages;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>& messages,
+                const models::InferencePreset&, int)
+            { generatedMessages = messages; },
+            [] {}, [](const QString&, const QJsonObject&)
+            { return QStringLiteral("unused"); }, [](const QString&) {},
+            [](const QString&, const QJsonObject&, QString&) { return true; },
+            [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+
+    QVERIFY(controller.start(QStringLiteral("Write a C++ file"), {}, {}));
+    QVERIFY(!generatedMessages.isEmpty());
+    const auto prompt = generatedMessages.constFirst().content;
+    QVERIFY(prompt.contains(QStringLiteral("No tools are available")));
+    QVERIFY(prompt.contains(QStringLiteral("must not call a tool")));
+    QVERIFY(!prompt.contains(QStringLiteral("server.tool")));
+    controller.cancel();
 }
 }  // namespace qtllm::tests
 

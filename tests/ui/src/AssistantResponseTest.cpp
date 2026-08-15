@@ -8,11 +8,14 @@
 #include <QColor>
 #include <QDir>
 #include <QFileInfo>
+#include <QLabel>
+#include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QTextBlock>
 #include <QTextBrowser>
 #include <QTextFormat>
+#include <QToolButton>
 #include <QVBoxLayout>
 #include <QtTest>
 
@@ -38,6 +41,7 @@ class AssistantResponseTest final : public QObject
     void enterSendsAndShiftEnterAddsNewline();
     void restoresPromptAfterGenerationError();
     void clearsVisibleAndInMemoryConversation();
+    void showsWorkspaceAsComposerLink();
 };
 
 void AssistantResponseTest::initTestCase()
@@ -238,8 +242,11 @@ void AssistantResponseTest::showsInlineToolApprovalAndRedactsSecrets()
         QStringLiteral("toolApprovalArguments"));
     auto* allow =
         approval.findChild<QPushButton*>(QStringLiteral("allowToolButton"));
+    auto* alwaysAllow = approval.findChild<QPushButton*>(
+        QStringLiteral("alwaysAllowToolButton"));
     QVERIFY(arguments != nullptr);
     QVERIFY(allow != nullptr);
+    QVERIFY(alwaysAllow != nullptr);
     QVERIFY(
         arguments->toPlainText().contains(QStringLiteral("D:/safe/file.txt")));
     QVERIFY(arguments->toPlainText().contains(QStringLiteral("[redacted]")));
@@ -249,8 +256,24 @@ void AssistantResponseTest::showsInlineToolApprovalAndRedactsSecrets()
 
     allow->click();
     QCOMPARE(decisionSpy.count(), 1);
-    QVERIFY(decisionSpy.constFirst().constFirst().toBool());
+    QCOMPARE(qvariant_cast<ui::ToolApprovalDecision>(
+                 decisionSpy.constFirst().constFirst()),
+             ui::ToolApprovalDecision::AllowOnce);
     QVERIFY(!allow->isVisible());
+
+    ui::ToolApprovalWidget persistentApproval(
+        infrastructure::mcp::ToolRisk::ModifiesData,
+        QStringLiteral("filesystem.write_file"), {});
+    QSignalSpy persistentSpy(&persistentApproval,
+                             &ui::ToolApprovalWidget::decisionMade);
+    auto* persistentButton = persistentApproval.findChild<QPushButton*>(
+        QStringLiteral("alwaysAllowToolButton"));
+    QVERIFY(persistentButton != nullptr);
+    persistentButton->click();
+    QCOMPARE(persistentSpy.count(), 1);
+    QCOMPARE(qvariant_cast<ui::ToolApprovalDecision>(
+                 persistentSpy.constFirst().constFirst()),
+             ui::ToolApprovalDecision::AlwaysAllow);
 }
 
 void AssistantResponseTest::showsAgentActivityUntilRunEnds()
@@ -398,6 +421,26 @@ void AssistantResponseTest::clearsVisibleAndInMemoryConversation()
     QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 0);
     QVERIFY(!clearButton->isEnabled());
     QVERIFY(activityLog->toPlainText().isEmpty());
+}
+
+void AssistantResponseTest::showsWorkspaceAsComposerLink()
+{
+    ui::MainWindow window;
+    auto* composer =
+        window.findChild<QWidget*>(QStringLiteral("promptComposer"));
+    auto* workspaceLink =
+        window.findChild<QLabel*>(QStringLiteral("workspacePathLink"));
+    auto* workspaceButton =
+        window.findChild<QToolButton*>(QStringLiteral("workspaceBrowseButton"));
+
+    QVERIFY(composer != nullptr);
+    QVERIFY(workspaceLink != nullptr);
+    QVERIFY(workspaceButton != nullptr);
+    QCOMPARE(workspaceLink->parentWidget(), composer);
+    QCOMPARE(workspaceButton->parentWidget(), composer);
+    QVERIFY(workspaceLink->text().contains(QStringLiteral("<a ")));
+    QVERIFY(window.findChild<QLineEdit*>(QStringLiteral("workspacePathEdit")) ==
+            nullptr);
 }
 }  // namespace qtllm::tests
 

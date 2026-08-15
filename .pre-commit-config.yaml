@@ -24,7 +24,7 @@ repos:
     rev: v19.1.0
     hooks:
       - id: clang-format
-        files: ^(?:app|worker|shared|tests)/.*\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx)$
+        files: ^(?:app|mcp|worker|shared|tests)/.*\.(?:c|cc|cpp|cxx|h|hh|hpp|hxx)$
 
   - repo: https://github.com/executablebooks/mdformat
     rev: 0.7.22

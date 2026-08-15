@@ -49,6 +49,21 @@ bool SettingsStore::setLastModelPath(const QString& modelPath) const
     return settings.status() == QSettings::NoError;
 }
 
+QString SettingsStore::workspacePath() const
+{
+    const QSettings settings(filePath_, QSettings::IniFormat);
+    return settings.value(QStringLiteral("workspace/path"), QDir::homePath())
+        .toString();
+}
+
+bool SettingsStore::setWorkspacePath(const QString& workspacePath) const
+{
+    QSettings settings(filePath_, QSettings::IniFormat);
+    settings.setValue(QStringLiteral("workspace/path"), workspacePath);
+    settings.sync();
+    return settings.status() == QSettings::NoError;
+}
+
 bool SettingsStore::isModelFileVerified(const QString& modelPath,
                                         qint64 expectedSize,
                                         const QString& expectedSha256) const
@@ -140,6 +155,30 @@ bool SettingsStore::setMcpServerConfigs(
         !configFile.commit())
         return false;
     return true;
+}
+
+QStringList SettingsStore::alwaysAllowedMcpTools() const
+{
+    const QSettings settings(filePath_, QSettings::IniFormat);
+    auto tools =
+        settings.value(QStringLiteral("mcp/alwaysAllowedTools")).toStringList();
+    tools.removeAll({});
+    tools.removeDuplicates();
+    tools.sort(Qt::CaseSensitive);
+    return tools;
+}
+
+bool SettingsStore::setAlwaysAllowedMcpTools(
+    const QStringList& qualifiedToolNames) const
+{
+    auto tools = qualifiedToolNames;
+    tools.removeAll({});
+    tools.removeDuplicates();
+    tools.sort(Qt::CaseSensitive);
+    QSettings settings(filePath_, QSettings::IniFormat);
+    settings.setValue(QStringLiteral("mcp/alwaysAllowedTools"), tools);
+    settings.sync();
+    return settings.status() == QSettings::NoError;
 }
 
 QString SettingsStore::mcpConfigFilePath() const

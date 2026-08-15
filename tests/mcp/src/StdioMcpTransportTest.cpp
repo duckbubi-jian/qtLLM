@@ -1,7 +1,13 @@
+#include "BuiltInMcpServer.hpp"
 #include "McpClientManager.hpp"
 #include "ToolPolicy.hpp"
 
+#include <QCoreApplication>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QSignalSpy>
+#include <QTemporaryDir>
 #include <QtTest>
 
 namespace qtllm::tests
@@ -17,6 +23,7 @@ class StdioMcpTransportTest final : public QObject
     void validatesArgumentsBeforeCallingServer();
     void appliesLocalToolPolicy();
     void roundTripsServerConfiguration();
+    void builtInFilesystemWritesCppFile();
 };
 
 infrastructure::mcp::McpServerConfig testConfig()
@@ -171,6 +178,19 @@ void StdioMcpTransportTest::appliesLocalToolPolicy()
                    {infrastructure::mcp::ToolRisk::Destructive, false, false});
     QCOMPARE(policy.evaluate(QStringLiteral("fake.echo")),
              infrastructure::mcp::ToolDecision::Deny);
+
+    const auto readRule = infrastructure::mcp::defaultToolPolicyRule(
+        QStringLiteral("filesystem.read_text_file"));
+    QCOMPARE(readRule.risk, infrastructure::mcp::ToolRisk::ReadOnly);
+    QVERIFY(readRule.alwaysAllow);
+    const auto writeRule = infrastructure::mcp::defaultToolPolicyRule(
+        QStringLiteral("filesystem.write_file"));
+    QCOMPARE(writeRule.risk, infrastructure::mcp::ToolRisk::ModifiesData);
+    QVERIFY(!writeRule.alwaysAllow);
+    const auto unknownRule = infrastructure::mcp::defaultToolPolicyRule(
+        QStringLiteral("thirdparty.read_text_file"));
+    QCOMPARE(unknownRule.risk, infrastructure::mcp::ToolRisk::ModifiesData);
+    QVERIFY(!unknownRule.alwaysAllow);
 }
 
 void StdioMcpTransportTest::roundTripsServerConfiguration()
@@ -195,6 +215,83 @@ void StdioMcpTransportTest::roundTripsServerConfiguration()
     QCOMPARE(parsed.environment, config.environment);
     QCOMPARE(parsed.toolAllowlist, config.toolAllowlist);
     QCOMPARE(parsed.maxResultBytes, config.maxResultBytes);
+}
+
+void StdioMcpTransportTest::builtInFilesystemWritesCppFile()
+{
+    QTemporaryDir workspace;
+    QVERIFY(workspace.isValid());
+    const auto workspaceRoot =
+        QDir(workspace.path()).filePath(QStringLiteral("工作区"));
+    QVERIFY(QDir().mkpath(workspaceRoot));
+    const auto runtimeDirectory =
+        qEnvironmentVariable("QTLLM_TEST_RUNTIME_DIR");
+    QVERIFY2(!runtimeDirectory.isEmpty(),
+             "QTLLM_TEST_RUNTIME_DIR is not configured");
+
+    infrastructure::mcp::McpServerConfig config;
+    QString errorMessage;
+    QVERIFY2(infrastructure::mcp::createBuiltInFilesystemServerConfig(
+                 runtimeDirectory, QStringLiteral("0.2.0"), workspaceRoot,
+                 config, errorMessage),
+             qPrintable(errorMessage));
+    QCOMPARE(config.serverId, QStringLiteral("filesystem"));
+    QCOMPARE(config.arguments,
+             QStringList({QStringLiteral("--write-root"), workspaceRoot}));
+
+    infrastructure::mcp::McpClientManager manager;
+    QVERIFY2(manager.addServer(config, errorMessage), qPrintable(errorMessage));
+    QSignalSpy startedSpy(
+        &manager, &infrastructure::mcp::McpClientManager::serverStarted);
+    manager.startServer(config.serverId);
+    QTRY_COMPARE_WITH_TIMEOUT(startedSpy.count(), 1, 2'000);
+
+    QSignalSpy initializedSpy(
+        &manager, &infrastructure::mcp::McpClientManager::serverInitialized);
+    QVERIFY(!manager.initialize(config.serverId).isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(initializedSpy.count(), 1, 2'000);
+
+    QSignalSpy toolsSpy(&manager,
+                        &infrastructure::mcp::McpClientManager::toolsChanged);
+    QVERIFY(!manager.listTools(config.serverId).isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(toolsSpy.count(), 1, 2'000);
+    QVERIFY(manager.registry().find(QStringLiteral("filesystem.write_file")) !=
+            nullptr);
+
+    const auto cppPath =
+        QDir(workspaceRoot).filePath(QStringLiteral("示例.cpp"));
+    const auto cppSource = QStringLiteral(
+        "#include <iostream>\n\nint main()\n{\n    std::cout << "
+        "\"hello\" << '\\n';\n    return 0;\n}\n");
+    QSignalSpy resultSpy(
+        &manager, &infrastructure::mcp::McpClientManager::toolResultReady);
+    const auto requestId =
+        manager.callTool(QStringLiteral("filesystem.write_file"),
+                         {{QStringLiteral("path"), cppPath},
+                          {QStringLiteral("content"), cppSource}});
+    QVERIFY(!requestId.isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(resultSpy.count(), 1, 2'000);
+    const auto result = qvariant_cast<agent::ToolResult>(resultSpy.at(0).at(0));
+    QVERIFY2(!result.isError, qPrintable(result.errorMessage));
+
+    QFile cppFile(cppPath);
+    QVERIFY(cppFile.open(QIODevice::ReadOnly));
+    QCOMPARE(QString::fromUtf8(cppFile.readAll()), cppSource);
+
+    QTemporaryDir outsideWorkspace;
+    QVERIFY(outsideWorkspace.isValid());
+    const auto outsidePath =
+        QDir(outsideWorkspace.path()).filePath(QStringLiteral("outside.cpp"));
+    const auto rejectedRequestId =
+        manager.callTool(QStringLiteral("filesystem.write_file"),
+                         {{QStringLiteral("path"), outsidePath},
+                          {QStringLiteral("content"), cppSource}});
+    QVERIFY(!rejectedRequestId.isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(resultSpy.count(), 2, 2'000);
+    const auto rejectedResult =
+        qvariant_cast<agent::ToolResult>(resultSpy.at(1).at(0));
+    QVERIFY(rejectedResult.isError);
+    QVERIFY(!QFileInfo::exists(outsidePath));
 }
 }  // namespace qtllm::tests
 

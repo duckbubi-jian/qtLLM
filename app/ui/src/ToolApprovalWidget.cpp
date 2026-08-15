@@ -125,14 +125,19 @@ ToolApprovalWidget::ToolApprovalWidget(infrastructure::mcp::ToolRisk risk,
     rejectButton_->setObjectName(QStringLiteral("rejectToolButton"));
     allowButton_ = new QPushButton(tr("Allow once"), this);
     allowButton_->setObjectName(QStringLiteral("allowToolButton"));
+    alwaysAllowButton_ = new QPushButton(tr("Always allow"), this);
+    alwaysAllowButton_->setObjectName(QStringLiteral("alwaysAllowToolButton"));
     actionRow->addWidget(rejectButton_);
     actionRow->addWidget(allowButton_);
+    actionRow->addWidget(alwaysAllowButton_);
     layout->addLayout(actionRow);
 
     connect(allowButton_, &QPushButton::clicked, this,
-            [this] { resolve(true); });
+            [this] { resolve(ToolApprovalDecision::AllowOnce); });
+    connect(alwaysAllowButton_, &QPushButton::clicked, this,
+            [this] { resolve(ToolApprovalDecision::AlwaysAllow); });
     connect(rejectButton_, &QPushButton::clicked, this,
-            [this] { resolve(false); });
+            [this] { resolve(ToolApprovalDecision::DenyOnce); });
 }
 
 void ToolApprovalWidget::markCancelled()
@@ -140,19 +145,33 @@ void ToolApprovalWidget::markCancelled()
     if (!resolved_) setResolvedState(tr("No longer active"), false);
 }
 
-void ToolApprovalWidget::resolve(bool approved)
+void ToolApprovalWidget::resolve(ToolApprovalDecision decision)
 {
     if (resolved_) return;
-    setResolvedState(approved ? tr("Allowed once") : tr("Rejected"), approved);
-    emit decisionMade(approved);
+    const auto approved = decision != ToolApprovalDecision::DenyOnce;
+    switch (decision)
+    {
+        case ToolApprovalDecision::DenyOnce:
+            setResolvedState(tr("Denied once"), false);
+            break;
+        case ToolApprovalDecision::AllowOnce:
+            setResolvedState(tr("Allowed once"), true);
+            break;
+        case ToolApprovalDecision::AlwaysAllow:
+            setResolvedState(tr("Always allowed"), true);
+            break;
+    }
+    emit decisionMade(decision);
 }
 
 void ToolApprovalWidget::setResolvedState(const QString& status, bool approved)
 {
     resolved_ = true;
     allowButton_->setEnabled(false);
+    alwaysAllowButton_->setEnabled(false);
     rejectButton_->setEnabled(false);
     allowButton_->setVisible(false);
+    alwaysAllowButton_->setVisible(false);
     rejectButton_->setVisible(false);
     statusLabel_->setText(status);
     statusLabel_->setProperty("approved", approved);

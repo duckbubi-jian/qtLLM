@@ -35,12 +35,17 @@ void WorkerClientTest::storesLastModelPathInExplicitIniFile()
 
     infrastructure::SettingsStore settings(settingsPath);
     QVERIFY(settings.lastModelPath().isEmpty());
+    QCOMPARE(settings.workspacePath(), QDir::homePath());
     QVERIFY(settings.setLastModelPath(modelPath));
     QCOMPARE(settings.lastModelPath(), modelPath);
+    const auto workspacePath = directory.path();
+    QVERIFY(settings.setWorkspacePath(workspacePath));
+    QCOMPARE(settings.workspacePath(), workspacePath);
     QVERIFY(QFileInfo::exists(settingsPath));
 
     const infrastructure::SettingsStore reloaded(settingsPath);
     QCOMPARE(reloaded.lastModelPath(), modelPath);
+    QCOMPARE(reloaded.workspacePath(), workspacePath);
 }
 
 void WorkerClientTest::defaultsToApplicationDirectory()
@@ -124,6 +129,14 @@ void WorkerClientTest::storesMcpServerConfiguration()
     QCOMPARE(loaded.constFirst().arguments, config.arguments);
     QCOMPARE(loaded.constFirst().environment, config.environment);
     QCOMPARE(loaded.constFirst().toolAllowlist, config.toolAllowlist);
+
+    const QStringList alwaysAllowed{
+        QStringLiteral("filesystem.write_file"),
+        QStringLiteral("filesystem.create_directory")};
+    QVERIFY(settings.setAlwaysAllowedMcpTools(alwaysAllowed));
+    QCOMPARE(settings.alwaysAllowedMcpTools(),
+             QStringList({QStringLiteral("filesystem.create_directory"),
+                          QStringLiteral("filesystem.write_file")}));
 }
 }  // namespace qtllm::tests
 

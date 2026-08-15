@@ -5,6 +5,8 @@ set(required_runtime_files
     qt.conf
     qtLLM.exe
     qtllm-worker.exe
+    mcp/builtin/qtllm.filesystem/@PROJECT_VERSION@/mcp-package.json
+    mcp/builtin/qtllm.filesystem/@PROJECT_VERSION@/qtllm-mcp-filesystem.exe
     Qt6Core.dll
     Qt6Gui.dll
     Qt6Widgets.dll

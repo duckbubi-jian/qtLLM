@@ -112,6 +112,24 @@ QWidget#promptComposer {
     border: 1px solid #d7dbe0;
     border-radius: 8px;
 }
+QToolButton#workspaceBrowseButton {
+    min-width: 26px;
+    min-height: 26px;
+    padding: 0;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+}
+QToolButton#workspaceBrowseButton:hover {
+    background: #e9f1ff;
+}
+QToolButton#workspaceBrowseButton:disabled {
+    background: transparent;
+}
+QLabel#workspacePathLink {
+    color: #2563eb;
+    padding: 0 2px;
+}
 QPlainTextEdit#promptEditor {
     padding: 8px 10px 2px 10px;
     background: transparent;

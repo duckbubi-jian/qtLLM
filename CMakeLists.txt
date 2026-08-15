@@ -122,6 +122,7 @@ function(qtllm_collect_include_directories module_directory output_var)
 endfunction()
 
 add_subdirectory(shared)
+add_subdirectory(mcp)
 add_subdirectory(app)
 add_subdirectory(worker)
 
@@ -192,6 +193,7 @@ set(qtllm_runtime_license_packages
     icu
     libpng
     llama-cpp
+    nlohmann-json
     openssl
     pcre2
     qtbase

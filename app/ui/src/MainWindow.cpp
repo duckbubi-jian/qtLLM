@@ -1,15 +1,18 @@
 #include "MainWindow.hpp"
 
+#include "BuiltInMcpServer.hpp"
 #include "MessageWidget.hpp"
 #include "SensitiveData.hpp"
 #include "ToolApprovalWidget.hpp"
 
 #include <QCoreApplication>
+#include <QDesktopServices>
 #include <QDir>
 #include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFontDatabase>
+#include <QFontMetrics>
 #include <QHBoxLayout>
 #include <QJsonDocument>
 #include <QKeyEvent>
@@ -20,12 +23,15 @@
 #include <QPushButton>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QSizePolicy>
 #include <QStatusBar>
 #include <QStringList>
 #include <QStyle>
 #include <QTabWidget>
 #include <QTextCursor>
 #include <QTimer>
+#include <QToolButton>
+#include <QUrl>
 #include <QVBoxLayout>
 #include <QWidget>
 #include <QtConcurrent/QtConcurrentRun>
@@ -69,6 +75,18 @@ MainWindow::MainWindow(QWidget* parent)
 
     buildUi();
     modelPathEdit_->setText(settingsStore_.lastModelPath());
+    auto workspacePath = settingsStore_.workspacePath();
+    QFileInfo workspaceInfo(workspacePath);
+    if (!workspaceInfo.isDir() || workspaceInfo.canonicalFilePath().isEmpty())
+    {
+        workspacePath = QFileInfo(QDir::homePath()).canonicalFilePath();
+    }
+    else
+    {
+        workspacePath = workspaceInfo.canonicalFilePath();
+    }
+    workspacePath_ = workspacePath;
+    updateWorkspaceLink();
 
     connect(&workerClient_, &infrastructure::WorkerClient::stateChanged, this,
             &MainWindow::updateState);
@@ -127,13 +145,34 @@ MainWindow::MainWindow(QWidget* parent)
                 pendingToolApproval_ = approval;
                 conversationLayout_->insertWidget(
                     conversationLayout_->count() - 1, approval);
-                connect(approval, &ToolApprovalWidget::decisionMade, this,
-                        [this, approval](bool approved)
+                connect(
+                    approval, &ToolApprovalWidget::decisionMade, this,
+                    [this, approval, toolName](ToolApprovalDecision decision)
+                    {
+                        if (pendingToolApproval_ != approval) return;
+                        pendingToolApproval_ = nullptr;
+                        const auto approved =
+                            decision != ToolApprovalDecision::DenyOnce;
+                        if (decision == ToolApprovalDecision::AlwaysAllow)
                         {
-                            if (pendingToolApproval_ != approval) return;
-                            pendingToolApproval_ = nullptr;
-                            agentController_.resolveApproval(approved);
-                        });
+                            auto rule = toolPolicy_.rule(toolName).value_or(
+                                infrastructure::mcp::defaultToolPolicyRule(
+                                    toolName));
+                            rule.enabled = true;
+                            rule.alwaysAllow = true;
+                            toolPolicy_.setRule(toolName, rule);
+                            auto alwaysAllowed =
+                                settingsStore_.alwaysAllowedMcpTools();
+                            if (!alwaysAllowed.contains(toolName))
+                                alwaysAllowed.append(toolName);
+                            if (!settingsStore_.setAlwaysAllowedMcpTools(
+                                    alwaysAllowed))
+                                qWarning().noquote()
+                                    << "Unable to persist MCP permission:"
+                                    << toolName;
+                        }
+                        agentController_.resolveApproval(approved);
+                    });
                 scrollConversationToBottom();
             });
     connect(&agentController_, &application::AgentController::eventRecorded,
@@ -179,6 +218,21 @@ MainWindow::MainWindow(QWidget* parent)
             &infrastructure::mcp::McpClientManager::serverInitialized, this,
             [this](const QString& serverId, const QJsonObject&)
             { mcpManager_.listTools(serverId); });
+    connect(&mcpManager_, &infrastructure::mcp::McpClientManager::toolsChanged,
+            this,
+            [this](const QString&, const QList<agent::ToolDefinition>& tools)
+            {
+                const auto alwaysAllowed =
+                    settingsStore_.alwaysAllowedMcpTools();
+                for (const auto& tool : tools)
+                {
+                    auto rule = infrastructure::mcp::defaultToolPolicyRule(
+                        tool.qualifiedName);
+                    if (alwaysAllowed.contains(tool.qualifiedName))
+                        rule.alwaysAllow = true;
+                    toolPolicy_.setRule(tool.qualifiedName, rule);
+                }
+            });
     connect(&mcpManager_, &infrastructure::mcp::McpClientManager::serverError,
             this,
             [this](const QString& serverId, const QString& code,
@@ -196,6 +250,9 @@ MainWindow::MainWindow(QWidget* parent)
 
 bool MainWindow::eventFilter(QObject* watched, QEvent* event)
 {
+    if (watched == workspacePathLabel_ && event->type() == QEvent::Resize)
+        updateWorkspaceLink();
+
     if (watched == promptEdit_ && event->type() == QEvent::KeyPress)
     {
         const auto* keyEvent = static_cast<QKeyEvent*>(event);
@@ -229,6 +286,47 @@ void MainWindow::selectGgufModel()
         this, tr("Select GGUF model"), current.absoluteFilePath(),
         tr("GGUF models (*.gguf);;All files (*)"));
     if (!selected.isEmpty()) modelPathEdit_->setText(selected);
+}
+
+void MainWindow::selectWorkspaceDirectory()
+{
+    if (agentRunActive_ || filesystemConfiguredExternally_) return;
+    const auto selected = QFileDialog::getExistingDirectory(
+        this, tr("Select workspace folder"), workspacePath_,
+        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+    if (selected.isEmpty()) return;
+
+    const auto workspacePath = QFileInfo(selected).canonicalFilePath();
+    if (workspacePath.isEmpty())
+    {
+        showError(QStringLiteral("invalid_workspace"),
+                  tr("The selected workspace folder is not available."));
+        return;
+    }
+    if (workspacePath == workspacePath_) return;
+
+    QString errorMessage;
+    if (!startBuiltInFilesystem(workspacePath, errorMessage))
+    {
+        showError(QStringLiteral("filesystem_mcp_unavailable"), errorMessage);
+        return;
+    }
+    workspacePath_ = workspacePath;
+    updateWorkspaceLink();
+    if (!settingsStore_.setWorkspacePath(workspacePath))
+        qWarning().noquote()
+            << "Unable to persist workspace path:" << workspacePath;
+}
+
+void MainWindow::openWorkspaceDirectory()
+{
+    if (workspacePath_.isEmpty()) return;
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(workspacePath_)))
+    {
+        statusLabel_->setText(tr("Unable to open the workspace folder"));
+        qWarning().noquote()
+            << "Unable to open workspace folder:" << workspacePath_;
+    }
 }
 
 void MainWindow::loadSelectedModel()
@@ -342,6 +440,8 @@ void MainWindow::updateState(infrastructure::WorkerClient::State state)
     browseButton_->setEnabled(ready);
     loadButton_->setEnabled(ready &&
                             !modelPathEdit_->text().trimmed().isEmpty());
+    workspaceButton_->setEnabled(!agentRunActive_ &&
+                                 !filesystemConfiguredExternally_);
     promptEdit_->setEnabled(modelReady && !agentRunActive_);
     sendButton_->setEnabled(modelReady && !agentRunActive_);
     stopButton_->setEnabled(generating || agentRunActive_);
@@ -517,7 +617,22 @@ void MainWindow::buildUi()
     clearButton_->setIcon(style()->standardIcon(QStyle::SP_DialogResetButton));
     clearButton_->setToolTip(tr("Clear the current conversation"));
     actionRow->addWidget(clearButton_);
-    actionRow->addStretch();
+    workspaceButton_ = new QToolButton(promptComposer);
+    workspaceButton_->setObjectName(QStringLiteral("workspaceBrowseButton"));
+    workspaceButton_->setAutoRaise(true);
+    workspaceButton_->setIcon(style()->standardIcon(QStyle::SP_DirOpenIcon));
+    workspaceButton_->setToolTip(tr("Select the workspace folder"));
+    actionRow->addWidget(workspaceButton_);
+    workspacePathLabel_ = new QLabel(promptComposer);
+    workspacePathLabel_->setObjectName(QStringLiteral("workspacePathLink"));
+    workspacePathLabel_->setTextFormat(Qt::RichText);
+    workspacePathLabel_->setTextInteractionFlags(Qt::LinksAccessibleByMouse |
+                                                 Qt::LinksAccessibleByKeyboard);
+    workspacePathLabel_->setToolTip(tr("Open the workspace folder"));
+    workspacePathLabel_->setSizePolicy(QSizePolicy::Ignored,
+                                       QSizePolicy::Preferred);
+    workspacePathLabel_->installEventFilter(this);
+    actionRow->addWidget(workspacePathLabel_, 1);
     stopButton_ = new QPushButton(tr("Stop"), promptComposer);
     stopButton_->setObjectName(QStringLiteral("stopButton"));
     stopButton_->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
@@ -544,6 +659,10 @@ void MainWindow::buildUi()
             &MainWindow::selectModelPackage);
     connect(ggufAction, &QAction::triggered, this,
             &MainWindow::selectGgufModel);
+    connect(workspaceButton_, &QToolButton::clicked, this,
+            &MainWindow::selectWorkspaceDirectory);
+    connect(workspacePathLabel_, &QLabel::linkActivated, this,
+            &MainWindow::openWorkspaceDirectory);
     connect(loadButton_, &QPushButton::clicked, this,
             &MainWindow::loadSelectedModel);
     connect(sendButton_, &QPushButton::clicked, this, &MainWindow::sendPrompt);
@@ -785,6 +904,9 @@ void MainWindow::loadMcpServers()
 {
     for (const auto& config : settingsStore_.mcpServerConfigs())
     {
+        if (config.serverId.trimmed() == QLatin1String("filesystem"))
+            filesystemConfiguredExternally_ = true;
+        if (!config.enabled) continue;
         QString errorMessage;
         if (!mcpManager_.addServer(config, errorMessage))
         {
@@ -793,6 +915,54 @@ void MainWindow::loadMcpServers()
         }
         mcpManager_.startServer(config.serverId);
     }
+
+    if (filesystemConfiguredExternally_) return;
+    QString errorMessage;
+    if (!startBuiltInFilesystem(workspacePath_, errorMessage))
+        qWarning().noquote()
+            << "Built-in filesystem MCP unavailable:" << errorMessage;
+}
+
+void MainWindow::updateWorkspaceLink()
+{
+    if (workspacePathLabel_ == nullptr || workspacePath_.isEmpty()) return;
+
+    const auto nativePath = QDir::toNativeSeparators(workspacePath_);
+    const auto availableWidth = qMax(80, workspacePathLabel_->width() - 4);
+    const auto displayPath = workspacePathLabel_->fontMetrics().elidedText(
+        nativePath, Qt::ElideMiddle, availableWidth);
+    const auto href = QUrl::fromLocalFile(workspacePath_)
+                          .toString(QUrl::FullyEncoded)
+                          .toHtmlEscaped();
+    workspacePathLabel_->setText(
+        QStringLiteral("<a style=\"color:#2563eb;text-decoration:none\" "
+                       "href=\"%1\">%2</a>")
+            .arg(href, displayPath.toHtmlEscaped()));
+    workspacePathLabel_->setToolTip(
+        tr("Open workspace folder: %1").arg(nativePath));
+}
+
+bool MainWindow::startBuiltInFilesystem(const QString& workspacePath,
+                                        QString& errorMessage)
+{
+    infrastructure::mcp::McpServerConfig config;
+    if (!infrastructure::mcp::createBuiltInFilesystemServerConfig(
+            QCoreApplication::applicationDirPath(),
+            QCoreApplication::applicationVersion(), workspacePath, config,
+            errorMessage))
+        return false;
+
+    if (builtInFilesystemRunning_)
+    {
+        if (!mcpManager_.removeServer(QStringLiteral("filesystem"),
+                                      errorMessage))
+            return false;
+        builtInFilesystemRunning_ = false;
+    }
+    if (!mcpManager_.addServer(config, errorMessage)) return false;
+    builtInFilesystemRunning_ = true;
+    mcpManager_.startServer(config.serverId);
+    return true;
 }
 
 void MainWindow::beginModelLoad(models::ModelSelection selection)

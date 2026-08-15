@@ -10,6 +10,13 @@ class QPushButton;
 
 namespace qtllm::ui
 {
+enum class ToolApprovalDecision
+{
+    DenyOnce,
+    AllowOnce,
+    AlwaysAllow
+};
+
 class ToolApprovalWidget final : public QWidget
 {
     Q_OBJECT
@@ -23,15 +30,18 @@ class ToolApprovalWidget final : public QWidget
     void markCancelled();
 
    signals:
-    void decisionMade(bool approved);
+    void decisionMade(qtllm::ui::ToolApprovalDecision decision);
 
    private:
-    void resolve(bool approved);
+    void resolve(ToolApprovalDecision decision);
     void setResolvedState(const QString& status, bool approved);
 
     QLabel* statusLabel_ = nullptr;
     QPushButton* allowButton_ = nullptr;
+    QPushButton* alwaysAllowButton_ = nullptr;
     QPushButton* rejectButton_ = nullptr;
     bool resolved_ = false;
 };
 }  // namespace qtllm::ui
+
+Q_DECLARE_METATYPE(qtllm::ui::ToolApprovalDecision)

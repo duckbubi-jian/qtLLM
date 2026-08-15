@@ -182,10 +182,14 @@ qt_add_executable(qtllm-fake-mcp-server
     "${CMAKE_CURRENT_SOURCE_DIR}/fake_mcp_server/FakeMcpServer.cpp"
 )
 target_link_libraries(qtllm-fake-mcp-server PRIVATE Qt6::Core)
-add_dependencies(qtllm-mcp-tests qtllm-fake-mcp-server)
+add_dependencies(qtllm-mcp-tests
+    qtllm-fake-mcp-server
+    qtllm-mcp-filesystem
+)
 add_test(NAME mcp_stdio_transport COMMAND qtllm-mcp-tests)
 set_tests_properties(mcp_stdio_transport PROPERTIES
-    ENVIRONMENT "QTLLM_TEST_MCP_SERVER=$<TARGET_FILE:qtllm-fake-mcp-server>"
+    ENVIRONMENT
+        "QTLLM_TEST_MCP_SERVER=$<TARGET_FILE:qtllm-fake-mcp-server>;QTLLM_TEST_RUNTIME_DIR=$<TARGET_FILE_DIR:qtllm-mcp-filesystem>"
 )
 
 qtllm_collect_module_files(

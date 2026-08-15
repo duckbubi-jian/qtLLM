@@ -103,7 +103,7 @@ qt_add_executable(qtLLM
     ${app_forms}
 )
 
-add_dependencies(qtLLM qtllm-worker)
+add_dependencies(qtLLM qtllm-worker qtllm-mcp-filesystem)
 
 target_include_directories(qtLLM
     PRIVATE

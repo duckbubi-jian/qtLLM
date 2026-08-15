@@ -18,6 +18,7 @@ class QPushButton;
 class QScrollArea;
 class QTabWidget;
 class QTimer;
+class QToolButton;
 class QVBoxLayout;
 
 namespace qtllm::ui
@@ -38,6 +39,8 @@ class MainWindow final : public QMainWindow
    private slots:
     void selectModelPackage();
     void selectGgufModel();
+    void selectWorkspaceDirectory();
+    void openWorkspaceDirectory();
     void loadSelectedModel();
     void finishModelPackageVerification();
     void sendPrompt();
@@ -73,6 +76,9 @@ class MainWindow final : public QMainWindow
     void appendAgentAnswer(const QString& answer);
     void updateAgentState(application::AgentRun::State state);
     void loadMcpServers();
+    void updateWorkspaceLink();
+    bool startBuiltInFilesystem(const QString& workspacePath,
+                                QString& errorMessage);
 
     infrastructure::SettingsStore settingsStore_;
     infrastructure::WorkerClient workerClient_;
@@ -84,6 +90,8 @@ class MainWindow final : public QMainWindow
     QLabel* modelInfoLabel_ = nullptr;
     QPushButton* browseButton_ = nullptr;
     QPushButton* loadButton_ = nullptr;
+    QLabel* workspacePathLabel_ = nullptr;
+    QToolButton* workspaceButton_ = nullptr;
     QTabWidget* transcriptTabs_ = nullptr;
     QScrollArea* conversationScroll_ = nullptr;
     QVBoxLayout* conversationLayout_ = nullptr;
@@ -98,10 +106,13 @@ class MainWindow final : public QMainWindow
     MessageWidget* agentActivityMessage_ = nullptr;
     ToolApprovalWidget* pendingToolApproval_ = nullptr;
     QString currentAssistantText_;
+    QString workspacePath_;
     QByteArray pendingUtf8_;
     models::ModelSelection pendingModelSelection_;
     models::ModelSelection activeModelSelection_;
     bool verifyingModelPackage_ = false;
     bool agentRunActive_ = false;
+    bool builtInFilesystemRunning_ = false;
+    bool filesystemConfiguredExternally_ = false;
 };
 }  // namespace qtllm::ui

@@ -141,7 +141,7 @@ void McpServerProcess::start()
         return;
     }
 
-    QProcessEnvironment environment;
+    auto environment = QProcessEnvironment::systemEnvironment();
     for (auto item = config_.environment.constBegin();
          item != config_.environment.constEnd(); ++item)
         environment.insert(item.key(), item.value());

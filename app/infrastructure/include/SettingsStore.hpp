@@ -4,6 +4,7 @@
 
 #include <QList>
 #include <QString>
+#include <QStringList>
 #include <QtGlobal>
 
 namespace qtllm::infrastructure
@@ -16,6 +17,8 @@ class SettingsStore final
     [[nodiscard]] QString filePath() const;
     [[nodiscard]] QString lastModelPath() const;
     bool setLastModelPath(const QString& modelPath) const;
+    [[nodiscard]] QString workspacePath() const;
+    bool setWorkspacePath(const QString& workspacePath) const;
     [[nodiscard]] bool isModelFileVerified(const QString& modelPath,
                                            qint64 expectedSize,
                                            const QString& expectedSha256) const;
@@ -24,6 +27,8 @@ class SettingsStore final
     [[nodiscard]] QList<mcp::McpServerConfig> mcpServerConfigs() const;
     bool setMcpServerConfigs(
         const QList<mcp::McpServerConfig>& configurations) const;
+    [[nodiscard]] QStringList alwaysAllowedMcpTools() const;
+    bool setAlwaysAllowedMcpTools(const QStringList& qualifiedToolNames) const;
 
    private:
     [[nodiscard]] static QString verificationKey(const QString& modelPath);

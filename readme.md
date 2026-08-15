@@ -33,12 +33,19 @@ Internally, every request uses a local, bounded execution loop. The model can
 propose only `call_tool` or `final` JSON actions; Qt validates the tool name and
 arguments and applies the local policy. Calls that require approval appear as
 inline conversation cards with a risk explanation, redacted arguments, and
-one-time Allow or Reject actions. Unknown tools are treated as data-modifying
-operations. MCP servers run as direct stdio child processes. No shell command
-is built from model output, and server stdout is treated as JSON-RPC data while
-stderr is diagnostic output.
+Allow once, Always allow, or Deny actions. Unknown tools are treated as
+data-modifying operations. MCP servers run as direct stdio child processes. No
+shell command is built from model output, and server stdout is treated as
+JSON-RPC data while stderr is diagnostic output.
 
-To configure servers, copy [the example](docs/mcp-servers.example.json) to
+The bundled filesystem MCP starts automatically with the visible Workspace
+folder as its only read/write root. Read-only tools run automatically; create,
+edit, move, and delete operations remain subject to the local approval policy.
+The filesystem server is a standalone C++20 process and has no Qt runtime
+dependency.
+
+To configure additional servers, copy
+[the example](docs/mcp-servers.example.json) to
 `mcp-servers.json` beside the application and replace the absolute executable
 path, working directory, environment allowlist, and tool allowlist. Only
 enabled tools returned by `tools/list` and present in the local allowlist can be

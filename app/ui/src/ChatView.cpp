@@ -3,22 +3,24 @@
 #include "AutoHideTabWidget.hpp"
 #include "ui_ChatView.h"
 
+#include <QAction>
 #include <QDir>
 #include <QEvent>
 #include <QFileInfo>
 #include <QFontDatabase>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QStackedWidget>
 #include <QStyle>
-#include <QToolButton>
-#include <QUrl>
+#include <QTabBar>
 #include <QVBoxLayout>
 
 namespace qtllm::ui
@@ -101,27 +103,31 @@ ChatView::ChatView(QWidget* parent)
 
     ui_->activityLog->setFont(
         QFontDatabase::systemFont(QFontDatabase::FixedFont));
-    ui_->actionRow->setStretch(1, 1);
-    ui_->clearConversationButton->setIcon(
+    ui_->clearConversationAction->setIcon(
         style()->standardIcon(QStyle::SP_DialogResetButton));
-    ui_->modelReloadButton->setIcon(
+    ui_->modelReloadAction->setIcon(
         style()->standardIcon(QStyle::SP_BrowserReload));
-    ui_->workspaceBrowseButton->setIcon(
-        style()->standardIcon(QStyle::SP_DirOpenIcon));
+    ui_->modelPathLink->addAction(ui_->modelReloadAction);
+    ui_->workspacePathLink->addAction(ui_->workspaceChangeAction);
+    ui_->transcriptTabs->addAction(ui_->clearConversationAction);
+    ui_->transcriptTabs->tabBar()->setContextMenuPolicy(Qt::ActionsContextMenu);
+    ui_->transcriptTabs->tabBar()->addAction(ui_->clearConversationAction);
     ui_->guideSelectModelButton->setIcon(
         style()->standardIcon(QStyle::SP_DirOpenIcon));
     ui_->guideLoadModelButton->setIcon(
         style()->standardIcon(QStyle::SP_MediaPlay));
 
-    ui_->workspacePathLink->setSizePolicy(QSizePolicy::Ignored,
+    ui_->workspacePathLink->setSizePolicy(QSizePolicy::Preferred,
                                           QSizePolicy::Preferred);
+    ui_->workspacePathLink->setCursor(Qt::PointingHandCursor);
+    ui_->workspacePathLink->setFocusPolicy(Qt::StrongFocus);
     ui_->modelPathLink->setSizePolicy(QSizePolicy::Fixed,
                                       QSizePolicy::Preferred);
     ui_->workspacePathLink->installEventFilter(this);
     ui_->modelPathLink->installEventFilter(this);
     ui_->promptEditor->installEventFilter(this);
 
-    connect(ui_->modelReloadButton, &QToolButton::clicked, this,
+    connect(ui_->modelReloadAction, &QAction::triggered, this,
             &ChatView::modelFolderRequested);
     connect(ui_->guideSelectModelButton, &QPushButton::clicked, this,
             &ChatView::modelFolderRequested);
@@ -129,17 +135,22 @@ ChatView::ChatView(QWidget* parent)
             &ChatView::modelLocationRequested);
     connect(ui_->guideLoadModelButton, &QPushButton::clicked, this,
             &ChatView::modelLoadRequested);
-    connect(ui_->workspaceBrowseButton, &QToolButton::clicked, this,
+    connect(ui_->workspaceChangeAction, &QAction::triggered, this,
             &ChatView::workspaceFolderRequested);
-    connect(ui_->workspacePathLink, &QLabel::linkActivated, this,
-            &ChatView::workspaceOpenRequested);
     connect(ui_->primaryActionButton, &QPushButton::clicked, this,
             &ChatView::primaryActionRequested);
-    connect(ui_->clearConversationButton, &QToolButton::clicked, this,
+    connect(ui_->clearConversationAction, &QAction::triggered, this,
             &ChatView::clearConversationRequested);
+    connect(ui_->agentModeSwitch, &QCheckBox::toggled, this,
+            [this](bool agentMode)
+            {
+                updateModePresentation();
+                emit modeChanged(agentMode);
+            });
 
     setModelPresentation({}, tr("Model not checked"), ModelBadgeState::Neutral);
     setWorkspacePresentation({});
+    updateModePresentation();
     setPrimaryAction(false, false);
     setConversationVisible(false);
 }
@@ -164,6 +175,11 @@ QScrollArea* ChatView::conversationScroll() const
 QVBoxLayout* ChatView::conversationLayout() const
 {
     return ui_->conversationLayout;
+}
+
+bool ChatView::isAgentModeSelected() const
+{
+    return ui_->agentModeSwitch->isChecked();
 }
 
 void ChatView::setModelPresentation(const QString& modelPath,
@@ -191,15 +207,15 @@ void ChatView::setWorkspacePresentation(const QString& workspacePath)
 
 void ChatView::setModelControlsEnabled(bool selectionEnabled, bool loadEnabled)
 {
-    ui_->modelReloadButton->setEnabled(selectionEnabled);
+    ui_->modelReloadAction->setEnabled(selectionEnabled);
     ui_->guideSelectModelButton->setEnabled(selectionEnabled);
     ui_->guideLoadModelButton->setEnabled(loadEnabled);
 }
 
 void ChatView::setWorkspaceControlsEnabled(bool enabled)
 {
-    ui_->workspaceBrowseButton->setEnabled(enabled);
-    ui_->workspacePathLink->setEnabled(enabled);
+    ui_->workspaceChangeAction->setEnabled(enabled);
+    ui_->workspacePathLink->setEnabled(!workspacePath_.isEmpty());
 }
 
 void ChatView::setPromptEnabled(bool enabled)
@@ -209,7 +225,7 @@ void ChatView::setPromptEnabled(bool enabled)
 
 void ChatView::setClearEnabled(bool enabled)
 {
-    ui_->clearConversationButton->setEnabled(enabled);
+    ui_->clearConversationAction->setEnabled(enabled);
 }
 
 void ChatView::setPrimaryAction(bool stopMode, bool enabled)
@@ -228,6 +244,18 @@ void ChatView::setPrimaryAction(bool stopMode, bool enabled)
     ui_->primaryActionButton->style()->polish(ui_->primaryActionButton);
 }
 
+void ChatView::setModeSelectionEnabled(bool enabled)
+{
+    ui_->agentModeSwitch->setEnabled(enabled);
+}
+
+void ChatView::setAgentModeSelected(bool selected)
+{
+    const QSignalBlocker blocker(ui_->agentModeSwitch);
+    ui_->agentModeSwitch->setChecked(selected);
+    updateModePresentation();
+}
+
 void ChatView::setConversationVisible(bool visible)
 {
     ui_->contentStack->setCurrentWidget(visible ? ui_->transcriptPage
@@ -243,12 +271,48 @@ void ChatView::setStatusText(const QString& text)
     ui_->guideStatusLabel->setVisible(!text.isEmpty());
 }
 
+void ChatView::updateModePresentation()
+{
+    const auto agentMode = ui_->agentModeSwitch->isChecked();
+    ui_->promptComposer->setProperty("agentMode", agentMode);
+    ui_->promptComposer->style()->unpolish(ui_->promptComposer);
+    ui_->promptComposer->style()->polish(ui_->promptComposer);
+    ui_->promptEditor->setPlaceholderText(
+        agentMode ? tr("Describe a task for the agent")
+                  : tr("Write a message"));
+    ui_->agentModeSwitch->setToolTip(agentMode ? tr("Switch to Chat mode")
+                                               : tr("Switch to Agent mode"));
+}
+
 bool ChatView::eventFilter(QObject* watched, QEvent* event)
 {
     if (watched == ui_->modelPathLink && event->type() == QEvent::Resize)
         updateModelPresentation();
     if (watched == ui_->workspacePathLink && event->type() == QEvent::Resize)
         updateWorkspacePresentation();
+    if (watched == ui_->workspacePathLink &&
+        event->type() == QEvent::MouseButtonRelease)
+    {
+        const auto* mouseEvent = static_cast<QMouseEvent*>(event);
+        if (mouseEvent->button() == Qt::LeftButton &&
+            ui_->workspacePathLink->isEnabled())
+        {
+            emit workspaceOpenRequested();
+            return true;
+        }
+    }
+    if (watched == ui_->workspacePathLink && event->type() == QEvent::KeyPress)
+    {
+        const auto* keyEvent = static_cast<QKeyEvent*>(event);
+        if (ui_->workspacePathLink->isEnabled() &&
+            (keyEvent->key() == Qt::Key_Return ||
+             keyEvent->key() == Qt::Key_Enter ||
+             keyEvent->key() == Qt::Key_Space))
+        {
+            emit workspaceOpenRequested();
+            return true;
+        }
+    }
 
     if (watched == ui_->promptEditor && event->type() == QEvent::KeyPress)
     {
@@ -287,7 +351,15 @@ void ChatView::updateModelPresentation()
                              "href=\"open-model-location\">%2</a>")
                   .arg(modelBadgeTextColor(modelBadgeState_),
                        displayText.toHtmlEscaped()));
-    ui_->guideModelNameLabel->setText(sourceText);
+    const auto guideWidth = qBound(
+        520,
+        ui_->guideModelNameLabel->fontMetrics().horizontalAdvance(sourceText) +
+            40,
+        600);
+    ui_->guideModelNameLabel->setFixedWidth(guideWidth);
+    ui_->guideModelNameLabel->setText(
+        ui_->guideModelNameLabel->fontMetrics().elidedText(
+            sourceText, Qt::ElideMiddle, guideWidth - 36));
 
     const auto tooltip = nativePath.isEmpty()
                              ? modelInformation_
@@ -302,21 +374,28 @@ void ChatView::updateWorkspacePresentation()
     if (workspacePath_.isEmpty())
     {
         ui_->workspacePathLink->clear();
+        ui_->workspacePathLink->setAccessibleDescription({});
+        ui_->workspacePathLink->setVisible(false);
         return;
     }
 
     const auto nativePath = QDir::toNativeSeparators(workspacePath_);
-    const auto availableWidth = qMax(80, ui_->workspacePathLink->width() - 4);
-    const auto displayPath = ui_->workspacePathLink->fontMetrics().elidedText(
-        nativePath, Qt::ElideMiddle, availableWidth);
-    const auto href = QUrl::fromLocalFile(workspacePath_)
-                          .toString(QUrl::FullyEncoded)
-                          .toHtmlEscaped();
+    auto folderName = QFileInfo(QDir::cleanPath(workspacePath_)).fileName();
+    if (folderName.isEmpty()) folderName = nativePath;
+    const auto labelWidth = qBound(
+        56,
+        ui_->workspacePathLink->fontMetrics().horizontalAdvance(folderName) +
+            16,
+        180);
+    ui_->workspacePathLink->setFixedWidth(labelWidth);
     ui_->workspacePathLink->setText(
-        QStringLiteral("<a style=\"color:#2563eb;text-decoration:none\" "
-                       "href=\"%1\">%2</a>")
-            .arg(href, displayPath.toHtmlEscaped()));
+        ui_->workspacePathLink->fontMetrics().elidedText(
+            folderName, Qt::ElideMiddle, labelWidth - 12));
+    ui_->workspacePathLink->setEnabled(true);
+    ui_->workspacePathLink->setVisible(true);
     ui_->workspacePathLink->setToolTip(
         tr("Open workspace folder: %1").arg(nativePath));
+    ui_->workspacePathLink->setAccessibleDescription(
+        tr("Workspace folder: %1").arg(nativePath));
 }
 }  // namespace qtllm::ui

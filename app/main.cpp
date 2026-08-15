@@ -13,7 +13,7 @@ int main(int argc, char* argv[])
     QCoreApplication::setApplicationName(QStringLiteral("qtLLM"));
     QCoreApplication::setApplicationVersion(QStringLiteral("0.2.0"));
     QString loggingError;
-    if (!qtllm::logging::initialize(QStringLiteral("qtLLM"), &loggingError))
+    if (!qtllm::logging::initialize(QStringLiteral("app"), &loggingError))
         QTextStream(stderr) << "warning: " << loggingError << Qt::endl;
     qtllm::logging::installQtMessageHandler();
     qtllm::logging::info(QStringLiteral("qtLLM 0.2.0 starting; log=%1")

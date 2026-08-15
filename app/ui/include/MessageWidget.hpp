@@ -31,10 +31,11 @@ class MessageWidget final : public QWidget
     void resizeEvent(QResizeEvent* event) override;
 
    private:
-    void updateUserBubbleWidth();
+    void updateBubbleWidth();
 
     Role role_;
-    QLabel* roleLabel_ = nullptr;
+    QLabel* avatarLabel_ = nullptr;
+    QWidget* content_ = nullptr;
     QToolButton* reasoningToggle_ = nullptr;
     QTextBrowser* reasoningView_ = nullptr;
     QTextBrowser* bodyView_ = nullptr;

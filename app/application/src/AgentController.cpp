@@ -44,7 +44,8 @@ void AgentController::notifyLongRunning()
 
 bool AgentController::start(const QString& userRequest,
                             const models::InferencePreset& preset,
-                            const QList<agent::ToolDefinition>& tools)
+                            const QList<agent::ToolDefinition>& tools,
+                            const AssistantContext& context)
 {
     const auto request = userRequest.trimmed();
     if (request.isEmpty() || hasActiveRun() || !dependencies_.generate ||
@@ -57,7 +58,7 @@ bool AgentController::start(const QString& userRequest,
     run.userRequest = request;
     run.startedAt = QDateTime::currentDateTimeUtc();
     run.inferenceMessages = AgentPromptBuilder::initialMessages(
-        request, tools, conversationMessages_);
+        request, tools, conversationMessages_, context);
     activeRun_ = std::move(run);
     preset_ = preset;
     availableTools_ = tools;
@@ -116,6 +117,13 @@ bool AgentController::clearConversation()
     if (hasActiveRun()) return false;
     conversationMessages_.clear();
     emit conversationCleared();
+    return true;
+}
+
+bool AgentController::setConversationMessages(QList<chat::Message> messages)
+{
+    if (hasActiveRun()) return false;
+    conversationMessages_ = std::move(messages);
     return true;
 }
 

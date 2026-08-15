@@ -64,6 +64,20 @@ bool SettingsStore::setWorkspacePath(const QString& workspacePath) const
     return settings.status() == QSettings::NoError;
 }
 
+bool SettingsStore::agentModeEnabled() const
+{
+    const QSettings settings(filePath_, QSettings::IniFormat);
+    return settings.value(QStringLiteral("chat/agentMode"), false).toBool();
+}
+
+bool SettingsStore::setAgentModeEnabled(bool enabled) const
+{
+    QSettings settings(filePath_, QSettings::IniFormat);
+    settings.setValue(QStringLiteral("chat/agentMode"), enabled);
+    settings.sync();
+    return settings.status() == QSettings::NoError;
+}
+
 bool SettingsStore::isModelFileVerified(const QString& modelPath,
                                         qint64 expectedSize,
                                         const QString& expectedSha256) const

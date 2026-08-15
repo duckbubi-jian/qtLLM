@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AssistantContext.hpp"
 #include "ChatMessage.hpp"
 #include "ToolDefinition.hpp"
 #include "ToolResult.hpp"
@@ -14,7 +15,8 @@ class AgentPromptBuilder final
    public:
     static QList<chat::Message> initialMessages(
         const QString& userRequest, const QList<agent::ToolDefinition>& tools,
-        const QList<chat::Message>& conversationHistory = {});
+        const QList<chat::Message>& conversationHistory = {},
+        const AssistantContext& context = {});
     static chat::Message toolResultMessage(const agent::ToolResult& result);
     static chat::Message correctionMessage(const QString& errorMessage);
 };

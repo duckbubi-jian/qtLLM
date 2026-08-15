@@ -38,6 +38,7 @@ class ChatView final : public QWidget
     [[nodiscard]] QPlainTextEdit* activityLog() const;
     [[nodiscard]] QScrollArea* conversationScroll() const;
     [[nodiscard]] QVBoxLayout* conversationLayout() const;
+    [[nodiscard]] bool isAgentModeSelected() const;
 
     void setModelPresentation(const QString& modelPath,
                               const QString& modelInformation,
@@ -48,6 +49,8 @@ class ChatView final : public QWidget
     void setPromptEnabled(bool enabled);
     void setClearEnabled(bool enabled);
     void setPrimaryAction(bool stopMode, bool enabled);
+    void setAgentModeSelected(bool selected);
+    void setModeSelectionEnabled(bool enabled);
     void setConversationVisible(bool visible);
     void setStatusText(const QString& text);
 
@@ -60,6 +63,7 @@ class ChatView final : public QWidget
     void primaryActionRequested();
     void clearConversationRequested();
     void promptSubmitted();
+    void modeChanged(bool agentMode);
 
    protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -67,6 +71,7 @@ class ChatView final : public QWidget
    private:
     void updateModelPresentation();
     void updateWorkspacePresentation();
+    void updateModePresentation();
 
     std::unique_ptr<Ui::ChatView> ui_;
     QString modelPath_;

@@ -19,6 +19,8 @@ class SettingsStore final
     bool setLastModelPath(const QString& modelPath) const;
     [[nodiscard]] QString workspacePath() const;
     bool setWorkspacePath(const QString& workspacePath) const;
+    [[nodiscard]] bool agentModeEnabled() const;
+    bool setAgentModeEnabled(bool enabled) const;
     [[nodiscard]] bool isModelFileVerified(const QString& modelPath,
                                            qint64 expectedSize,
                                            const QString& expectedSha256) const;

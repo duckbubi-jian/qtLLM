@@ -5,7 +5,6 @@
 #include <QFileInfo>
 #include <QMutex>
 #include <QMutexLocker>
-#include <QStandardPaths>
 
 #include <spdlog/common.h>
 #include <spdlog/logger.h>
@@ -44,11 +43,11 @@ QString defaultLogDirectory()
     const auto configured = qEnvironmentVariable("QTLLM_LOG_DIR").trimmed();
     if (!configured.isEmpty()) return QDir::cleanPath(configured);
 
-    auto dataDirectory =
-        QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
-    if (dataDirectory.isEmpty())
-        dataDirectory = QCoreApplication::applicationDirPath();
-    return QDir(dataDirectory).filePath(QStringLiteral("logs"));
+    const auto homeDirectory = QDir::homePath();
+    const auto baseDirectory = homeDirectory.isEmpty()
+                                   ? QCoreApplication::applicationDirPath()
+                                   : homeDirectory;
+    return QDir(baseDirectory).filePath(QStringLiteral("qtLLM"));
 }
 
 spdlog::filename_t nativeFileName(const QString& path)

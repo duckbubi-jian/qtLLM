@@ -2,6 +2,7 @@
 
 #include "AgentAction.hpp"
 #include "AgentRun.hpp"
+#include "AssistantContext.hpp"
 #include "ModelPackage.hpp"
 #include "ToolDefinition.hpp"
 #include "ToolPolicy.hpp"
@@ -48,10 +49,12 @@ class AgentController final : public QObject
 
     bool start(const QString& userRequest,
                const models::InferencePreset& preset,
-               const QList<agent::ToolDefinition>& tools);
+               const QList<agent::ToolDefinition>& tools,
+               const AssistantContext& context = {});
     void cancel();
     void resolveApproval(bool approved);
     bool clearConversation();
+    bool setConversationMessages(QList<chat::Message> messages);
 
     [[nodiscard]] AgentRun::State state() const;
     [[nodiscard]] bool hasActiveRun() const;

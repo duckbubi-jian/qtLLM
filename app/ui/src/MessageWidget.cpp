@@ -194,6 +194,21 @@ class AutoSizingTextBrowser final : public QTextBrowser
                            });
     }
 };
+
+class MessageAvatar final : public QLabel
+{
+   public:
+    MessageAvatar(const QString& text, const QString& objectName,
+                  const QString& accessibleName, QWidget* parent)
+        : QLabel(text, parent)
+    {
+        setObjectName(objectName);
+        setAccessibleName(accessibleName);
+        setToolTip(accessibleName);
+        setAlignment(Qt::AlignCenter);
+        setFixedSize(36, 36);
+    }
+};
 }  // namespace
 
 MessageWidget::MessageWidget(Role role, QWidget* parent)
@@ -202,23 +217,26 @@ MessageWidget::MessageWidget(Role role, QWidget* parent)
     setObjectName(role == Role::User ? QStringLiteral("userMessage")
                                      : QStringLiteral("assistantMessage"));
 
-    auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(12, 10, 12, 12);
-    layout->setSpacing(6);
+    auto* messageRow = new QHBoxLayout(this);
+    messageRow->setContentsMargins(16, 6, 16, 8);
+    messageRow->setSpacing(10);
 
-    roleLabel_ =
-        new QLabel(role == Role::User ? tr("You") : tr("Assistant"), this);
-    roleLabel_->setObjectName(role == Role::User
-                                  ? QStringLiteral("userRoleLabel")
-                                  : QStringLiteral("assistantRoleLabel"));
-    auto* roleRow = new QHBoxLayout;
-    roleRow->setContentsMargins(0, 0, 0, 0);
-    if (role == Role::User) roleRow->addStretch();
-    roleRow->addWidget(roleLabel_);
-    if (role == Role::Assistant) roleRow->addStretch();
-    layout->addLayout(roleRow);
+    avatarLabel_ = new MessageAvatar(
+        role == Role::User ? tr("You") : tr("AI"),
+        role == Role::User ? QStringLiteral("userAvatar")
+                           : QStringLiteral("assistantAvatar"),
+        role == Role::User ? tr("You") : tr("Assistant"), this);
 
-    reasoningToggle_ = new QToolButton(this);
+    content_ = new QWidget(this);
+    content_->setObjectName(role == Role::User
+                                ? QStringLiteral("userMessageContent")
+                                : QStringLiteral("assistantMessageContent"));
+    content_->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Preferred);
+    auto* contentLayout = new QVBoxLayout(content_);
+    contentLayout->setContentsMargins(0, 0, 0, 0);
+    contentLayout->setSpacing(6);
+
+    reasoningToggle_ = new QToolButton(content_);
     reasoningToggle_->setObjectName(QStringLiteral("reasoningToggle"));
     reasoningToggle_->setCheckable(true);
     reasoningToggle_->setChecked(false);
@@ -226,41 +244,50 @@ MessageWidget::MessageWidget(Role role, QWidget* parent)
     reasoningToggle_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     reasoningToggle_->setText(tr("Reasoning"));
     reasoningToggle_->setVisible(false);
-    layout->addWidget(reasoningToggle_, 0, Qt::AlignLeft);
+    contentLayout->addWidget(reasoningToggle_, 0, Qt::AlignLeft);
 
-    reasoningView_ = new AutoSizingTextBrowser(this);
+    reasoningView_ = new AutoSizingTextBrowser(content_);
     reasoningView_->setObjectName(QStringLiteral("reasoningBody"));
     reasoningView_->setVisible(false);
     reasoningView_->document()->setDocumentMargin(10.0);
     reasoningView_->document()->setDefaultStyleSheet(markdownStyleSheet());
-    layout->addWidget(reasoningView_);
+    contentLayout->addWidget(reasoningView_);
 
-    bodyView_ = new AutoSizingTextBrowser(this);
+    bodyView_ = new AutoSizingTextBrowser(content_);
     bodyView_->document()->setDefaultStyleSheet(markdownStyleSheet());
     if (role == Role::User)
     {
         bodyView_->setObjectName(QStringLiteral("userMessageBody"));
-        bodyView_->document()->setDocumentMargin(11.0);
-        auto* bodyRow = new QHBoxLayout;
-        bodyRow->setContentsMargins(0, 0, 0, 0);
-        bodyRow->addStretch();
-        bodyRow->addWidget(bodyView_, 0, Qt::AlignTop | Qt::AlignRight);
-        layout->addLayout(bodyRow);
+        bodyView_->document()->setDocumentMargin(8.0);
+        contentLayout->addWidget(bodyView_, 0, Qt::AlignRight);
     }
     else
     {
         bodyView_->setObjectName(QStringLiteral("assistantMessageBody"));
-        bodyView_->document()->setDocumentMargin(0.0);
-        layout->addWidget(bodyView_);
+        bodyView_->document()->setDocumentMargin(8.0);
+        contentLayout->addWidget(bodyView_, 0, Qt::AlignLeft);
     }
 
-    codeActions_ = new QWidget(this);
+    codeActions_ = new QWidget(content_);
     codeActions_->setObjectName(QStringLiteral("codeActions"));
     codeActionsLayout_ = new QVBoxLayout(codeActions_);
     codeActionsLayout_->setContentsMargins(0, 0, 0, 0);
     codeActionsLayout_->setSpacing(4);
     codeActions_->setVisible(false);
-    layout->addWidget(codeActions_);
+    contentLayout->addWidget(codeActions_, 0, Qt::AlignLeft);
+
+    if (role == Role::Assistant)
+    {
+        messageRow->addWidget(avatarLabel_, 0, Qt::AlignTop);
+        messageRow->addWidget(content_, 0, Qt::AlignTop);
+        messageRow->addStretch();
+    }
+    else
+    {
+        messageRow->addStretch();
+        messageRow->addWidget(content_, 0, Qt::AlignTop);
+        messageRow->addWidget(avatarLabel_, 0, Qt::AlignTop);
+    }
 
     connect(reasoningToggle_, &QToolButton::toggled, this,
             [this](bool expanded)
@@ -268,6 +295,7 @@ MessageWidget::MessageWidget(Role role, QWidget* parent)
                 reasoningToggle_->setArrowType(expanded ? Qt::DownArrow
                                                         : Qt::RightArrow);
                 reasoningView_->setVisible(expanded);
+                updateBubbleWidth();
             });
 }
 
@@ -275,7 +303,7 @@ void MessageWidget::setUserText(const QString& text)
 {
     if (role_ != Role::User) return;
     bodyView_->setPlainText(text);
-    QTimer::singleShot(0, this, [this] { updateUserBubbleWidth(); });
+    QTimer::singleShot(0, this, [this] { updateBubbleWidth(); });
 }
 
 void MessageWidget::setAssistantText(const QString& rawText, bool final)
@@ -310,6 +338,7 @@ void MessageWidget::setAssistantText(const QString& rawText, bool final)
     bodyView_->setVisible(!visibleAnswer.isEmpty() || final);
     bodyView_->setMarkdown(visibleAnswer);
     polishMarkdownDocument(*bodyView_->document());
+    updateBubbleWidth();
 
     if (!final) return;
 
@@ -343,24 +372,33 @@ void MessageWidget::setAssistantText(const QString& rawText, bool final)
 void MessageWidget::resizeEvent(QResizeEvent* event)
 {
     QWidget::resizeEvent(event);
-    updateUserBubbleWidth();
+    updateBubbleWidth();
 }
 
-void MessageWidget::updateUserBubbleWidth()
+void MessageWidget::updateBubbleWidth()
 {
-    if (role_ != Role::User || bodyView_ == nullptr || width() <= 0) return;
+    if (bodyView_ == nullptr || content_ == nullptr || width() <= 0) return;
 
-    const auto maximumBubbleWidth = qMax(80, qMin(760, width() * 72 / 100));
+    const auto user = role_ == Role::User;
+    const auto maximumBubbleWidth =
+        qMax(80, qMin(user ? 720 : 900, width() * (user ? 68 : 82) / 100));
     auto naturalWidth = 0;
-    const auto lines = bodyView_->toPlainText().split(QLatin1Char('\n'));
+    const auto plainText = bodyView_->toPlainText();
+    const auto lines = plainText.split(QLatin1Char('\n'));
     for (const auto& line : lines)
         naturalWidth = qMax(naturalWidth,
                             bodyView_->fontMetrics().horizontalAdvance(line));
-    naturalWidth += 28;
-    const auto minimumBubbleWidth = qMin(120, maximumBubbleWidth);
+    naturalWidth += 22;
+    const auto structuredAssistant =
+        !user && (lines.size() > 1 || plainText.size() > 80);
+    const auto minimumBubbleWidth =
+        qMin(structuredAssistant ? 480 : 56, maximumBubbleWidth);
     const auto bubbleWidth =
         qBound(minimumBubbleWidth, naturalWidth, maximumBubbleWidth);
     if (bodyView_->width() != bubbleWidth)
         bodyView_->setFixedWidth(bubbleWidth);
+    content_->setMaximumWidth(maximumBubbleWidth);
+    if (!user && reasoningView_->isVisible())
+        reasoningView_->setFixedWidth(maximumBubbleWidth);
 }
 }  // namespace qtllm::ui

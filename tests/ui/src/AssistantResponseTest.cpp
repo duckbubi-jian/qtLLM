@@ -1,11 +1,14 @@
 #include "AssistantResponse.hpp"
 #include "AutoHideTabWidget.hpp"
+#include "ChatController.hpp"
 #include "ChatView.hpp"
 #include "MainWindow.hpp"
 #include "MessageWidget.hpp"
+#include "ModeSwitch.hpp"
 #include "Theme.hpp"
 #include "ToolApprovalWidget.hpp"
 
+#include <QAction>
 #include <QApplication>
 #include <QColor>
 #include <QDir>
@@ -137,15 +140,46 @@ void AssistantResponseTest::usesDistinctMessageLayoutsAndMarkdownStyle()
         user.findChild<QTextBrowser*>(QStringLiteral("userMessageBody"));
     auto* assistantBody = assistant.findChild<QTextBrowser*>(
         QStringLiteral("assistantMessageBody"));
+    auto* userAvatar = user.findChild<QLabel*>(QStringLiteral("userAvatar"));
+    auto* assistantAvatar =
+        assistant.findChild<QLabel*>(QStringLiteral("assistantAvatar"));
     QVERIFY(userBody != nullptr);
     QVERIFY(assistantBody != nullptr);
-    QVERIFY(userBody->width() <= user.width() * 3 / 4);
-    QVERIFY(userBody->geometry().center().x() > user.width() / 2);
-    QVERIFY(assistantBody->width() > userBody->width());
+    QVERIFY(userAvatar != nullptr);
+    QVERIFY(assistantAvatar != nullptr);
+    QCOMPARE(userAvatar->text(), QStringLiteral("You"));
+    QCOMPARE(assistantAvatar->text(), QStringLiteral("AI"));
+    QCOMPARE(userAvatar->size(), QSize(36, 36));
+    QCOMPARE(assistantAvatar->size(), QSize(36, 36));
+    const auto userBodyCenter =
+        userBody->mapTo(&user, userBody->rect().center()).x();
+    const auto userAvatarCenter =
+        userAvatar->mapTo(&user, userAvatar->rect().center()).x();
+    const auto assistantBodyCenter =
+        assistantBody->mapTo(&assistant, assistantBody->rect().center()).x();
+    const auto assistantAvatarCenter =
+        assistantAvatar->mapTo(&assistant, assistantAvatar->rect().center())
+            .x();
+    QVERIFY(userBody->width() <= user.width() * 7 / 10);
+    QVERIFY(userBodyCenter > user.width() / 2);
+    QVERIFY(userAvatarCenter > userBodyCenter);
+    QVERIFY(assistantAvatarCenter < assistantBodyCenter);
+    QVERIFY(assistantBody->width() >= 480);
+    QVERIFY(assistantBody->width() <= assistant.width() * 84 / 100);
     QVERIFY(assistantBody->document()->defaultStyleSheet().contains(
         QStringLiteral("blockquote")));
     QVERIFY(assistantBody->document()->defaultStyleSheet().contains(
         QStringLiteral("pre")));
+
+    ui::MessageWidget shortAssistant(ui::MessageWidget::Role::Assistant);
+    shortAssistant.resize(900, 100);
+    shortAssistant.setAssistantText(QStringLiteral("你好"), true);
+    shortAssistant.show();
+    QTest::qWait(20);
+    auto* shortAssistantBody = shortAssistant.findChild<QTextBrowser*>(
+        QStringLiteral("assistantMessageBody"));
+    QVERIFY(shortAssistantBody != nullptr);
+    QVERIFY(shortAssistantBody->width() <= 80);
 
     auto hasStyledCodeBlock = false;
     for (auto block = assistantBody->document()->begin(); block.isValid();
@@ -384,12 +418,19 @@ void AssistantResponseTest::recordsRedactedAgentActivity()
 void AssistantResponseTest::enterSendsAndShiftEnterAddsNewline()
 {
     ui::MainWindow window;
+    auto* chatView = qobject_cast<ui::ChatView*>(window.centralWidget());
+    auto* chatController = window.findChild<application::ChatController*>();
     auto* prompt =
         window.findChild<QPlainTextEdit*>(QStringLiteral("promptEditor"));
     auto* send =
         window.findChild<QPushButton*>(QStringLiteral("primaryActionButton"));
+    QVERIFY(chatView != nullptr);
+    QVERIFY(chatController != nullptr);
     QVERIFY(prompt != nullptr);
     QVERIFY(send != nullptr);
+    chatView->setAgentModeSelected(false);
+    QSignalSpy chatRequestSpy(
+        chatController, &application::ChatController::userMessageAccepted);
 
     prompt->setEnabled(true);
     send->setEnabled(true);
@@ -401,8 +442,9 @@ void AssistantResponseTest::enterSendsAndShiftEnterAddsNewline()
     QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 0);
 
     QTest::keyClick(prompt, Qt::Key_Return);
+    QCOMPARE(chatRequestSpy.count(), 1);
     QCOMPARE(prompt->toPlainText(), QStringLiteral("first line"));
-    QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 1);
+    QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 2);
 }
 
 void AssistantResponseTest::restoresPromptAfterGenerationError()
@@ -421,24 +463,25 @@ void AssistantResponseTest::restoresPromptAfterGenerationError()
 void AssistantResponseTest::clearsVisibleAndInMemoryConversation()
 {
     ui::MainWindow window;
+    auto* chatView = qobject_cast<ui::ChatView*>(window.centralWidget());
     auto* prompt =
         window.findChild<QPlainTextEdit*>(QStringLiteral("promptEditor"));
     auto* activityLog =
         window.findChild<QPlainTextEdit*>(QStringLiteral("activityLog"));
-    auto* clearButton = window.findChild<QToolButton*>(
-        QStringLiteral("clearConversationButton"));
+    auto* clearAction =
+        window.findChild<QAction*>(QStringLiteral("clearConversationAction"));
     auto* transcriptTabs =
         window.findChild<QTabWidget*>(QStringLiteral("transcriptTabs"));
     auto* autoHideTabs = qobject_cast<ui::AutoHideTabWidget*>(transcriptTabs);
-    auto* transcriptActions =
-        window.findChild<QWidget*>(QStringLiteral("transcriptActions"));
+    QVERIFY(chatView != nullptr);
     QVERIFY(prompt != nullptr);
     QVERIFY(activityLog != nullptr);
-    QVERIFY(clearButton != nullptr);
+    QVERIFY(clearAction != nullptr);
     QVERIFY(transcriptTabs != nullptr);
     QVERIFY(autoHideTabs != nullptr);
-    QVERIFY(transcriptActions != nullptr);
     QCOMPARE(transcriptTabs->tabPosition(), QTabWidget::South);
+    QCOMPARE(transcriptTabs->contextMenuPolicy(), Qt::ActionsContextMenu);
+    QVERIFY(transcriptTabs->actions().contains(clearAction));
     QVERIFY(autoHideTabs->tabBar()->isHidden());
     QEnterEvent enterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1));
     QCoreApplication::sendEvent(autoHideTabs, &enterEvent);
@@ -446,40 +489,62 @@ void AssistantResponseTest::clearsVisibleAndInMemoryConversation()
     QEvent leaveEvent(QEvent::Leave);
     QCoreApplication::sendEvent(autoHideTabs, &leaveEvent);
     QVERIFY(autoHideTabs->tabBar()->isHidden());
-    QCOMPARE(clearButton->parentWidget(), transcriptActions);
-    QVERIFY(clearButton->text().isEmpty());
-    QVERIFY(!clearButton->toolTip().isEmpty());
-    QVERIFY(!clearButton->isEnabled());
+    QCOMPARE(clearAction->text(), QStringLiteral("Clear conversation"));
+    QVERIFY(!clearAction->toolTip().isEmpty());
+    QVERIFY(!clearAction->isEnabled());
 
+    chatView->setAgentModeSelected(false);
     prompt->setPlainText(QStringLiteral("temporary message"));
     QVERIFY(QMetaObject::invokeMethod(&window, "sendPrompt"));
-    QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 1);
-    QVERIFY(clearButton->isEnabled());
+    QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 2);
+    QVERIFY(clearAction->isEnabled());
 
-    clearButton->click();
+    clearAction->trigger();
     QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 0);
-    QVERIFY(!clearButton->isEnabled());
+    QVERIFY(!clearAction->isEnabled());
     QVERIFY(activityLog->toPlainText().isEmpty());
 }
 
 void AssistantResponseTest::showsWorkspaceAsComposerLink()
 {
     ui::MainWindow window;
+    auto* chatView = qobject_cast<ui::ChatView*>(window.centralWidget());
     auto* composer =
         window.findChild<QWidget*>(QStringLiteral("promptComposer"));
     auto* workspaceLink =
         window.findChild<QLabel*>(QStringLiteral("workspacePathLink"));
-    auto* workspaceButton =
-        window.findChild<QToolButton*>(QStringLiteral("workspaceBrowseButton"));
+    auto* workspaceChangeAction =
+        window.findChild<QAction*>(QStringLiteral("workspaceChangeAction"));
 
+    QVERIFY(chatView != nullptr);
     QVERIFY(composer != nullptr);
     QVERIFY(workspaceLink != nullptr);
-    QVERIFY(workspaceButton != nullptr);
+    QVERIFY(workspaceChangeAction != nullptr);
     QCOMPARE(workspaceLink->parentWidget(), composer);
-    QCOMPARE(workspaceButton->parentWidget(), composer);
-    QVERIFY(workspaceLink->text().contains(QStringLiteral("<a ")));
+    QCOMPARE(workspaceLink->contextMenuPolicy(), Qt::ActionsContextMenu);
+    QVERIFY(workspaceLink->actions().contains(workspaceChangeAction));
+    QVERIFY(!workspaceLink->text().contains(QStringLiteral("<a ")));
+    QVERIFY(workspaceLink->width() <= 180);
+    QVERIFY(!workspaceLink->toolTip().isEmpty());
+    QVERIFY(!workspaceLink->accessibleDescription().isEmpty());
+    QVERIFY(window.findChild<QToolButton*>(
+                QStringLiteral("workspaceBrowseButton")) == nullptr);
     QVERIFY(window.findChild<QLineEdit*>(QStringLiteral("workspacePathEdit")) ==
             nullptr);
+
+    QVERIFY(QObject::disconnect(chatView, nullptr, &window, nullptr));
+    QSignalSpy openRequested(chatView, &ui::ChatView::workspaceOpenRequested);
+    QSignalSpy changeRequested(chatView,
+                               &ui::ChatView::workspaceFolderRequested);
+    QTest::mouseClick(workspaceLink, Qt::LeftButton);
+    QCOMPARE(openRequested.count(), 1);
+    QCOMPARE(changeRequested.count(), 0);
+    workspaceChangeAction->trigger();
+    QCOMPARE(openRequested.count(), 1);
+    QCOMPARE(changeRequested.count(), 1);
+    chatView->setWorkspaceControlsEnabled(false);
+    QVERIFY(workspaceLink->isEnabled());
+    QVERIFY(!workspaceChangeAction->isEnabled());
 }
 
 void AssistantResponseTest::separatesModelLocationAndReloadActions()
@@ -490,11 +555,48 @@ void AssistantResponseTest::separatesModelLocationAndReloadActions()
     auto* modelLink = view.findChild<QLabel*>(QStringLiteral("modelPathLink"));
     auto* guideModelName =
         view.findChild<QLabel*>(QStringLiteral("guideModelNameLabel"));
-    auto* reloadButton =
-        view.findChild<QToolButton*>(QStringLiteral("modelReloadButton"));
+    auto* reloadAction =
+        view.findChild<QAction*>(QStringLiteral("modelReloadAction"));
+    auto* modeSwitch =
+        view.findChild<ui::ModeSwitch*>(QStringLiteral("agentModeSwitch"));
+    auto* promptEditor =
+        view.findChild<QPlainTextEdit*>(QStringLiteral("promptEditor"));
+    auto* promptComposer =
+        view.findChild<QWidget*>(QStringLiteral("promptComposer"));
     QVERIFY(modelLink != nullptr);
     QVERIFY(guideModelName != nullptr);
-    QVERIFY(reloadButton != nullptr);
+    QVERIFY(reloadAction != nullptr);
+    QVERIFY(modeSwitch != nullptr);
+    QVERIFY(promptEditor != nullptr);
+    QVERIFY(promptComposer != nullptr);
+    QVERIFY(!modeSwitch->isChecked());
+    QCOMPARE(modeSwitch->text(), QStringLiteral("Agent"));
+    QCOMPARE(promptEditor->placeholderText(),
+             QStringLiteral("Write a message"));
+    QCOMPARE(promptComposer->property("agentMode").toBool(), false);
+    QVERIFY(!modeSwitch->toolTip().isEmpty());
+    QSignalSpy modeSpy(&view, &ui::ChatView::modeChanged);
+    view.setAgentModeSelected(true);
+    QVERIFY(modeSwitch->isChecked());
+    QCOMPARE(promptEditor->placeholderText(),
+             QStringLiteral("Describe a task for the agent"));
+    QCOMPARE(promptComposer->property("agentMode").toBool(), true);
+    QCOMPARE(modeSpy.count(), 0);
+    modeSwitch->click();
+    QVERIFY(!modeSwitch->isChecked());
+    QCOMPARE(modeSpy.count(), 1);
+    QTest::mouseClick(modeSwitch, Qt::LeftButton);
+    QVERIFY(modeSwitch->isChecked());
+    QCOMPARE(modeSpy.count(), 2);
+    QTest::mouseClick(modeSwitch, Qt::LeftButton);
+    QVERIFY(!modeSwitch->isChecked());
+    QCOMPARE(modeSpy.count(), 3);
+    QVERIFY(view.findChild<QLabel*>(QStringLiteral("guideDescriptionLabel")) ==
+            nullptr);
+    QVERIFY(guideModelName->width() >= 520);
+    QVERIFY(guideModelName->width() <= 600);
+    QCOMPARE(modelLink->contextMenuPolicy(), Qt::ActionsContextMenu);
+    QVERIFY(modelLink->actions().contains(reloadAction));
     QCOMPARE(modelLink->property("modelState").toString(),
              QStringLiteral("verified"));
     QCOMPARE(guideModelName->property("modelState").toString(),
@@ -513,7 +615,7 @@ void AssistantResponseTest::separatesModelLocationAndReloadActions()
     QCOMPARE(locationRequested.count(), 1);
     QCOMPARE(folderRequested.count(), 0);
 
-    reloadButton->click();
+    reloadAction->trigger();
     QCOMPARE(locationRequested.count(), 1);
     QCOMPARE(folderRequested.count(), 1);
 }
@@ -527,8 +629,10 @@ void AssistantResponseTest::
         window.findChild<QWidget*>(QStringLiteral("promptComposer"));
     auto* modelLink =
         window.findChild<QLabel*>(QStringLiteral("modelPathLink"));
-    auto* modelReloadButton =
-        window.findChild<QToolButton*>(QStringLiteral("modelReloadButton"));
+    auto* modelReloadAction =
+        window.findChild<QAction*>(QStringLiteral("modelReloadAction"));
+    auto* modeSwitch =
+        window.findChild<ui::ModeSwitch*>(QStringLiteral("agentModeSwitch"));
     auto* guideLoadButton =
         window.findChild<QPushButton*>(QStringLiteral("guideLoadModelButton"));
     auto* guideStatus =
@@ -543,8 +647,6 @@ void AssistantResponseTest::
         window.findChild<QWidget*>(QStringLiteral("transcriptPage"));
     auto* transcriptTabs =
         window.findChild<QTabWidget*>(QStringLiteral("transcriptTabs"));
-    auto* transcriptActions =
-        window.findChild<QWidget*>(QStringLiteral("transcriptActions"));
     auto* rootLayout =
         window.findChild<QVBoxLayout*>(QStringLiteral("rootLayout"));
 
@@ -552,7 +654,8 @@ void AssistantResponseTest::
     QCOMPARE(window.centralWidget(), chatView);
     QVERIFY(composer != nullptr);
     QVERIFY(modelLink != nullptr);
-    QVERIFY(modelReloadButton != nullptr);
+    QVERIFY(modelReloadAction != nullptr);
+    QVERIFY(modeSwitch != nullptr);
     QVERIFY(guideLoadButton != nullptr);
     QVERIFY(guideStatus != nullptr);
     QVERIFY(statusLabel != nullptr);
@@ -560,11 +663,13 @@ void AssistantResponseTest::
     QVERIFY(contentStack != nullptr);
     QVERIFY(transcriptPage != nullptr);
     QVERIFY(transcriptTabs != nullptr);
-    QVERIFY(transcriptActions != nullptr);
     QVERIFY(rootLayout != nullptr);
     QCOMPARE(modelLink->parentWidget(), composer);
-    QCOMPARE(modelReloadButton->parentWidget(), transcriptActions);
+    QCOMPARE(modeSwitch->parentWidget(), composer);
+    QVERIFY(modelLink->actions().contains(modelReloadAction));
+    QVERIFY(!transcriptTabs->actions().contains(modelReloadAction));
     QCOMPARE(transcriptTabs->tabPosition(), QTabWidget::South);
+    QCOMPARE(transcriptTabs->contextMenuPolicy(), Qt::ActionsContextMenu);
     QCOMPARE(primaryAction->parentWidget(), composer);
     QCOMPARE(rootLayout->stretch(0), 1);
     QCOMPARE(rootLayout->stretch(1), 0);
@@ -573,9 +678,10 @@ void AssistantResponseTest::
     QVERIFY(!primaryAction->icon().isNull());
     QVERIFY(modelLink->text().contains(QStringLiteral("<a ")));
     QVERIFY(!modelLink->toolTip().isEmpty());
-    QVERIFY(modelReloadButton->menu() == nullptr);
-    QVERIFY(modelReloadButton->text().isEmpty());
-    QVERIFY(!modelReloadButton->toolTip().isEmpty());
+    QVERIFY(!modelReloadAction->icon().isNull());
+    QCOMPARE(modelReloadAction->text(),
+             QStringLiteral("Change or reload model"));
+    QVERIFY(!modelReloadAction->toolTip().isEmpty());
     QCOMPARE(guideLoadButton->text(), QStringLiteral("Load model"));
     QCOMPARE(contentStack->currentWidget()->objectName(),
              QStringLiteral("modelGuidePage"));
@@ -591,6 +697,10 @@ void AssistantResponseTest::
             nullptr);
     QVERIFY(window.findChild<QToolButton*>(
                 QStringLiteral("modelBrowseButton")) == nullptr);
+    QVERIFY(window.findChild<QToolButton*>(
+                QStringLiteral("modelReloadButton")) == nullptr);
+    QVERIFY(window.findChild<QToolButton*>(
+                QStringLiteral("clearConversationButton")) == nullptr);
     QVERIFY(window.findChild<QPushButton*>(QStringLiteral("loadModelButton")) ==
             nullptr);
     QVERIFY(window.findChild<QPushButton*>(QStringLiteral("stopButton")) ==

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AgentController.hpp"
+#include "ChatController.hpp"
 #include "McpClientManager.hpp"
 #include "ModelPackage.hpp"
 #include "SettingsStore.hpp"
@@ -67,6 +68,7 @@ class MainWindow final : public QMainWindow
     void updateModelInformation(const models::ModelSelection& selection);
     void updateModelVerificationProgress(quint64 verifiedBytes,
                                          quint64 totalBytes);
+    void beginChatPrompt(const QString& prompt);
     void beginAgentPrompt(const QString& prompt);
     void showAgentActivity();
     void startThinkingAnimation();
@@ -85,6 +87,7 @@ class MainWindow final : public QMainWindow
     infrastructure::WorkerClient workerClient_;
     infrastructure::mcp::McpClientManager mcpManager_;
     infrastructure::mcp::ToolPolicy toolPolicy_;
+    application::ChatController chatController_;
     application::AgentController agentController_;
     QFutureWatcher<models::ModelPackageResult> modelVerificationWatcher_;
     ChatView* chatView_ = nullptr;
@@ -98,6 +101,7 @@ class MainWindow final : public QMainWindow
     QString modelInfoText_;
     QString workspacePath_;
     QByteArray pendingUtf8_;
+    QList<chat::Message> conversationMessages_;
     models::ModelSelection pendingModelSelection_;
     models::ModelSelection activeModelSelection_;
     bool verifyingModelPackage_ = false;

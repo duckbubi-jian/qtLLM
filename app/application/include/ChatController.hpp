@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AssistantContext.hpp"
 #include "ChatMessage.hpp"
 #include "ModelPackage.hpp"
 
@@ -27,9 +28,11 @@ class ChatController final : public QObject
                             QObject* parent = nullptr);
 
     bool sendPrompt(const QString& prompt,
-                    const models::InferencePreset& preset);
+                    const models::InferencePreset& preset,
+                    const AssistantContext& context = {});
     void cancel();
     bool clearConversation();
+    bool setConversationMessages(QList<chat::Message> messages);
 
     [[nodiscard]] const QList<chat::Message>& conversationMessages() const;
     [[nodiscard]] bool hasConversation() const;

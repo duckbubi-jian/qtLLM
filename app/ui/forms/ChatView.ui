@@ -28,6 +28,9 @@
      </property>
      <widget class="QWidget" name="modelGuidePage">
       <layout class="QVBoxLayout" name="modelGuideLayout">
+       <property name="spacing">
+        <number>12</number>
+       </property>
        <property name="leftMargin">
         <number>24</number>
        </property>
@@ -63,21 +66,20 @@
          </property>
         </widget>
        </item>
-       <item>
-        <widget class="QLabel" name="guideDescriptionLabel">
-         <property name="text">
-          <string>Choose a model package folder.</string>
-         </property>
-         <property name="alignment">
-          <set>Qt::AlignCenter</set>
-         </property>
-         <property name="wordWrap">
-          <bool>true</bool>
-         </property>
-        </widget>
-       </item>
-       <item>
+       <item alignment="Qt::AlignHCenter">
         <widget class="QLabel" name="guideModelNameLabel">
+         <property name="minimumSize">
+          <size>
+           <width>520</width>
+           <height>0</height>
+          </size>
+         </property>
+         <property name="maximumSize">
+          <size>
+           <width>600</width>
+           <height>16777215</height>
+          </size>
+         </property>
          <property name="text">
           <string>Select model</string>
          </property>
@@ -89,7 +91,7 @@
        <item>
         <layout class="QHBoxLayout" name="guideActionLayout">
          <property name="spacing">
-          <number>8</number>
+          <number>14</number>
          </property>
          <item>
           <spacer name="guideLeftSpacer">
@@ -179,76 +181,13 @@
         <number>0</number>
        </property>
        <property name="spacing">
-        <number>4</number>
-       </property>
-       <item>
-        <widget class="QWidget" name="transcriptActions">
-         <property name="sizePolicy">
-          <sizepolicy hsizetype="Preferred" vsizetype="Fixed">
-           <horstretch>0</horstretch>
-           <verstretch>0</verstretch>
-          </sizepolicy>
-         </property>
-         <layout class="QHBoxLayout" name="transcriptActionsLayout">
-        <property name="leftMargin">
          <number>0</number>
         </property>
-        <property name="topMargin">
-         <number>0</number>
-        </property>
-        <property name="rightMargin">
-         <number>0</number>
-        </property>
-        <property name="bottomMargin">
-         <number>0</number>
-        </property>
-        <property name="spacing">
-         <number>0</number>
-        </property>
-        <item>
-         <widget class="QToolButton" name="modelReloadButton">
-          <property name="toolTip">
-           <string>Change or reload the model</string>
-          </property>
-          <property name="accessibleName">
-           <string>Change or reload model</string>
-          </property>
-          <property name="autoRaise">
-           <bool>true</bool>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <spacer name="transcriptActionsSpacer">
-          <property name="orientation">
-           <enum>Qt::Horizontal</enum>
-          </property>
-          <property name="sizeHint" stdset="0">
-           <size>
-            <width>40</width>
-            <height>20</height>
-           </size>
-          </property>
-         </spacer>
-        </item>
-        <item>
-         <widget class="QToolButton" name="clearConversationButton">
-          <property name="toolTip">
-           <string>Clear the current conversation</string>
-          </property>
-          <property name="accessibleName">
-           <string>Clear conversation</string>
-          </property>
-          <property name="autoRaise">
-           <bool>true</bool>
-          </property>
-         </widget>
-        </item>
-         </layout>
-        </widget>
-       </item>
        <item>
         <widget class="qtllm::ui::AutoHideTabWidget" name="transcriptTabs">
+         <property name="contextMenuPolicy">
+          <enum>Qt::ActionsContextMenu</enum>
+         </property>
          <property name="tabPosition">
           <enum>QTabWidget::South</enum>
          </property>
@@ -295,7 +234,7 @@
                 <number>8</number>
                </property>
                <property name="spacing">
-                <number>2</number>
+                <number>4</number>
                </property>
                <item>
                 <spacer name="conversationBottomSpacer">
@@ -415,32 +354,69 @@
          <number>8</number>
         </property>
         <item>
-         <widget class="QToolButton" name="workspaceBrowseButton">
-          <property name="toolTip">
-           <string>Select the workspace folder</string>
+         <widget class="QLabel" name="workspacePathLink">
+          <property name="minimumSize">
+           <size>
+            <width>56</width>
+            <height>0</height>
+           </size>
           </property>
-          <property name="autoRaise">
-           <bool>true</bool>
+          <property name="maximumSize">
+           <size>
+            <width>180</width>
+            <height>16777215</height>
+           </size>
+          </property>
+          <property name="contextMenuPolicy">
+           <enum>Qt::ActionsContextMenu</enum>
+          </property>
+          <property name="textFormat">
+           <enum>Qt::PlainText</enum>
+          </property>
+          <property name="textInteractionFlags">
+           <set>Qt::NoTextInteraction</set>
           </property>
          </widget>
         </item>
         <item>
-         <widget class="QLabel" name="workspacePathLink">
-          <property name="textFormat">
-           <enum>Qt::RichText</enum>
+         <spacer name="composerActionSpacer">
+          <property name="orientation">
+           <enum>Qt::Horizontal</enum>
           </property>
-          <property name="textInteractionFlags">
-           <set>Qt::LinksAccessibleByKeyboard|Qt::LinksAccessibleByMouse</set>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>40</width>
+            <height>20</height>
+           </size>
           </property>
-         </widget>
+         </spacer>
         </item>
         <item>
          <widget class="QLabel" name="modelPathLink">
+          <property name="contextMenuPolicy">
+           <enum>Qt::ActionsContextMenu</enum>
+          </property>
           <property name="textFormat">
            <enum>Qt::RichText</enum>
           </property>
           <property name="textInteractionFlags">
            <set>Qt::LinksAccessibleByKeyboard|Qt::LinksAccessibleByMouse</set>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="qtllm::ui::ModeSwitch" name="agentModeSwitch">
+          <property name="toolTip">
+           <string>Switch between Chat and Agent modes</string>
+          </property>
+          <property name="accessibleName">
+           <string>Conversation mode</string>
+          </property>
+          <property name="text">
+           <string>Agent</string>
+          </property>
+          <property name="checked">
+           <bool>false</bool>
           </property>
          </widget>
         </item>
@@ -460,8 +436,40 @@
     </widget>
    </item>
   </layout>
+  <action name="modelReloadAction">
+   <property name="text">
+    <string>Change or reload model</string>
+   </property>
+   <property name="toolTip">
+    <string>Choose another model package folder</string>
+   </property>
+  </action>
+  <action name="workspaceChangeAction">
+   <property name="text">
+    <string>Change workspace folder</string>
+   </property>
+   <property name="toolTip">
+    <string>Select another workspace folder</string>
+   </property>
+  </action>
+  <action name="clearConversationAction">
+   <property name="enabled">
+    <bool>false</bool>
+   </property>
+   <property name="text">
+    <string>Clear conversation</string>
+   </property>
+   <property name="toolTip">
+    <string>Clear the current conversation</string>
+   </property>
+  </action>
  </widget>
  <customwidgets>
+  <customwidget>
+   <class>qtllm::ui::ModeSwitch</class>
+   <extends>QCheckBox</extends>
+   <header>ModeSwitch.hpp</header>
+  </customwidget>
   <customwidget>
    <class>qtllm::ui::AutoHideTabWidget</class>
    <extends>QTabWidget</extends>

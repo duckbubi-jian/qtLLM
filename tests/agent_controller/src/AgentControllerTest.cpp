@@ -17,6 +17,7 @@ class AgentControllerTest final : public QObject
     void keepsConversationHistoryAndClearsIt();
     void emptyToolPromptForbidsToolCalls();
     void casualPromptPrefersFinalWithoutTools();
+    void includesRuntimeContextInPrompt();
     void rejectsUnchangedRetryAfterToolError();
     void hasNoToolCallCountLimit();
     void longRunWarningDoesNotStopAgent();
@@ -228,7 +229,14 @@ void AgentControllerTest::keepsConversationHistoryAndClearsIt()
     QCOMPARE(generatedMessages.at(1).content, QStringLiteral("First question"));
     QCOMPARE(generatedMessages.at(2).content, QStringLiteral("First answer"));
     QCOMPARE(generatedMessages.at(3).content, QStringLiteral("Follow-up"));
+    QVERIFY(!controller.setConversationMessages({}));
     controller.cancel();
+
+    const QList<chat::Message> sharedHistory{
+        {chat::Role::User, QStringLiteral("Shared question")},
+        {chat::Role::Assistant, QStringLiteral("Shared answer")}};
+    QVERIFY(controller.setConversationMessages(sharedHistory));
+    QCOMPARE(controller.conversationMessages(), sharedHistory);
 
     QVERIFY(controller.clearConversation());
     QVERIFY(!controller.hasConversation());
@@ -279,6 +287,38 @@ void AgentControllerTest::casualPromptPrefersFinalWithoutTools()
     QVERIFY(prompt.contains(
         QStringLiteral("must return final without calling a tool")));
     QVERIFY(prompt.contains(QStringLiteral("list_allowed_directories")));
+    controller.cancel();
+}
+
+void AgentControllerTest::includesRuntimeContextInPrompt()
+{
+    QList<chat::Message> generatedMessages;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>& messages,
+                const models::InferencePreset&, int)
+            { generatedMessages = messages; },
+            [] {}, [](const QString&, const QJsonObject&)
+            { return QStringLiteral("unused"); }, [](const QString&) {},
+            [](const QString&, const QJsonObject&, QString&) { return true; },
+            [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+
+    const application::AssistantContext context{
+        QStringLiteral("Test Model"),
+        QStringLiteral("C:/Users/test workspace")};
+    QVERIFY(controller.start(QStringLiteral("Where am I?"), {}, {echoTool()},
+                             context));
+    QVERIFY(!generatedMessages.isEmpty());
+    const auto prompt = generatedMessages.constFirst().content;
+    QVERIFY(prompt.contains(
+        QStringLiteral("\"workspaceRoot\":\"C:/Users/test workspace\"")));
+    QVERIFY(prompt.contains(QStringLiteral("\"model\":\"Test Model\"")));
+    QVERIFY(prompt.contains(QStringLiteral("\".\" is workspaceRoot")));
+    QVERIFY(
+        prompt.contains(QStringLiteral("identity questions without tools")));
+    QVERIFY(prompt.contains(
+        QStringLiteral("pass only directories to list_directory")));
     controller.cancel();
 }
 

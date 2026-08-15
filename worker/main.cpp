@@ -71,8 +71,7 @@ int main(int argc, char* argv[])
         QStringLiteral("0.2.0 (protocol %1)").arg(qtllm::protocol::version));
 
     QString loggingError;
-    if (!qtllm::logging::initialize(QStringLiteral("qtllm-worker"),
-                                    &loggingError))
+    if (!qtllm::logging::initialize(QStringLiteral("worker"), &loggingError))
         QTextStream(stderr) << "warning: " << loggingError << Qt::endl;
     qtllm::logging::installQtMessageHandler();
     const LoggingGuard loggingGuard;

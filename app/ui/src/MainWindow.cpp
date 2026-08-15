@@ -47,6 +47,16 @@ ModelBadgeState modelBadgeState(const models::ModelSelection& selection)
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent),
       mcpManager_(this),
+      chatController_(
+          [this](const QList<chat::Message>& messages,
+                 const models::InferencePreset& preset)
+          {
+              workerClient_.generate(
+                  messages, preset.contextSize, preset.maxOutputTokens, 0,
+                  preset.temperature, preset.topP, preset.topK,
+                  preset.repeatPenalty, inference::ResponseMode::Text);
+          },
+          [this] { workerClient_.cancel(); }, this),
       agentController_(
           application::AgentController::Dependencies{
               [this](const QList<chat::Message>& messages,
@@ -78,6 +88,7 @@ MainWindow::MainWindow(QWidget* parent)
     setMinimumSize(720, 520);
 
     buildUi();
+    chatView_->setAgentModeSelected(settingsStore_.agentModeEnabled());
     modelInfoText_ = tr("Model not checked");
     setModelPath(settingsStore_.lastModelPath());
     auto workspacePath = settingsStore_.workspacePath();
@@ -127,13 +138,53 @@ MainWindow::MainWindow(QWidget* parent)
             &MainWindow::finishModelPackageVerification);
     connect(&workerClient_, &infrastructure::WorkerClient::tokenReceived, this,
             [this](const QByteArray& bytes)
-            { agentController_.receiveToken(bytes); });
+            {
+                chatController_.receiveToken(bytes);
+                agentController_.receiveToken(bytes);
+            });
     connect(&workerClient_, &infrastructure::WorkerClient::generationFinished,
-            this, [this](bool cancelled, const QJsonObject& metrics)
-            { agentController_.completeGeneration(cancelled, metrics); });
+            this,
+            [this](bool cancelled, const QJsonObject& metrics)
+            {
+                chatController_.completeGeneration(cancelled, metrics);
+                agentController_.completeGeneration(cancelled, metrics);
+            });
     connect(&workerClient_, &infrastructure::WorkerClient::errorOccurred, this,
             [this](const QString& code, const QString& message)
-            { agentController_.handleGenerationError(code, message); });
+            {
+                chatController_.handleError(code, message);
+                agentController_.handleGenerationError(code, message);
+            });
+    connect(&chatController_, &application::ChatController::userMessageAccepted,
+            this,
+            [this](const QString& prompt)
+            {
+                appendUserMessage(prompt);
+                chatView_->promptEditor()->clear();
+                pendingUtf8_.clear();
+                currentAssistantText_.clear();
+            });
+    connect(&chatController_,
+            &application::ChatController::assistantResponseStarted, this,
+            &MainWindow::beginAssistantMessage);
+    connect(&chatController_, &application::ChatController::tokenReceived, this,
+            &MainWindow::appendToken);
+    connect(&chatController_, &application::ChatController::generationFinished,
+            this,
+            [this](bool cancelled, const QJsonObject& metrics)
+            {
+                conversationMessages_ = chatController_.conversationMessages();
+                finishGeneration(cancelled, metrics);
+                updateState(workerClient_.state());
+            });
+    connect(&chatController_, &application::ChatController::errorOccurred, this,
+            [this](const QString& code, const QString& message,
+                   const QString& retryPrompt)
+            {
+                conversationMessages_ = chatController_.conversationMessages();
+                showError(code, message, retryPrompt);
+                updateState(workerClient_.state());
+            });
     connect(&agentController_,
             &application::AgentController::userRequestAccepted, this,
             [this](const QString&, const QString& prompt)
@@ -214,7 +265,11 @@ MainWindow::MainWindow(QWidget* parent)
                     pendingToolApproval_ = nullptr;
                 }
                 if (state == application::AgentRun::State::Completed)
+                {
+                    conversationMessages_ =
+                        agentController_.conversationMessages();
                     chatView_->setStatusText(tr("Ready"));
+                }
                 else if (!message.isEmpty())
                 {
                     if (code != QLatin1String("approval_denied") &&
@@ -258,9 +313,6 @@ MainWindow::MainWindow(QWidget* parent)
     connect(
         &mcpManager_, &infrastructure::mcp::McpClientManager::toolResultReady,
         &agentController_, &application::AgentController::receiveToolResult);
-    connect(&agentController_,
-            &application::AgentController::conversationCleared, this,
-            &MainWindow::resetConversationView);
     loadMcpServers();
     workerClient_.start();
 }
@@ -448,22 +500,28 @@ void MainWindow::sendPrompt()
 {
     const auto prompt = chatView_->promptEditor()->toPlainText().trimmed();
     if (prompt.isEmpty()) return;
-    beginAgentPrompt(prompt);
+    if (chatView_->isAgentModeSelected())
+        beginAgentPrompt(prompt);
+    else
+        beginChatPrompt(prompt);
 }
 
 void MainWindow::stopGeneration()
 {
     if (agentRunActive_)
         agentController_.cancel();
-    else if (workerClient_.state() ==
-             infrastructure::WorkerClient::State::Generating)
-        workerClient_.cancel();
+    else if (chatController_.isGenerating())
+        chatController_.cancel();
 }
 
 void MainWindow::clearConversation()
 {
-    if (agentRunActive_) return;
-    agentController_.clearConversation();
+    if (agentRunActive_ || chatController_.isGenerating()) return;
+    if (!agentController_.clearConversation() ||
+        !chatController_.clearConversation())
+        return;
+    conversationMessages_.clear();
+    resetConversationView();
 }
 
 void MainWindow::resetConversationView()
@@ -498,15 +556,18 @@ void MainWindow::updateState(infrastructure::WorkerClient::State state)
         !verifyingModelPackage_;
     const auto generating =
         state == infrastructure::WorkerClient::State::Generating;
+    const auto conversationBusy =
+        agentRunActive_ || chatController_.isGenerating();
     chatView_->setModelControlsEnabled(ready, ready && !modelPath_.isEmpty());
-    chatView_->setWorkspaceControlsEnabled(!agentRunActive_ &&
+    chatView_->setWorkspaceControlsEnabled(!conversationBusy &&
                                            !filesystemConfiguredExternally_);
-    chatView_->setPromptEnabled(modelReady && !agentRunActive_);
-    const auto stopMode = generating || agentRunActive_;
+    chatView_->setPromptEnabled(modelReady && !conversationBusy);
+    chatView_->setModeSelectionEnabled(modelReady && !conversationBusy);
+    const auto stopMode = generating || conversationBusy;
     updatePrimaryAction(stopMode);
     chatView_->setPrimaryAction(stopMode, stopMode || modelReady);
     chatView_->setConversationVisible(modelReady || generating ||
-                                      agentRunActive_);
+                                      conversationBusy);
     updateClearButton();
 
     if (verifyingModelPackage_)
@@ -643,6 +704,12 @@ void MainWindow::buildUi()
             &MainWindow::sendPrompt);
     connect(chatView_, &ChatView::clearConversationRequested, this,
             &MainWindow::clearConversation);
+    connect(chatView_, &ChatView::modeChanged, this,
+            [this](bool agentMode)
+            {
+                if (!settingsStore_.setAgentModeEnabled(agentMode))
+                    qWarning() << "Unable to persist conversation mode.";
+            });
     updatePrimaryAction(false);
     updateState(infrastructure::WorkerClient::State::Stopped);
 }
@@ -775,17 +842,44 @@ void MainWindow::updateClearButton()
     const auto hasVisibleMessages =
         chatView_->conversationLayout()->count() > 1;
     chatView_->setClearEnabled(
-        !agentRunActive_ &&
-        (agentController_.hasConversation() || hasVisibleMessages));
+        !agentRunActive_ && !chatController_.isGenerating() &&
+        (!conversationMessages_.isEmpty() ||
+         agentController_.hasConversation() ||
+         chatController_.hasConversation() || hasVisibleMessages));
+}
+
+void MainWindow::beginChatPrompt(const QString& prompt)
+{
+    if (agentRunActive_ || chatController_.isGenerating()) return;
+    if (!chatController_.setConversationMessages(conversationMessages_)) return;
+
+    const application::AssistantContext context{
+        activeModelSelection_.descriptor.displayName, workspacePath_};
+    if (!chatController_.sendPrompt(prompt, activeModelSelection_.preset,
+                                    context))
+    {
+        showError(QStringLiteral("chat_unavailable"), tr("Chat is not ready."));
+    }
 }
 
 void MainWindow::beginAgentPrompt(const QString& prompt)
 {
-    if (agentRunActive_) return;
+    if (agentRunActive_ || chatController_.isGenerating()) return;
+    if (mcpManager_.tools().isEmpty())
+    {
+        showError(QStringLiteral("agent_tools_unavailable"),
+                  tr("Agent tools are not available."));
+        return;
+    }
+    if (!agentController_.setConversationMessages(conversationMessages_))
+        return;
     agentRunActive_ = true;
     updateState(workerClient_.state());
+    const application::AssistantContext context{
+        activeModelSelection_.descriptor.displayName,
+        filesystemConfiguredExternally_ ? QString{} : workspacePath_};
     if (!agentController_.start(prompt, activeModelSelection_.preset,
-                                mcpManager_.tools()))
+                                mcpManager_.tools(), context))
     {
         agentRunActive_ = false;
         showError(QStringLiteral("agent_unavailable"),

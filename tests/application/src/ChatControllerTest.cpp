@@ -33,12 +33,21 @@ void ChatControllerTest::buildsRequestsAndStoresCompletedAnswers()
     models::InferencePreset preset;
     preset.contextSize = 4096;
     preset.maxOutputTokens = 512;
-    QVERIFY(controller.sendPrompt(QStringLiteral("  Hello  "), preset));
+    const application::AssistantContext context{QStringLiteral("Test Model"),
+                                                QStringLiteral("C:/workspace")};
+    QVERIFY(
+        controller.sendPrompt(QStringLiteral("  Hello  "), preset, context));
     QCOMPARE(generateCount, 1);
     QCOMPARE(requestPreset.contextSize, 4096);
     QCOMPARE(requestPreset.maxOutputTokens, 512);
     QCOMPARE(requestMessages.size(), 2);
     QCOMPARE(requestMessages.at(0).role, chat::Role::System);
+    QVERIFY(requestMessages.at(0).content.contains(
+        QStringLiteral("\"model\":\"Test Model\"")));
+    QVERIFY(requestMessages.at(0).content.contains(
+        QStringLiteral("\"workspaceRoot\":\"C:/workspace\"")));
+    QVERIFY(!requestMessages.at(0).content.contains(
+        QStringLiteral("Available tools")));
     const chat::Message expectedUser{chat::Role::User, QStringLiteral("Hello")};
     QCOMPARE(requestMessages.at(1), expectedUser);
 
@@ -50,9 +59,16 @@ void ChatControllerTest::buildsRequestsAndStoresCompletedAnswers()
                                           QStringLiteral("Visible answer")};
     QCOMPARE(controller.conversationMessages().at(1), expectedAssistant);
 
+    const QList<chat::Message> sharedHistory{
+        {chat::Role::User, QStringLiteral("Shared question")},
+        {chat::Role::Assistant, QStringLiteral("Shared answer")}};
+    QVERIFY(controller.setConversationMessages(sharedHistory));
+    QCOMPARE(controller.conversationMessages(), sharedHistory);
+
     QVERIFY(controller.sendPrompt(QStringLiteral("Next"), preset));
     QCOMPARE(requestMessages.size(), 4);
-    QCOMPARE(requestMessages.at(2).role, chat::Role::Assistant);
+    QCOMPARE(requestMessages.at(1), sharedHistory.at(0));
+    QCOMPARE(requestMessages.at(2), sharedHistory.at(1));
     QCOMPARE(requestMessages.at(3).content, QStringLiteral("Next"));
 }
 

@@ -2,14 +2,27 @@
 
 #include "AssistantResponse.hpp"
 
+#include <QJsonDocument>
+
 #include <utility>
 
 namespace qtllm::application
 {
 namespace
 {
-constexpr auto systemPrompt = "You are a helpful assistant.";
+QString systemPrompt(const AssistantContext& context)
+{
+    auto prompt = QStringLiteral(
+        "You are a helpful local assistant. Answer in the user's language.");
+    const auto json = assistantContextJson(context);
+    if (!json.isEmpty())
+        prompt += QStringLiteral(
+                      " Runtime context: %1. Use these exact values for "
+                      "model and workspace questions.")
+                      .arg(json);
+    return prompt;
 }
+}  // namespace
 
 ChatController::ChatController(GenerateHandler generateHandler,
                                CancelHandler cancelHandler, QObject* parent)
@@ -20,7 +33,8 @@ ChatController::ChatController(GenerateHandler generateHandler,
 }
 
 bool ChatController::sendPrompt(const QString& prompt,
-                                const models::InferencePreset& preset)
+                                const models::InferencePreset& preset,
+                                const AssistantContext& context)
 {
     const auto trimmedPrompt = prompt.trimmed();
     if (trimmedPrompt.isEmpty() || generationPending_ || !generateHandler_)
@@ -33,8 +47,7 @@ bool ChatController::sendPrompt(const QString& prompt,
     emit assistantResponseStarted();
 
     auto requestMessages = conversationMessages_;
-    requestMessages.prepend(
-        {chat::Role::System, QString::fromLatin1(systemPrompt)});
+    requestMessages.prepend({chat::Role::System, systemPrompt(context)});
     generateHandler_(requestMessages, preset);
     return true;
 }
@@ -50,6 +63,13 @@ bool ChatController::clearConversation()
     conversationMessages_.clear();
     responseBytes_.clear();
     emit conversationCleared();
+    return true;
+}
+
+bool ChatController::setConversationMessages(QList<chat::Message> messages)
+{
+    if (generationPending_) return false;
+    conversationMessages_ = std::move(messages);
     return true;
 }
 

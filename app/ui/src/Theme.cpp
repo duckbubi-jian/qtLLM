@@ -25,7 +25,7 @@ QWidget {
     color: #202124;
 }
 QMainWindow, QWidget#centralView {
-    background: #f5f6f8;
+    background: #ffffff;
 }
 QStackedWidget#contentStack,
 QWidget#modelGuidePage,
@@ -79,10 +79,8 @@ QPushButton#primaryActionButton:disabled {
     border-color: #cbd5e1;
 }
 QTabWidget#transcriptTabs::pane {
-    background: #ffffff;
-    border: 1px solid #dfe3e8;
-    border-radius: 6px;
-    top: -1px;
+    background: transparent;
+    border: none;
 }
 QTabBar::tab {
     min-width: 92px;
@@ -113,34 +111,28 @@ QWidget#promptComposer {
     border: 1px solid #dde3ea;
     border-radius: 8px;
 }
-QWidget#transcriptActions {
-    background: transparent;
-}
-QToolButton#modelReloadButton,
-QToolButton#clearConversationButton,
-QToolButton#workspaceBrowseButton {
-    min-width: 26px;
-    max-width: 26px;
-    min-height: 26px;
-    max-height: 26px;
-    padding: 0;
-    background: transparent;
-    border: none;
-    border-radius: 4px;
-}
-QToolButton#modelReloadButton:hover,
-QToolButton#clearConversationButton:hover,
-QToolButton#workspaceBrowseButton:hover {
-    background: #e9f1ff;
-}
-QToolButton#modelReloadButton:disabled,
-QToolButton#clearConversationButton:disabled,
-QToolButton#workspaceBrowseButton:disabled {
-    background: transparent;
+QWidget#promptComposer[agentMode="true"] {
+    background: #f8fbff;
+    border-color: #bfdbfe;
 }
 QLabel#workspacePathLink {
-    color: #2563eb;
-    padding: 0 2px;
+    min-height: 24px;
+    max-height: 24px;
+    color: #854d0e;
+    padding: 0 4px 0 7px;
+    background: transparent;
+    border: none;
+    border-left: 5px solid #eab308;
+    border-radius: 0;
+}
+QLabel#workspacePathLink:hover {
+    background: #fffbeb;
+    border-left-color: #f59e0b;
+}
+QLabel#workspacePathLink:disabled {
+    color: #a8a29e;
+    background: transparent;
+    border-left-color: #d6d3d1;
 }
 QLabel#modelPathLink {
     min-height: 28px;
@@ -184,25 +176,22 @@ QLabel#guideTitleLabel {
     font-size: 17pt;
     font-weight: 600;
 }
-QLabel#guideDescriptionLabel {
-    color: #5f6368;
-    padding: 4px 0 10px 0;
-}
 QLabel#guideStatusLabel {
     color: #5f6368;
     padding: 8px 0 0 0;
 }
 QLabel#guideModelNameLabel {
     color: #334155;
-    padding: 7px 12px;
+    padding: 10px 18px;
     background: #f1f3f5;
     border: 1px solid #dfe3e8;
     border-radius: 5px;
     font-family: "Cascadia Mono", "Consolas", monospace;
 }
 QPushButton#guideLoadModelButton {
-    min-height: 38px;
-    padding: 0 18px;
+    min-width: 180px;
+    min-height: 42px;
+    padding: 0 20px;
     color: #ffffff;
     background: #2563eb;
     border-color: #2563eb;
@@ -218,8 +207,9 @@ QPushButton#guideLoadModelButton:disabled {
     border-color: #aeb4bd;
 }
 QPushButton#guideSelectModelButton {
-    min-height: 38px;
-    padding: 0 16px;
+    min-width: 180px;
+    min-height: 42px;
+    padding: 0 20px;
 }
 QPlainTextEdit#promptEditor {
     padding: 8px 10px 2px 10px;
@@ -231,22 +221,40 @@ QWidget#userMessage,
 QWidget#assistantMessage {
     background: transparent;
 }
-QLabel#userRoleLabel,
-QLabel#assistantRoleLabel {
-    color: #5f6368;
-    font-size: 9pt;
+QLabel#userAvatar,
+QLabel#assistantAvatar {
+    min-width: 36px;
+    max-width: 36px;
+    min-height: 36px;
+    max-height: 36px;
+    padding: 0;
+    color: #ffffff;
+    border: none;
+    border-radius: 18px;
+    font-size: 8pt;
     font-weight: 600;
+}
+QLabel#userAvatar {
+    background: #3b82f6;
+}
+QLabel#assistantAvatar {
+    background: #14a38b;
+}
+QWidget#userMessageContent,
+QWidget#assistantMessageContent {
+    background: transparent;
 }
 QTextBrowser#userMessageBody {
     color: #172033;
-    background: #e9f1ff;
-    border: 1px solid #d6e4ff;
+    background: #e7f0ff;
+    border: none;
     border-radius: 8px;
 }
 QTextBrowser#assistantMessageBody {
     color: #202124;
-    background: transparent;
+    background: #f1f3f5;
     border: none;
+    border-radius: 8px;
 }
 QWidget#toolApprovalCard {
     margin: 8px 12px;

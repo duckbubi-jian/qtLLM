@@ -301,6 +301,15 @@ void AssistantResponseTest::showsAgentActivityUntilRunEnds()
     QVERIFY(body != nullptr);
     QCOMPARE(body->toPlainText(), QStringLiteral("Thinking..."));
 
+    emit controller->eventRecorded(
+        {QStringLiteral("run-id"),
+         agent::EventType::Warning,
+         QStringLiteral("Still running; select Stop to cancel."),
+         {},
+         {}});
+    QCOMPARE(body->toPlainText(),
+             QStringLiteral("Still running; select Stop to cancel."));
+
     emit controller->stateChanged(application::AgentRun::State::ExecutingTool);
     QCOMPARE(body->toPlainText(), QStringLiteral("Using a tool..."));
 

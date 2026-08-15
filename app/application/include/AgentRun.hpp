@@ -27,14 +27,11 @@ struct AgentRun
     QString id;
     QString userRequest;
     State state = State::Idle;
-    int toolCallCount = 0;
     int repairAttempts = 0;
     QDateTime startedAt;
     QList<agent::Event> events;
     QList<chat::Message> inferenceMessages;
     QString toolRequestId;
-    QString lastToolCallSignature;
-    int consecutiveToolCallCount = 0;
 };
 }  // namespace qtllm::application
 

@@ -18,6 +18,8 @@ QString eventTypeName(EventType type)
             return QStringLiteral("tool_finished");
         case EventType::AnswerStarted:
             return QStringLiteral("answer_started");
+        case EventType::Warning:
+            return QStringLiteral("warning");
         case EventType::Completed:
             return QStringLiteral("completed");
         case EventType::Cancelled:

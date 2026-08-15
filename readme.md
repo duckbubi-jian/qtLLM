@@ -39,19 +39,21 @@ shell command is built from model output, and server stdout is treated as
 JSON-RPC data while stderr is diagnostic output.
 
 The bundled filesystem MCP starts automatically with the visible Workspace
-folder as its only read/write root. Read-only tools run automatically; create,
-edit, move, and delete operations remain subject to the local approval policy.
-The filesystem server is a standalone C++20 process and has no Qt runtime
-dependency.
+folder as its only read/write root. Tool paths may be absolute or relative to
+that Workspace; attempts to escape it are rejected. Read-only tools run
+automatically; create, edit, move, and delete operations remain subject to the
+local approval policy. The filesystem server is a standalone C++20 process and
+has no Qt runtime dependency.
 
 To configure additional servers, copy
 [the example](docs/mcp-servers.example.json) to
 `mcp-servers.json` beside the application and replace the absolute executable
 path, working directory, environment allowlist, and tool allowlist. Only
 enabled tools returned by `tools/list` and present in the local allowlist can be
-called. Unknown tools, invalid arguments, timeouts, repeated calls, and late
-responses are rejected or ignored. The default Agent limit is five tool calls
-and two minutes per request.
+called. Unknown tools, invalid arguments, MCP request timeouts, and late
+responses are rejected or ignored. Agent runs have no tool-call count limit.
+After two minutes the UI shows a warning, but the run continues until it
+finishes or the user selects Stop.
 
 ## Diagnostics
 

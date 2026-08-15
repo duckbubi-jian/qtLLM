@@ -16,6 +16,8 @@ class AgentControllerTest final : public QObject
     void cancelsAndIgnoresLateResponses();
     void keepsConversationHistoryAndClearsIt();
     void emptyToolPromptForbidsToolCalls();
+    void hasNoToolCallCountLimit();
+    void longRunWarningDoesNotStopAgent();
 };
 
 agent::ToolDefinition echoTool()
@@ -84,6 +86,8 @@ void AgentControllerTest::completesMultiStepToolRun()
     QCOMPARE(generationCount, 2);
     QVERIFY(lastMessages.constLast().content.contains(
         QStringLiteral("tool_result")));
+    QVERIFY(lastMessages.constLast().content.contains(
+        QStringLiteral("do not repeat this exact tool call")));
 
     controller.receiveToken(
         QByteArrayLiteral(R"({"action":"final","content":"Task complete"})"));
@@ -249,6 +253,88 @@ void AgentControllerTest::emptyToolPromptForbidsToolCalls()
     QVERIFY(prompt.contains(QStringLiteral("No tools are available")));
     QVERIFY(prompt.contains(QStringLiteral("must not call a tool")));
     QVERIFY(!prompt.contains(QStringLiteral("server.tool")));
+    controller.cancel();
+}
+
+void AgentControllerTest::hasNoToolCallCountLimit()
+{
+    auto toolCallCount = 0;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [](const QList<chat::Message>&, const models::InferencePreset&,
+               int) {},
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-%1").arg(toolCallCount);
+            },
+            [](const QString&) {},
+            [](const QString&, const QJsonObject&, QString&) { return true; },
+            [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+    QSignalSpy finishedSpy(&controller,
+                           &application::AgentController::runFinished);
+    QSignalSpy finalSpy(&controller,
+                        &application::AgentController::finalAnswerReady);
+
+    QVERIFY(controller.start(QStringLiteral("Do several operations"), {},
+                             {echoTool()}));
+    for (auto index = 0; index < 20; ++index)
+    {
+        controller.receiveToken(QByteArrayLiteral(
+            R"({"action":"call_tool","tool":"fake.echo","arguments":{"value":1}})"));
+        controller.completeGeneration(false);
+        QCOMPARE(controller.state(),
+                 application::AgentRun::State::ExecutingTool);
+
+        agent::ToolResult result;
+        result.requestId = QStringLiteral("tool-request-%1").arg(index + 1);
+        result.serverId = QStringLiteral("fake");
+        result.toolName = QStringLiteral("echo");
+        result.result = {{QStringLiteral("content"), index}};
+        controller.receiveToolResult(result);
+        QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    }
+    QCOMPARE(toolCallCount, 20);
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"final","content":"All operations completed"})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Completed);
+    QCOMPARE(toolCallCount, 20);
+    QCOMPARE(finishedSpy.count(), 1);
+    QCOMPARE(finishedSpy.constFirst().at(2).toString(), QString{});
+    QCOMPARE(finalSpy.count(), 1);
+}
+
+void AgentControllerTest::longRunWarningDoesNotStopAgent()
+{
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [](const QList<chat::Message>&, const models::InferencePreset&,
+               int) {},
+            [] {}, [](const QString&, const QJsonObject&)
+            { return QStringLiteral("unused"); }, [](const QString&) {},
+            [](const QString&, const QJsonObject&, QString&) { return true; },
+            [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+    QSignalSpy eventSpy(&controller,
+                        &application::AgentController::eventRecorded);
+    QSignalSpy finishedSpy(&controller,
+                           &application::AgentController::runFinished);
+
+    QVERIFY(controller.start(QStringLiteral("Long-running task"), {},
+                             {echoTool()}));
+    QVERIFY(QMetaObject::invokeMethod(&controller, "notifyLongRunning",
+                                      Qt::DirectConnection));
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QVERIFY(controller.hasActiveRun());
+    QCOMPARE(finishedSpy.count(), 0);
+    const auto warning =
+        qvariant_cast<agent::Event>(eventSpy.constLast().constFirst());
+    QCOMPARE(warning.type, agent::EventType::Warning);
+    QVERIFY(warning.message.contains(QStringLiteral("continue")));
     controller.cancel();
 }
 }  // namespace qtllm::tests

@@ -180,6 +180,8 @@ MainWindow::MainWindow(QWidget* parent)
             [this](const agent::Event& event)
             {
                 appendAgentEvent(event);
+                if (event.type == agent::EventType::Warning)
+                    updateAgentActivity(event.message);
                 if (!event.message.isEmpty())
                     statusLabel_->setText(event.message);
             });

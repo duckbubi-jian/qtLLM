@@ -65,6 +65,9 @@ class AgentController final : public QObject
     void handleGenerationError(const QString& code, const QString& message);
     void receiveToolResult(const qtllm::agent::ToolResult& result);
 
+   private slots:
+    void notifyLongRunning();
+
    signals:
     void stateChanged(qtllm::application::AgentRun::State state);
     void eventRecorded(const qtllm::agent::Event& event);

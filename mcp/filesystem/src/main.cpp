@@ -116,11 +116,30 @@ bool isWithin(const fs::path& candidate, const fs::path& root)
 fs::path resolvePath(const std::string& requestedPath, bool writeAccess,
                      const std::vector<Root>& roots, std::string& errorMessage)
 {
-    const auto requested = pathFromUtf8(requestedPath);
-    if (requested.empty() || !requested.is_absolute())
+    auto requested = pathFromUtf8(requestedPath);
+    if (requested.empty())
     {
-        errorMessage = "Path must be absolute UTF-8.";
+        errorMessage = "Path must be non-empty UTF-8.";
         return {};
+    }
+    if (!requested.is_absolute())
+    {
+        if (requested.has_root_name() || requested.has_root_directory())
+        {
+            errorMessage = "Path has an incomplete root prefix.";
+            return {};
+        }
+        const auto root = std::find_if(
+            roots.cbegin(), roots.cend(), [writeAccess](const Root& candidate)
+            { return !writeAccess || candidate.writable; });
+        if (root == roots.cend())
+        {
+            errorMessage = writeAccess
+                               ? "No writable filesystem root is available."
+                               : "No filesystem root is available.";
+            return {};
+        }
+        requested = root->path / requested;
     }
 
     std::error_code error;
@@ -194,17 +213,17 @@ Json toolDefinition(const std::string& name, const std::string& description,
 
 Json toolDefinitions()
 {
-    const auto path = stringProperty("Absolute filesystem path");
+    const auto path = stringProperty(
+        "Absolute path within an authorized root, or a path relative to the "
+        "first authorized root");
     const auto content = stringProperty("UTF-8 file content");
     return Json::array(
         {toolDefinition("read_text_file", "Read a UTF-8 text file.",
                         objectSchema({{"path", path}}, {"path"})),
          toolDefinition(
              "read_multiple_files", "Read multiple UTF-8 text files.",
-             objectSchema(
-                 {{"paths",
-                   {{"type", "array"}, {"items", {{"type", "string"}}}}}},
-                 {"paths"})),
+             objectSchema({{"paths", {{"type", "array"}, {"items", path}}}},
+                          {"paths"})),
          toolDefinition("list_directory", "List files and directories.",
                         objectSchema({{"path", path}}, {"path"})),
          toolDefinition(

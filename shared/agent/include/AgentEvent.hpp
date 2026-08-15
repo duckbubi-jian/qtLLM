@@ -15,6 +15,7 @@ enum class EventType
     ToolStarted,
     ToolFinished,
     AnswerStarted,
+    Warning,
     Completed,
     Cancelled,
     Failed

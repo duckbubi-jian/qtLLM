@@ -265,18 +265,44 @@ void StdioMcpTransportTest::builtInFilesystemWritesCppFile()
         "\"hello\" << '\\n';\n    return 0;\n}\n");
     QSignalSpy resultSpy(
         &manager, &infrastructure::mcp::McpClientManager::toolResultReady);
+    const auto createRequestId = manager.callTool(
+        QStringLiteral("filesystem.create_directory"),
+        {{QStringLiteral("path"), QStringLiteral("./generated")}});
+    QVERIFY(!createRequestId.isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(resultSpy.count(), 1, 2'000);
+    const auto createResult =
+        qvariant_cast<agent::ToolResult>(resultSpy.at(0).at(0));
+    QVERIFY2(!createResult.isError, qPrintable(createResult.errorMessage));
+    QVERIFY(QFileInfo(QDir(workspaceRoot).filePath(QStringLiteral("generated")))
+                .isDir());
+
+    const auto relativeCppPath =
+        QStringLiteral("./") + QFileInfo(cppPath).fileName();
     const auto requestId =
         manager.callTool(QStringLiteral("filesystem.write_file"),
-                         {{QStringLiteral("path"), cppPath},
+                         {{QStringLiteral("path"), relativeCppPath},
                           {QStringLiteral("content"), cppSource}});
     QVERIFY(!requestId.isEmpty());
-    QTRY_COMPARE_WITH_TIMEOUT(resultSpy.count(), 1, 2'000);
-    const auto result = qvariant_cast<agent::ToolResult>(resultSpy.at(0).at(0));
+    QTRY_COMPARE_WITH_TIMEOUT(resultSpy.count(), 2, 2'000);
+    const auto result = qvariant_cast<agent::ToolResult>(resultSpy.at(1).at(0));
     QVERIFY2(!result.isError, qPrintable(result.errorMessage));
 
     QFile cppFile(cppPath);
     QVERIFY(cppFile.open(QIODevice::ReadOnly));
     QCOMPARE(QString::fromUtf8(cppFile.readAll()), cppSource);
+
+    const auto escapedPath =
+        QDir(workspace.path()).filePath(QStringLiteral("escaped.cpp"));
+    const auto escapedRequestId = manager.callTool(
+        QStringLiteral("filesystem.write_file"),
+        {{QStringLiteral("path"), QStringLiteral("../escaped.cpp")},
+         {QStringLiteral("content"), cppSource}});
+    QVERIFY(!escapedRequestId.isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(resultSpy.count(), 3, 2'000);
+    const auto escapedResult =
+        qvariant_cast<agent::ToolResult>(resultSpy.at(2).at(0));
+    QVERIFY(escapedResult.isError);
+    QVERIFY(!QFileInfo::exists(escapedPath));
 
     QTemporaryDir outsideWorkspace;
     QVERIFY(outsideWorkspace.isValid());
@@ -287,9 +313,9 @@ void StdioMcpTransportTest::builtInFilesystemWritesCppFile()
                          {{QStringLiteral("path"), outsidePath},
                           {QStringLiteral("content"), cppSource}});
     QVERIFY(!rejectedRequestId.isEmpty());
-    QTRY_COMPARE_WITH_TIMEOUT(resultSpy.count(), 2, 2'000);
+    QTRY_COMPARE_WITH_TIMEOUT(resultSpy.count(), 4, 2'000);
     const auto rejectedResult =
-        qvariant_cast<agent::ToolResult>(resultSpy.at(1).at(0));
+        qvariant_cast<agent::ToolResult>(resultSpy.at(3).at(0));
     QVERIFY(rejectedResult.isError);
     QVERIFY(!QFileInfo::exists(outsidePath));
 }

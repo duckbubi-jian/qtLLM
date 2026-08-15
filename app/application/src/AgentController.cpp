@@ -2,7 +2,6 @@
 
 #include "AgentPromptBuilder.hpp"
 
-#include <QJsonDocument>
 #include <QUuid>
 
 #include <algorithm>
@@ -12,7 +11,6 @@ namespace qtllm::application
 {
 namespace
 {
-constexpr auto maximumToolCalls = 5;
 constexpr auto maximumDecisionBytes = 65'536;
 constexpr auto minimumDecisionTokens = 256;
 constexpr auto runTimeoutMilliseconds = 120'000;
@@ -24,12 +22,16 @@ AgentController::AgentController(Dependencies dependencies, QObject* parent)
     runTimer_.setSingleShot(true);
     runTimer_.setInterval(runTimeoutMilliseconds);
     connect(&runTimer_, &QTimer::timeout, this,
-            [this]
-            {
-                if (hasActiveRun())
-                    failRun(QStringLiteral("agent_timeout"),
-                            QStringLiteral("Agent run exceeded two minutes."));
-            });
+            &AgentController::notifyLongRunning);
+}
+
+void AgentController::notifyLongRunning()
+{
+    if (!hasActiveRun()) return;
+    recordEvent(
+        agent::EventType::Warning,
+        QStringLiteral("Agent is still running after two minutes. It will "
+                       "continue until completion or Stop."));
 }
 
 bool AgentController::start(const QString& userRequest,
@@ -240,32 +242,6 @@ void AgentController::handleAction(const agent::Action& action,
         retryInvalidAction(rawAction, validationError);
         return;
     }
-    if (activeRun_->toolCallCount >= maximumToolCalls)
-    {
-        failRun(QStringLiteral("tool_limit"),
-                QStringLiteral("Agent reached the five tool call limit."));
-        return;
-    }
-
-    const auto signature =
-        action.toolName + QLatin1Char(':') +
-        QString::fromUtf8(
-            QJsonDocument(action.arguments).toJson(QJsonDocument::Compact));
-    if (signature == activeRun_->lastToolCallSignature)
-        ++activeRun_->consecutiveToolCallCount;
-    else
-    {
-        activeRun_->lastToolCallSignature = signature;
-        activeRun_->consecutiveToolCallCount = 1;
-    }
-    if (activeRun_->consecutiveToolCallCount > 2)
-    {
-        failRun(QStringLiteral("tool_loop"),
-                QStringLiteral(
-                    "Agent repeated the same tool call too many times."));
-        return;
-    }
-
     activeRun_->inferenceMessages.append(
         {chat::Role::Assistant, QString::fromUtf8(rawAction)});
     const auto decision = dependencies_.toolPolicy(action.toolName);
@@ -292,7 +268,6 @@ void AgentController::handleAction(const agent::Action& action,
 void AgentController::executeTool(const agent::Action& action)
 {
     if (!activeRun_) return;
-    ++activeRun_->toolCallCount;
     setState(AgentRun::State::ExecutingTool);
     recordEvent(agent::EventType::ToolStarted,
                 QStringLiteral("Tool call started."), action.toolName,

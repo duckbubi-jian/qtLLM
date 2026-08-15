@@ -32,7 +32,13 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools)
                                               "from Available tools and whose "
                                               "arguments match inputSchema. "
                                               "Never invent or emit a "
-                                              "placeholder tool name. ");
+                                              "placeholder tool name. After "
+                                              "a tool result, use the result "
+                                              "and never repeat an identical "
+                                              "call. Return final when the "
+                                              "result is sufficient; after an "
+                                              "error, change the arguments or "
+                                              "choose another action. ");
     return QStringLiteral(
                "You are the decision engine for a local desktop agent. "
                "Return exactly one JSON action and no other text. %1"
@@ -70,10 +76,19 @@ chat::Message AgentPromptBuilder::toolResultMessage(
     payload.insert(QStringLiteral("isError"), result.isError);
     const auto json = QString::fromUtf8(
         QJsonDocument(payload).toJson(QJsonDocument::Compact));
-    return {
-        chat::Role::User,
-        QStringLiteral("<tool_result name=\"%1\">%2</tool_result>")
-            .arg(result.serverId + QLatin1Char('.') + result.toolName, json)};
+    const auto guidance =
+        result.isError
+            ? QStringLiteral(
+                  "The tool reported an error. Do not repeat the same call "
+                  "unchanged; correct its arguments or choose another action.")
+            : QStringLiteral(
+                  "The tool completed successfully. Use this result and do "
+                  "not repeat this exact tool call. Return final if the result "
+                  "is sufficient; otherwise choose a different call.");
+    return {chat::Role::User,
+            QStringLiteral("<tool_result name=\"%1\">%2</tool_result>\n%3")
+                .arg(result.serverId + QLatin1Char('.') + result.toolName, json,
+                     guidance)};
 }
 
 chat::Message AgentPromptBuilder::correctionMessage(const QString& errorMessage)

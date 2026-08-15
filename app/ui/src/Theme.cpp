@@ -27,23 +27,10 @@ QWidget {
 QMainWindow, QWidget#centralView {
     background: #f5f6f8;
 }
-QWidget#modelBar {
-    background: transparent;
-}
-QLineEdit#modelPathEdit {
-    min-height: 36px;
-    padding: 0 10px;
+QStackedWidget#contentStack,
+QWidget#modelGuidePage,
+QWidget#transcriptPage {
     background: #ffffff;
-    border: 1px solid #d7dbe0;
-    border-radius: 6px;
-    selection-background-color: #2563eb;
-}
-QLineEdit#modelPathEdit:focus {
-    border-color: #2563eb;
-}
-QLabel#modelInfoLabel {
-    color: #5f6368;
-    padding: 0 2px 2px 2px;
 }
 QPushButton {
     min-height: 34px;
@@ -65,17 +52,31 @@ QPushButton:disabled {
     border-color: #e0e3e7;
 }
 QPushButton#primaryActionButton {
+    min-width: 36px;
+    max-width: 36px;
+    min-height: 36px;
+    max-height: 36px;
+    padding: 0;
     color: #ffffff;
-    background: #2563eb;
-    border-color: #2563eb;
-    font-weight: 600;
+    background: #3b82f6;
+    border-color: #3b82f6;
 }
 QPushButton#primaryActionButton:hover {
-    background: #1d4ed8;
-    border-color: #1d4ed8;
+    background: #2563eb;
+    border-color: #2563eb;
 }
-QPushButton#stopButton {
-    color: #b42318;
+QPushButton#primaryActionButton[stopMode="true"] {
+    background: #b42318;
+    border-color: #b42318;
+}
+QPushButton#primaryActionButton[stopMode="true"]:hover {
+    background: #922018;
+    border-color: #922018;
+}
+QPushButton#primaryActionButton:disabled {
+    color: #ffffff;
+    background: #cbd5e1;
+    border-color: #cbd5e1;
 }
 QTabWidget#transcriptTabs::pane {
     background: #ffffff;
@@ -108,27 +109,117 @@ QPlainTextEdit#activityLog {
     border: none;
 }
 QWidget#promptComposer {
-    background: #ffffff;
-    border: 1px solid #d7dbe0;
+    background: #fbfcfe;
+    border: 1px solid #dde3ea;
     border-radius: 8px;
 }
+QWidget#transcriptActions {
+    background: transparent;
+}
+QToolButton#modelReloadButton,
+QToolButton#clearConversationButton,
 QToolButton#workspaceBrowseButton {
     min-width: 26px;
+    max-width: 26px;
     min-height: 26px;
+    max-height: 26px;
     padding: 0;
     background: transparent;
     border: none;
     border-radius: 4px;
 }
+QToolButton#modelReloadButton:hover,
+QToolButton#clearConversationButton:hover,
 QToolButton#workspaceBrowseButton:hover {
     background: #e9f1ff;
 }
+QToolButton#modelReloadButton:disabled,
+QToolButton#clearConversationButton:disabled,
 QToolButton#workspaceBrowseButton:disabled {
     background: transparent;
 }
 QLabel#workspacePathLink {
     color: #2563eb;
     padding: 0 2px;
+}
+QLabel#modelPathLink {
+    min-height: 28px;
+    max-height: 28px;
+    color: #475569;
+    padding: 0 10px;
+    background: #f1f5f9;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+}
+QLabel#modelPathLink:hover {
+    background: #e8eef5;
+    border-color: #cbd5e1;
+}
+QLabel#modelPathLink[modelState="checking"],
+QLabel#guideModelNameLabel[modelState="checking"] {
+    color: #1d4ed8;
+    background: #eff6ff;
+    border-color: #bfdbfe;
+}
+QLabel#modelPathLink[modelState="verified"],
+QLabel#guideModelNameLabel[modelState="verified"] {
+    color: #166534;
+    background: #ecfdf3;
+    border-color: #bbf7d0;
+}
+QLabel#modelPathLink[modelState="unverified"],
+QLabel#guideModelNameLabel[modelState="unverified"] {
+    color: #9f1239;
+    background: #fff1f2;
+    border-color: #fecdd3;
+}
+QLabel#modelPathLink[modelState="invalid"],
+QLabel#guideModelNameLabel[modelState="invalid"] {
+    color: #991b1b;
+    background: #fee2e2;
+    border-color: #fca5a5;
+}
+QLabel#guideTitleLabel {
+    color: #202124;
+    font-size: 17pt;
+    font-weight: 600;
+}
+QLabel#guideDescriptionLabel {
+    color: #5f6368;
+    padding: 4px 0 10px 0;
+}
+QLabel#guideStatusLabel {
+    color: #5f6368;
+    padding: 8px 0 0 0;
+}
+QLabel#guideModelNameLabel {
+    color: #334155;
+    padding: 7px 12px;
+    background: #f1f3f5;
+    border: 1px solid #dfe3e8;
+    border-radius: 5px;
+    font-family: "Cascadia Mono", "Consolas", monospace;
+}
+QPushButton#guideLoadModelButton {
+    min-height: 38px;
+    padding: 0 18px;
+    color: #ffffff;
+    background: #2563eb;
+    border-color: #2563eb;
+    font-weight: 600;
+}
+QPushButton#guideLoadModelButton:hover {
+    background: #1d4ed8;
+    border-color: #1d4ed8;
+}
+QPushButton#guideLoadModelButton:disabled {
+    color: #ffffff;
+    background: #aeb4bd;
+    border-color: #aeb4bd;
+}
+QPushButton#guideSelectModelButton {
+    min-height: 38px;
+    padding: 0 16px;
 }
 QPlainTextEdit#promptEditor {
     padding: 8px 10px 2px 10px;
@@ -247,13 +338,11 @@ QToolButton#messageToolButton {
 QToolButton#messageToolButton:hover {
     background: #eef1f4;
 }
-QStatusBar {
+QLabel#statusLabel {
     color: #5f6368;
     background: #f5f6f8;
+    padding: 3px 2px 0 2px;
     border-top: 1px solid #dfe3e8;
-}
-QStatusBar::item {
-    border: none;
 }
 QScrollBar:vertical {
     width: 10px;

@@ -22,6 +22,7 @@ class WorkerClientTest final : public QObject
     void cachesVerifiedModelFingerprint();
     void defaultsToApplicationDirectory();
     void startsHandshakesAndStopsWorker();
+    void reportsModelLoadFailure();
     void storesMcpServerConfiguration();
 };
 
@@ -105,6 +106,22 @@ void WorkerClientTest::startsHandshakesAndStopsWorker()
     QTRY_COMPARE_WITH_TIMEOUT(
         client.state(), infrastructure::WorkerClient::State::Stopped, 5000);
     QCOMPARE(errorSpy.count(), 0);
+}
+
+void WorkerClientTest::reportsModelLoadFailure()
+{
+    infrastructure::WorkerClient client;
+    QSignalSpy loadFailureSpy(&client,
+                              &infrastructure::WorkerClient::modelLoadFailed);
+
+    client.start();
+    QTRY_COMPARE_WITH_TIMEOUT(client.state(),
+                              infrastructure::WorkerClient::State::Ready, 5000);
+    client.loadModel(QCoreApplication::applicationFilePath());
+    QTRY_COMPARE_WITH_TIMEOUT(loadFailureSpy.count(), 1, 5000);
+    QCOMPARE(client.state(), infrastructure::WorkerClient::State::Ready);
+    QVERIFY(!loadFailureSpy.constFirst().at(0).toString().isEmpty());
+    QVERIFY(!loadFailureSpy.constFirst().at(1).toString().isEmpty());
 }
 
 void WorkerClientTest::storesMcpServerConfiguration()

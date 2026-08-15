@@ -29,6 +29,7 @@ class WorkerClient final : public QObject
         Stopped,
         Starting,
         Ready,
+        UnloadingModel,
         LoadingModel,
         ModelReady,
         Generating,
@@ -70,6 +71,9 @@ class WorkerClient final : public QObject
     void stateChanged(qtllm::infrastructure::WorkerClient::State state);
     void modelLoaded(const QString& modelPath, qint64 loadMilliseconds,
                      const QString& device);
+    void modelUnloaded();
+    void modelLoadFailed(const QString& code, const QString& message);
+    void modelUnloadFailed(const QString& code, const QString& message);
     void tokenReceived(const QByteArray& bytes);
     void generationFinished(bool cancelled, const QJsonObject& metrics);
     void errorOccurred(const QString& code, const QString& message);

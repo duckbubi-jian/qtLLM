@@ -2,6 +2,7 @@
 
 #include "AgentPromptBuilder.hpp"
 
+#include <QJsonDocument>
 #include <QUuid>
 
 #include <algorithm>
@@ -14,6 +15,13 @@ namespace
 constexpr auto maximumDecisionBytes = 65'536;
 constexpr auto minimumDecisionTokens = 256;
 constexpr auto runTimeoutMilliseconds = 120'000;
+
+QString toolCallSignature(const agent::Action& action)
+{
+    return action.toolName + QLatin1Char('\n') +
+           QString::fromUtf8(
+               QJsonDocument(action.arguments).toJson(QJsonDocument::Compact));
+}
 }  // namespace
 
 AgentController::AgentController(Dependencies dependencies, QObject* parent)
@@ -55,6 +63,8 @@ bool AgentController::start(const QString& userRequest,
     availableTools_ = tools;
     pendingApproval_.reset();
     decisionBytes_.clear();
+    activeToolCallSignature_.clear();
+    lastFailedToolCallSignature_.clear();
     runTimer_.start();
 
     recordEvent(agent::EventType::RunStarted,
@@ -183,6 +193,12 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
         result.requestId != activeRun_->toolRequestId)
         return;
     activeRun_->toolRequestId.clear();
+    const auto completedToolCallSignature =
+        std::exchange(activeToolCallSignature_, QString{});
+    if (result.isError)
+        lastFailedToolCallSignature_ = completedToolCallSignature;
+    else
+        lastFailedToolCallSignature_.clear();
     recordEvent(agent::EventType::ToolFinished,
                 result.isError ? result.errorMessage
                                : QStringLiteral("Tool call completed."),
@@ -219,6 +235,19 @@ void AgentController::handleAction(const agent::Action& action,
     if (action.type == agent::ActionType::Final)
     {
         completeRun(action.content);
+        return;
+    }
+
+    if (!lastFailedToolCallSignature_.isEmpty() &&
+        toolCallSignature(action) == lastFailedToolCallSignature_)
+    {
+        retryInvalidAction(
+            rawAction,
+            QStringLiteral(
+                "The identical tool call already failed. Do not call it "
+                "again. Return a final action now, or use meaningfully "
+                "different arguments only when the user's request requires "
+                "another attempt."));
         return;
     }
 
@@ -268,6 +297,7 @@ void AgentController::handleAction(const agent::Action& action,
 void AgentController::executeTool(const agent::Action& action)
 {
     if (!activeRun_) return;
+    activeToolCallSignature_ = toolCallSignature(action);
     setState(AgentRun::State::ExecutingTool);
     recordEvent(agent::EventType::ToolStarted,
                 QStringLiteral("Tool call started."), action.toolName,

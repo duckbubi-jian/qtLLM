@@ -85,6 +85,9 @@ add_library(qtllm_app_ui STATIC
     ${ui_headers}
     ${ui_forms}
 )
+set_target_properties(qtllm_app_ui PROPERTIES
+    AUTOUIC_SEARCH_PATHS "${CMAKE_CURRENT_SOURCE_DIR}/ui/forms"
+)
 target_include_directories(qtllm_app_ui
     PUBLIC
         ${ui_include_directories}

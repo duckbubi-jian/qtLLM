@@ -16,6 +16,8 @@ class AgentControllerTest final : public QObject
     void cancelsAndIgnoresLateResponses();
     void keepsConversationHistoryAndClearsIt();
     void emptyToolPromptForbidsToolCalls();
+    void casualPromptPrefersFinalWithoutTools();
+    void rejectsUnchangedRetryAfterToolError();
     void hasNoToolCallCountLimit();
     void longRunWarningDoesNotStopAgent();
 };
@@ -254,6 +256,86 @@ void AgentControllerTest::emptyToolPromptForbidsToolCalls()
     QVERIFY(prompt.contains(QStringLiteral("must not call a tool")));
     QVERIFY(!prompt.contains(QStringLiteral("server.tool")));
     controller.cancel();
+}
+
+void AgentControllerTest::casualPromptPrefersFinalWithoutTools()
+{
+    QList<chat::Message> generatedMessages;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>& messages,
+                const models::InferencePreset&, int)
+            { generatedMessages = messages; },
+            [] {}, [](const QString&, const QJsonObject&)
+            { return QStringLiteral("unused"); }, [](const QString&) {},
+            [](const QString&, const QJsonObject&, QString&) { return true; },
+            [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+
+    QVERIFY(controller.start(QStringLiteral("Hello"), {}, {echoTool()}));
+    QVERIFY(!generatedMessages.isEmpty());
+    const auto prompt = generatedMessages.constFirst().content;
+    QVERIFY(prompt.contains(QStringLiteral("Greetings, casual conversation")));
+    QVERIFY(prompt.contains(
+        QStringLiteral("must return final without calling a tool")));
+    QVERIFY(prompt.contains(QStringLiteral("list_allowed_directories")));
+    controller.cancel();
+}
+
+void AgentControllerTest::rejectsUnchangedRetryAfterToolError()
+{
+    auto generationCount = 0;
+    auto toolCallCount = 0;
+    QList<chat::Message> generatedMessages;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>& messages,
+                const models::InferencePreset&, int)
+            {
+                ++generationCount;
+                generatedMessages = messages;
+            },
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-%1").arg(toolCallCount);
+            },
+            [](const QString&) {},
+            [](const QString&, const QJsonObject&, QString&) { return true; },
+            [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+
+    const auto repeatedAction = QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.echo","arguments":{"value":1}})");
+    QVERIFY(controller.start(QStringLiteral("Do work"), {}, {echoTool()}));
+    controller.receiveToken(repeatedAction);
+    controller.completeGeneration(false);
+    QCOMPARE(toolCallCount, 1);
+
+    agent::ToolResult result;
+    result.requestId = QStringLiteral("tool-request-1");
+    result.serverId = QStringLiteral("fake");
+    result.toolName = QStringLiteral("echo");
+    result.isError = true;
+    result.errorCode = QStringLiteral("outside_root");
+    result.errorMessage = QStringLiteral("Path is outside allowed roots.");
+    controller.receiveToolResult(result);
+    QCOMPARE(generationCount, 2);
+
+    controller.receiveToken(repeatedAction);
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(toolCallCount, 1);
+    QCOMPARE(generationCount, 3);
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("identical tool call already failed")));
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"final","content":"Unable to use that path."})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Completed);
+    QCOMPARE(toolCallCount, 1);
 }
 
 void AgentControllerTest::hasNoToolCallCountLimit()

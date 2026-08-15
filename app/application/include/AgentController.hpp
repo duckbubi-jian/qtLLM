@@ -102,6 +102,8 @@ class AgentController final : public QObject
     QList<chat::Message> conversationMessages_;
     std::optional<agent::Action> pendingApproval_;
     QByteArray decisionBytes_;
+    QString activeToolCallSignature_;
+    QString lastFailedToolCallSignature_;
     QTimer runTimer_;
 };
 }  // namespace qtllm::application

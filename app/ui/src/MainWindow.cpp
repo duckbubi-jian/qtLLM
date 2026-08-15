@@ -1,6 +1,7 @@
 #include "MainWindow.hpp"
 
 #include "BuiltInMcpServer.hpp"
+#include "ChatView.hpp"
 #include "MessageWidget.hpp"
 #include "SensitiveData.hpp"
 #include "ToolApprovalWidget.hpp"
@@ -8,38 +9,41 @@
 #include <QCoreApplication>
 #include <QDesktopServices>
 #include <QDir>
-#include <QEvent>
 #include <QFileDialog>
 #include <QFileInfo>
-#include <QFontDatabase>
-#include <QFontMetrics>
-#include <QHBoxLayout>
 #include <QJsonDocument>
-#include <QKeyEvent>
-#include <QLabel>
-#include <QLineEdit>
-#include <QMenu>
 #include <QPlainTextEdit>
-#include <QPushButton>
+#include <QPointer>
 #include <QScrollArea>
 #include <QScrollBar>
-#include <QSizePolicy>
-#include <QStatusBar>
 #include <QStringList>
-#include <QStyle>
-#include <QTabWidget>
 #include <QTextCursor>
 #include <QTimer>
-#include <QToolButton>
 #include <QUrl>
 #include <QVBoxLayout>
-#include <QWidget>
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <utility>
 
 namespace qtllm::ui
 {
+namespace
+{
+ModelBadgeState modelBadgeState(const models::ModelSelection& selection)
+{
+    if (selection.selectedPath.isEmpty()) return ModelBadgeState::Neutral;
+    if (selection.descriptor.verificationStatus ==
+        models::VerificationStatus::Invalid)
+        return ModelBadgeState::Invalid;
+    if (selection.descriptor.origin == models::ModelOrigin::DirectGguf)
+        return ModelBadgeState::Unverified;
+    return selection.descriptor.verificationStatus ==
+                   models::VerificationStatus::Verified
+               ? ModelBadgeState::Verified
+               : ModelBadgeState::Unverified;
+}
+}  // namespace
+
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent),
       mcpManager_(this),
@@ -74,7 +78,8 @@ MainWindow::MainWindow(QWidget* parent)
     setMinimumSize(720, 520);
 
     buildUi();
-    modelPathEdit_->setText(settingsStore_.lastModelPath());
+    modelInfoText_ = tr("Model not checked");
+    setModelPath(settingsStore_.lastModelPath());
     auto workspacePath = settingsStore_.workspacePath();
     QFileInfo workspaceInfo(workspacePath);
     if (!workspaceInfo.isDir() || workspaceInfo.canonicalFilePath().isEmpty())
@@ -86,7 +91,7 @@ MainWindow::MainWindow(QWidget* parent)
         workspacePath = workspaceInfo.canonicalFilePath();
     }
     workspacePath_ = workspacePath;
-    updateWorkspaceLink();
+    chatView_->setWorkspacePresentation(workspacePath_);
 
     connect(&workerClient_, &infrastructure::WorkerClient::stateChanged, this,
             &MainWindow::updateState);
@@ -95,21 +100,28 @@ MainWindow::MainWindow(QWidget* parent)
         [this](const QString& path, qint64 milliseconds, const QString& device)
         {
             Q_UNUSED(path)
+            replacingModel_ = false;
             activeModelSelection_ = pendingModelSelection_;
-            statusLabel_->setText(
+            chatView_->setStatusText(
                 tr("Model ready on %1 - loaded in %2 ms")
                     .arg(device.isEmpty() ? tr("CPU") : device)
                     .arg(milliseconds));
-            modelPathEdit_->setText(activeModelSelection_.selectedPath);
+            modelPath_ = activeModelSelection_.selectedPath;
             updateModelInformation(activeModelSelection_);
             if (!settingsStore_.setLastModelPath(
                     activeModelSelection_.selectedPath))
             {
-                statusLabel_->setText(
+                chatView_->setStatusText(
                     tr("Model ready, but the model path could not be "
                        "saved beside the application."));
             }
         });
+    connect(&workerClient_, &infrastructure::WorkerClient::modelUnloaded, this,
+            &MainWindow::continueModelLoadAfterUnload);
+    connect(&workerClient_, &infrastructure::WorkerClient::modelLoadFailed,
+            this, &MainWindow::handleModelLoadFailure);
+    connect(&workerClient_, &infrastructure::WorkerClient::modelUnloadFailed,
+            this, &MainWindow::handleModelUnloadFailure);
     connect(&modelVerificationWatcher_,
             &QFutureWatcher<models::ModelPackageResult>::finished, this,
             &MainWindow::finishModelPackageVerification);
@@ -128,7 +140,7 @@ MainWindow::MainWindow(QWidget* parent)
             {
                 appendUserMessage(prompt);
                 showAgentActivity();
-                promptEdit_->clear();
+                chatView_->promptEditor()->clear();
                 pendingUtf8_.clear();
                 currentAssistantText_.clear();
             });
@@ -143,8 +155,8 @@ MainWindow::MainWindow(QWidget* parent)
                 auto* approval = new ToolApprovalWidget(
                     toolPolicy_.risk(toolName), toolName, arguments);
                 pendingToolApproval_ = approval;
-                conversationLayout_->insertWidget(
-                    conversationLayout_->count() - 1, approval);
+                chatView_->conversationLayout()->insertWidget(
+                    chatView_->conversationLayout()->count() - 1, approval);
                 connect(
                     approval, &ToolApprovalWidget::decisionMade, this,
                     [this, approval, toolName](ToolApprovalDecision decision)
@@ -181,9 +193,12 @@ MainWindow::MainWindow(QWidget* parent)
             {
                 appendAgentEvent(event);
                 if (event.type == agent::EventType::Warning)
+                {
+                    stopThinkingAnimation();
                     updateAgentActivity(event.message);
+                }
                 if (!event.message.isEmpty())
-                    statusLabel_->setText(event.message);
+                    chatView_->setStatusText(event.message);
             });
     connect(&agentController_, &application::AgentController::stateChanged,
             this, &MainWindow::updateAgentState);
@@ -199,14 +214,14 @@ MainWindow::MainWindow(QWidget* parent)
                     pendingToolApproval_ = nullptr;
                 }
                 if (state == application::AgentRun::State::Completed)
-                    statusLabel_->setText(tr("Ready"));
+                    chatView_->setStatusText(tr("Ready"));
                 else if (!message.isEmpty())
                 {
                     if (code != QLatin1String("approval_denied") &&
-                        promptEdit_->toPlainText().isEmpty() &&
+                        chatView_->promptEditor()->toPlainText().isEmpty() &&
                         agentController_.activeRun().has_value())
                     {
-                        promptEdit_->setPlainText(
+                        chatView_->promptEditor()->setPlainText(
                             agentController_.activeRun()->userRequest);
                     }
                     showError(code, message);
@@ -250,44 +265,38 @@ MainWindow::MainWindow(QWidget* parent)
     workerClient_.start();
 }
 
-bool MainWindow::eventFilter(QObject* watched, QEvent* event)
-{
-    if (watched == workspacePathLabel_ && event->type() == QEvent::Resize)
-        updateWorkspaceLink();
-
-    if (watched == promptEdit_ && event->type() == QEvent::KeyPress)
-    {
-        const auto* keyEvent = static_cast<QKeyEvent*>(event);
-        const auto isEnter = keyEvent->key() == Qt::Key_Return ||
-                             keyEvent->key() == Qt::Key_Enter;
-        if (isEnter && !(keyEvent->modifiers() & Qt::ShiftModifier))
-        {
-            if (sendButton_->isEnabled()) sendPrompt();
-            return true;
-        }
-    }
-
-    return QMainWindow::eventFilter(watched, event);
-}
-
 void MainWindow::selectModelPackage()
 {
-    const QFileInfo current(modelPathEdit_->text());
-    const auto initialDirectory =
-        current.isDir() ? current.absoluteFilePath() : current.absolutePath();
+    const QFileInfo current(modelPath_);
+    auto initialDirectory = QDir::homePath();
+    if (current.isDir())
+        initialDirectory = current.absoluteFilePath();
+    else if (current.isFile())
+        initialDirectory = current.absolutePath();
     const auto selected = QFileDialog::getExistingDirectory(
-        this, tr("Select model package"), initialDirectory,
+        this, tr("Select model folder"), initialDirectory,
         QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
-    if (!selected.isEmpty()) modelPathEdit_->setText(selected);
+    if (selected.isEmpty()) return;
+
+    const auto selectedPath = QFileInfo(selected).canonicalFilePath();
+    const auto reloadImmediately =
+        !activeModelSelection_.selectedPath.isEmpty();
+    setModelPath(selectedPath);
+    if (reloadImmediately) loadSelectedModel();
 }
 
-void MainWindow::selectGgufModel()
+void MainWindow::openModelDirectory()
 {
-    const QFileInfo current(modelPathEdit_->text());
-    const auto selected = QFileDialog::getOpenFileName(
-        this, tr("Select GGUF model"), current.absoluteFilePath(),
-        tr("GGUF models (*.gguf);;All files (*)"));
-    if (!selected.isEmpty()) modelPathEdit_->setText(selected);
+    if (modelPath_.isEmpty()) return;
+
+    const QFileInfo model(modelPath_);
+    const auto directory =
+        model.isDir() ? model.absoluteFilePath() : model.absolutePath();
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(directory)))
+    {
+        chatView_->setStatusText(tr("Unable to open the model folder"));
+        qWarning().noquote() << "Unable to open model folder:" << directory;
+    }
 }
 
 void MainWindow::selectWorkspaceDirectory()
@@ -314,7 +323,7 @@ void MainWindow::selectWorkspaceDirectory()
         return;
     }
     workspacePath_ = workspacePath;
-    updateWorkspaceLink();
+    chatView_->setWorkspacePresentation(workspacePath_);
     if (!settingsStore_.setWorkspacePath(workspacePath))
         qWarning().noquote()
             << "Unable to persist workspace path:" << workspacePath;
@@ -325,7 +334,7 @@ void MainWindow::openWorkspaceDirectory()
     if (workspacePath_.isEmpty()) return;
     if (!QDesktopServices::openUrl(QUrl::fromLocalFile(workspacePath_)))
     {
-        statusLabel_->setText(tr("Unable to open the workspace folder"));
+        chatView_->setStatusText(tr("Unable to open the workspace folder"));
         qWarning().noquote()
             << "Unable to open workspace folder:" << workspacePath_;
     }
@@ -335,12 +344,13 @@ void MainWindow::loadSelectedModel()
 {
     if (verifyingModelPackage_) return;
 
-    auto result =
-        models::ModelPackage::inspect(modelPathEdit_->text().trimmed(),
-                                      QCoreApplication::applicationVersion());
+    auto result = models::ModelPackage::inspect(
+        modelPath_, QCoreApplication::applicationVersion());
     if (!result.succeeded())
     {
-        modelInfoLabel_->setText(tr("Invalid model selection"));
+        modelInfoText_ = tr("Invalid model selection");
+        chatView_->setModelPresentation(modelPath_, modelInfoText_,
+                                        ModelBadgeState::Invalid);
         showError(result.errorCode, result.errorMessage);
         return;
     }
@@ -361,22 +371,45 @@ void MainWindow::loadSelectedModel()
 
     pendingModelSelection_ = result.selection;
     verifyingModelPackage_ = true;
-    modelInfoLabel_->setText(tr("Verifying package - %1")
-                                 .arg(result.selection.descriptor.displayName));
+    modelVerificationPercent_ = -1;
+    modelInfoText_ = tr("Verifying package - %1")
+                         .arg(result.selection.descriptor.displayName);
+    chatView_->setModelPresentation(modelPath_, modelInfoText_,
+                                    ModelBadgeState::Checking);
     updateState(workerClient_.state());
+    const QPointer<MainWindow> window(this);
     modelVerificationWatcher_.setFuture(QtConcurrent::run(
-        [selection = std::move(result.selection)]() mutable
-        { return models::ModelPackage::verify(std::move(selection)); }));
+        [selection = std::move(result.selection), window]() mutable
+        {
+            return models::ModelPackage::verify(
+                std::move(selection),
+                [window](quint64 verifiedBytes, quint64 totalBytes)
+                {
+                    if (!window) return;
+                    QMetaObject::invokeMethod(
+                        window,
+                        [window, verifiedBytes, totalBytes]
+                        {
+                            if (window)
+                                window->updateModelVerificationProgress(
+                                    verifiedBytes, totalBytes);
+                        },
+                        Qt::QueuedConnection);
+                });
+        }));
 }
 
 void MainWindow::finishModelPackageVerification()
 {
     auto result = modelVerificationWatcher_.result();
     verifyingModelPackage_ = false;
+    modelVerificationPercent_ = -1;
     if (!result.succeeded())
     {
         pendingModelSelection_ = {};
-        modelInfoLabel_->setText(tr("Invalid model package"));
+        modelInfoText_ = tr("Invalid model package");
+        chatView_->setModelPresentation(modelPath_, modelInfoText_,
+                                        ModelBadgeState::Invalid);
         updateState(workerClient_.state());
         showError(result.errorCode, result.errorMessage);
         return;
@@ -389,16 +422,42 @@ void MainWindow::finishModelPackageVerification()
     beginModelLoad(std::move(result.selection));
 }
 
+void MainWindow::updateModelVerificationProgress(quint64 verifiedBytes,
+                                                 quint64 totalBytes)
+{
+    if (!verifyingModelPackage_ || totalBytes == 0) return;
+    const auto percent =
+        qBound(0,
+               static_cast<int>(100.0 * static_cast<double>(verifiedBytes) /
+                                static_cast<double>(totalBytes)),
+               100);
+    if (percent == modelVerificationPercent_) return;
+    modelVerificationPercent_ = percent;
+    chatView_->setStatusText(tr("Verifying model package... %1%").arg(percent));
+}
+
+void MainWindow::triggerPrimaryAction()
+{
+    if (primaryActionStops_)
+        stopGeneration();
+    else
+        sendPrompt();
+}
+
 void MainWindow::sendPrompt()
 {
-    const auto prompt = promptEdit_->toPlainText().trimmed();
+    const auto prompt = chatView_->promptEditor()->toPlainText().trimmed();
     if (prompt.isEmpty()) return;
     beginAgentPrompt(prompt);
 }
 
 void MainWindow::stopGeneration()
 {
-    if (agentRunActive_) agentController_.cancel();
+    if (agentRunActive_)
+        agentController_.cancel();
+    else if (workerClient_.state() ==
+             infrastructure::WorkerClient::State::Generating)
+        workerClient_.cancel();
 }
 
 void MainWindow::clearConversation()
@@ -409,21 +468,22 @@ void MainWindow::clearConversation()
 
 void MainWindow::resetConversationView()
 {
-    while (conversationLayout_->count() > 1)
+    auto* conversationLayout = chatView_->conversationLayout();
+    while (conversationLayout->count() > 1)
     {
-        auto* item = conversationLayout_->takeAt(0);
+        auto* item = conversationLayout->takeAt(0);
         delete item->widget();
         delete item;
     }
 
-    activityLog_->clear();
+    chatView_->activityLog()->clear();
     renderTimer_->stop();
     currentAssistant_ = nullptr;
     agentActivityMessage_ = nullptr;
     pendingToolApproval_ = nullptr;
     currentAssistantText_.clear();
     pendingUtf8_.clear();
-    statusLabel_->setText(tr("Conversation cleared"));
+    chatView_->setStatusText(tr("Conversation cleared"));
     updateClearButton();
 }
 
@@ -438,47 +498,57 @@ void MainWindow::updateState(infrastructure::WorkerClient::State state)
         !verifyingModelPackage_;
     const auto generating =
         state == infrastructure::WorkerClient::State::Generating;
-    modelPathEdit_->setEnabled(ready);
-    browseButton_->setEnabled(ready);
-    loadButton_->setEnabled(ready &&
-                            !modelPathEdit_->text().trimmed().isEmpty());
-    workspaceButton_->setEnabled(!agentRunActive_ &&
-                                 !filesystemConfiguredExternally_);
-    promptEdit_->setEnabled(modelReady && !agentRunActive_);
-    sendButton_->setEnabled(modelReady && !agentRunActive_);
-    stopButton_->setEnabled(generating || agentRunActive_);
+    chatView_->setModelControlsEnabled(ready, ready && !modelPath_.isEmpty());
+    chatView_->setWorkspaceControlsEnabled(!agentRunActive_ &&
+                                           !filesystemConfiguredExternally_);
+    chatView_->setPromptEnabled(modelReady && !agentRunActive_);
+    const auto stopMode = generating || agentRunActive_;
+    updatePrimaryAction(stopMode);
+    chatView_->setPrimaryAction(stopMode, stopMode || modelReady);
+    chatView_->setConversationVisible(modelReady || generating ||
+                                      agentRunActive_);
     updateClearButton();
 
     if (verifyingModelPackage_)
     {
-        statusLabel_->setText(tr("Verifying model package..."));
+        chatView_->setStatusText(tr("Verifying model package..."));
         return;
     }
 
     switch (state)
     {
         case infrastructure::WorkerClient::State::Stopped:
-            statusLabel_->setText(tr("Worker stopped"));
+            chatView_->setStatusText(tr("Worker stopped"));
             break;
         case infrastructure::WorkerClient::State::Starting:
-            statusLabel_->setText(tr("Starting worker..."));
+            chatView_->setStatusText(tr("Starting worker..."));
             break;
         case infrastructure::WorkerClient::State::Ready:
-            statusLabel_->setText(tr("Select a local model"));
+            chatView_->setStatusText({});
+            break;
+        case infrastructure::WorkerClient::State::UnloadingModel:
+            chatView_->setStatusText(tr("Releasing current model..."));
             break;
         case infrastructure::WorkerClient::State::LoadingModel:
-            statusLabel_->setText(tr("Loading model..."));
+            chatView_->setStatusText(replacingModel_
+                                         ? tr("Loading new model...")
+                                         : tr("Loading model..."));
             break;
         case infrastructure::WorkerClient::State::ModelReady:
-            statusLabel_->setText(tr("Model ready"));
+            chatView_->setStatusText(tr("Model ready"));
             break;
         case infrastructure::WorkerClient::State::Generating:
-            statusLabel_->setText(tr("Generating..."));
+            chatView_->setStatusText(tr("Generating..."));
             break;
         case infrastructure::WorkerClient::State::Failed:
-            statusLabel_->setText(tr("Worker unavailable"));
+            chatView_->setStatusText(tr("Worker unavailable"));
             break;
     }
+}
+
+void MainWindow::updatePrimaryAction(bool stopMode)
+{
+    primaryActionStops_ = stopMode;
 }
 
 void MainWindow::appendToken(const QByteArray& bytes)
@@ -496,14 +566,14 @@ void MainWindow::finishGeneration(bool cancelled, const QJsonObject& metrics)
 
     if (cancelled)
     {
-        statusLabel_->setText(tr("Generation stopped"));
+        chatView_->setStatusText(tr("Generation stopped"));
         updateClearButton();
         return;
     }
 
     const auto discardedMessages =
         metrics.value(QStringLiteral("discardedMessages")).toInt();
-    statusLabel_->setText(
+    chatView_->setStatusText(
         discardedMessages > 0
             ? tr("Ready - %1 token/s - %2 earlier messages omitted")
                   .arg(metrics.value(QStringLiteral("tokensPerSecond"))
@@ -521,7 +591,7 @@ void MainWindow::showError(const QString& code, const QString& message,
                            const QString& retryPrompt)
 {
     removeAgentActivity();
-    statusLabel_->setText(tr("Error: %1").arg(message));
+    chatView_->setStatusText(tr("Error: %1").arg(message));
     if (currentAssistant_ != nullptr)
     {
         currentAssistantText_ +=
@@ -530,10 +600,11 @@ void MainWindow::showError(const QString& code, const QString& message,
         renderAssistant(true);
         currentAssistant_ = nullptr;
     }
-    if (!retryPrompt.isEmpty() && promptEdit_->toPlainText().isEmpty())
+    if (!retryPrompt.isEmpty() &&
+        chatView_->promptEditor()->toPlainText().isEmpty())
     {
-        promptEdit_->setPlainText(retryPrompt);
-        promptEdit_->setFocus();
+        chatView_->promptEditor()->setPlainText(retryPrompt);
+        chatView_->promptEditor()->setFocus();
     }
     updateClearButton();
     qWarning().noquote() << code << message;
@@ -541,111 +612,9 @@ void MainWindow::showError(const QString& code, const QString& message,
 
 void MainWindow::buildUi()
 {
-    auto* central = new QWidget(this);
-    central->setObjectName(QStringLiteral("centralView"));
-    auto* layout = new QVBoxLayout(central);
-    layout->setContentsMargins(16, 16, 16, 12);
-    layout->setSpacing(9);
-
-    auto* modelBar = new QWidget(central);
-    modelBar->setObjectName(QStringLiteral("modelBar"));
-    auto* modelRow = new QHBoxLayout(modelBar);
-    modelRow->setContentsMargins(0, 0, 0, 0);
-    modelRow->setSpacing(8);
-    modelPathEdit_ = new QLineEdit(central);
-    modelPathEdit_->setObjectName(QStringLiteral("modelPathEdit"));
-    modelPathEdit_->setPlaceholderText(tr("Model package or local GGUF path"));
-    browseButton_ = new QPushButton(tr("Browse"), central);
-    loadButton_ = new QPushButton(tr("Load"), central);
-    browseButton_->setIcon(style()->standardIcon(QStyle::SP_DirOpenIcon));
-    loadButton_->setIcon(style()->standardIcon(QStyle::SP_MediaPlay));
-    browseButton_->setToolTip(tr("Select a model package or GGUF file"));
-    auto* browseMenu = new QMenu(browseButton_);
-    auto* packageAction = browseMenu->addAction(tr("Model package folder"));
-    auto* ggufAction = browseMenu->addAction(tr("GGUF file"));
-    browseButton_->setMenu(browseMenu);
-    modelRow->addWidget(modelPathEdit_, 1);
-    modelRow->addWidget(browseButton_);
-    modelRow->addWidget(loadButton_);
-    layout->addWidget(modelBar);
-
-    modelInfoLabel_ = new QLabel(tr("Model not checked"), central);
-    modelInfoLabel_->setObjectName(QStringLiteral("modelInfoLabel"));
-    modelInfoLabel_->setWordWrap(true);
-    layout->addWidget(modelInfoLabel_);
-
-    transcriptTabs_ = new QTabWidget(central);
-    transcriptTabs_->setObjectName(QStringLiteral("transcriptTabs"));
-    conversationScroll_ = new QScrollArea(transcriptTabs_);
-    conversationScroll_->setObjectName(QStringLiteral("conversationScroll"));
-    conversationScroll_->setWidgetResizable(true);
-    conversationScroll_->setFrameShape(QFrame::NoFrame);
-    auto* conversationContent = new QWidget(conversationScroll_);
-    conversationContent->setObjectName(QStringLiteral("conversationContent"));
-    conversationLayout_ = new QVBoxLayout(conversationContent);
-    conversationLayout_->setContentsMargins(8, 8, 8, 8);
-    conversationLayout_->setSpacing(2);
-    conversationLayout_->addStretch();
-    conversationScroll_->setWidget(conversationContent);
-
-    activityLog_ = new QPlainTextEdit(transcriptTabs_);
-    activityLog_->setObjectName(QStringLiteral("activityLog"));
-    activityLog_->setReadOnly(true);
-    activityLog_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-
-    transcriptTabs_->addTab(conversationScroll_, tr("Conversation"));
-    transcriptTabs_->addTab(activityLog_, tr("Activity"));
-    layout->addWidget(transcriptTabs_, 1);
-
-    auto* promptComposer = new QWidget(central);
-    promptComposer->setObjectName(QStringLiteral("promptComposer"));
-    auto* promptLayout = new QVBoxLayout(promptComposer);
-    promptLayout->setContentsMargins(4, 4, 4, 4);
-    promptLayout->setSpacing(0);
-
-    promptEdit_ = new QPlainTextEdit(promptComposer);
-    promptEdit_->setObjectName(QStringLiteral("promptEditor"));
-    promptEdit_->setPlaceholderText(tr("Write a message"));
-    promptEdit_->setMinimumHeight(64);
-    promptEdit_->setMaximumHeight(130);
-    promptEdit_->installEventFilter(this);
-    promptLayout->addWidget(promptEdit_);
-
-    auto* actionRow = new QHBoxLayout;
-    actionRow->setContentsMargins(6, 2, 4, 4);
-    actionRow->setSpacing(8);
-    clearButton_ = new QPushButton(tr("Clear"), promptComposer);
-    clearButton_->setObjectName(QStringLiteral("clearConversationButton"));
-    clearButton_->setIcon(style()->standardIcon(QStyle::SP_DialogResetButton));
-    clearButton_->setToolTip(tr("Clear the current conversation"));
-    actionRow->addWidget(clearButton_);
-    workspaceButton_ = new QToolButton(promptComposer);
-    workspaceButton_->setObjectName(QStringLiteral("workspaceBrowseButton"));
-    workspaceButton_->setAutoRaise(true);
-    workspaceButton_->setIcon(style()->standardIcon(QStyle::SP_DirOpenIcon));
-    workspaceButton_->setToolTip(tr("Select the workspace folder"));
-    actionRow->addWidget(workspaceButton_);
-    workspacePathLabel_ = new QLabel(promptComposer);
-    workspacePathLabel_->setObjectName(QStringLiteral("workspacePathLink"));
-    workspacePathLabel_->setTextFormat(Qt::RichText);
-    workspacePathLabel_->setTextInteractionFlags(Qt::LinksAccessibleByMouse |
-                                                 Qt::LinksAccessibleByKeyboard);
-    workspacePathLabel_->setToolTip(tr("Open the workspace folder"));
-    workspacePathLabel_->setSizePolicy(QSizePolicy::Ignored,
-                                       QSizePolicy::Preferred);
-    workspacePathLabel_->installEventFilter(this);
-    actionRow->addWidget(workspacePathLabel_, 1);
-    stopButton_ = new QPushButton(tr("Stop"), promptComposer);
-    stopButton_->setObjectName(QStringLiteral("stopButton"));
-    stopButton_->setIcon(style()->standardIcon(QStyle::SP_MediaStop));
-    sendButton_ = new QPushButton(tr("Send"), promptComposer);
-    sendButton_->setObjectName(QStringLiteral("primaryActionButton"));
-    sendButton_->setIcon(style()->standardIcon(QStyle::SP_ArrowForward));
-    sendButton_->setDefault(true);
-    actionRow->addWidget(stopButton_);
-    actionRow->addWidget(sendButton_);
-    promptLayout->addLayout(actionRow);
-    layout->addWidget(promptComposer);
+    chatView_ = new ChatView(this);
+    chatView_->setObjectName(QStringLiteral("centralView"));
+    setCentralWidget(chatView_);
 
     renderTimer_ = new QTimer(this);
     renderTimer_->setSingleShot(true);
@@ -653,39 +622,28 @@ void MainWindow::buildUi()
     connect(renderTimer_, &QTimer::timeout, this,
             [this] { renderAssistant(); });
 
-    statusLabel_ = new QLabel(tr("Starting worker..."), this);
-    statusBar()->addWidget(statusLabel_, 1);
-    setCentralWidget(central);
+    thinkingAnimationTimer_ = new QTimer(this);
+    thinkingAnimationTimer_->setInterval(360);
+    connect(thinkingAnimationTimer_, &QTimer::timeout, this,
+            &MainWindow::advanceThinkingAnimation);
 
-    connect(packageAction, &QAction::triggered, this,
+    connect(chatView_, &ChatView::modelFolderRequested, this,
             &MainWindow::selectModelPackage);
-    connect(ggufAction, &QAction::triggered, this,
-            &MainWindow::selectGgufModel);
-    connect(workspaceButton_, &QToolButton::clicked, this,
+    connect(chatView_, &ChatView::modelLocationRequested, this,
+            &MainWindow::openModelDirectory);
+    connect(chatView_, &ChatView::workspaceFolderRequested, this,
             &MainWindow::selectWorkspaceDirectory);
-    connect(workspacePathLabel_, &QLabel::linkActivated, this,
+    connect(chatView_, &ChatView::workspaceOpenRequested, this,
             &MainWindow::openWorkspaceDirectory);
-    connect(loadButton_, &QPushButton::clicked, this,
+    connect(chatView_, &ChatView::modelLoadRequested, this,
             &MainWindow::loadSelectedModel);
-    connect(sendButton_, &QPushButton::clicked, this, &MainWindow::sendPrompt);
-    connect(stopButton_, &QPushButton::clicked, this,
-            &MainWindow::stopGeneration);
-    connect(clearButton_, &QPushButton::clicked, this,
+    connect(chatView_, &ChatView::primaryActionRequested, this,
+            &MainWindow::triggerPrimaryAction);
+    connect(chatView_, &ChatView::promptSubmitted, this,
+            &MainWindow::sendPrompt);
+    connect(chatView_, &ChatView::clearConversationRequested, this,
             &MainWindow::clearConversation);
-    connect(modelPathEdit_, &QLineEdit::textChanged, this,
-            [this]
-            {
-                const auto path = modelPathEdit_->text().trimmed();
-                if (path != pendingModelSelection_.selectedPath &&
-                    path != activeModelSelection_.selectedPath)
-                    modelInfoLabel_->setText(tr("Model not checked"));
-                loadButton_->setEnabled(
-                    (workerClient_.state() ==
-                         infrastructure::WorkerClient::State::Ready ||
-                     workerClient_.state() ==
-                         infrastructure::WorkerClient::State::ModelReady) &&
-                    !modelPathEdit_->text().trimmed().isEmpty());
-            });
+    updatePrimaryAction(false);
     updateState(infrastructure::WorkerClient::State::Stopped);
 }
 
@@ -693,8 +651,8 @@ void MainWindow::appendUserMessage(const QString& text)
 {
     auto* message = new MessageWidget(MessageWidget::Role::User);
     message->setUserText(text);
-    conversationLayout_->insertWidget(conversationLayout_->count() - 1,
-                                      message);
+    chatView_->conversationLayout()->insertWidget(
+        chatView_->conversationLayout()->count() - 1, message);
 
     updateClearButton();
     scrollConversationToBottom();
@@ -704,18 +662,18 @@ void MainWindow::beginAssistantMessage()
 {
     currentAssistant_ = new MessageWidget(MessageWidget::Role::Assistant);
     currentAssistant_->setAssistantText({}, false);
-    conversationLayout_->insertWidget(conversationLayout_->count() - 1,
-                                      currentAssistant_);
+    chatView_->conversationLayout()->insertWidget(
+        chatView_->conversationLayout()->count() - 1, currentAssistant_);
     scrollConversationToBottom();
 }
 
 void MainWindow::appendActivityText(const QString& text)
 {
-    auto cursor = activityLog_->textCursor();
+    auto cursor = chatView_->activityLog()->textCursor();
     cursor.movePosition(QTextCursor::End);
     cursor.insertText(text);
-    activityLog_->setTextCursor(cursor);
-    activityLog_->ensureCursorVisible();
+    chatView_->activityLog()->setTextCursor(cursor);
+    chatView_->activityLog()->ensureCursorVisible();
 }
 
 void MainWindow::appendAgentEvent(const agent::Event& event)
@@ -723,7 +681,8 @@ void MainWindow::appendAgentEvent(const agent::Event& event)
     QStringList lines;
     if (event.type == agent::EventType::RunStarted)
     {
-        if (!activityLog_->document()->isEmpty()) lines.append(QString{});
+        if (!chatView_->activityLog()->document()->isEmpty())
+            lines.append(QString{});
         lines.append(QStringLiteral("===================="));
     }
 
@@ -757,19 +716,21 @@ void MainWindow::renderAssistant(bool final)
 
 bool MainWindow::conversationIsAtBottom() const
 {
-    const auto* scrollBar = conversationScroll_->verticalScrollBar();
+    const auto* scrollBar =
+        chatView_->conversationScroll()->verticalScrollBar();
     return scrollBar->maximum() - scrollBar->value() <= 48;
 }
 
 void MainWindow::scrollConversationToBottom()
 {
-    QTimer::singleShot(0, conversationScroll_,
-                       [this]
-                       {
-                           auto* scrollBar =
-                               conversationScroll_->verticalScrollBar();
-                           scrollBar->setValue(scrollBar->maximum());
-                       });
+    QTimer::singleShot(
+        0, chatView_->conversationScroll(),
+        [this]
+        {
+            auto* scrollBar =
+                chatView_->conversationScroll()->verticalScrollBar();
+            scrollBar->setValue(scrollBar->maximum());
+        });
 }
 
 void MainWindow::flushPendingUtf8(bool final)
@@ -811,9 +772,9 @@ void MainWindow::flushPendingUtf8(bool final)
 
 void MainWindow::updateClearButton()
 {
-    if (clearButton_ == nullptr || conversationLayout_ == nullptr) return;
-    const auto hasVisibleMessages = conversationLayout_->count() > 1;
-    clearButton_->setEnabled(
+    const auto hasVisibleMessages =
+        chatView_->conversationLayout()->count() > 1;
+    chatView_->setClearEnabled(
         !agentRunActive_ &&
         (agentController_.hasConversation() || hasVisibleMessages));
 }
@@ -838,8 +799,8 @@ void MainWindow::appendAgentAnswer(const QString& answer)
     removeAgentActivity();
     auto* message = new MessageWidget(MessageWidget::Role::Assistant);
     message->setAssistantText(answer, true);
-    conversationLayout_->insertWidget(conversationLayout_->count() - 1,
-                                      message);
+    chatView_->conversationLayout()->insertWidget(
+        chatView_->conversationLayout()->count() - 1, message);
     updateClearButton();
     scrollConversationToBottom();
 }
@@ -849,10 +810,37 @@ void MainWindow::showAgentActivity()
     if (agentActivityMessage_ != nullptr) return;
     agentActivityMessage_ = new MessageWidget(MessageWidget::Role::Assistant);
     agentActivityMessage_->setProperty("agentActivity", true);
-    agentActivityMessage_->setAssistantText(tr("Thinking..."), false);
-    conversationLayout_->insertWidget(conversationLayout_->count() - 1,
-                                      agentActivityMessage_);
+    chatView_->conversationLayout()->insertWidget(
+        chatView_->conversationLayout()->count() - 1, agentActivityMessage_);
+    startThinkingAnimation();
     scrollConversationToBottom();
+}
+
+void MainWindow::startThinkingAnimation()
+{
+    if (agentActivityMessage_ == nullptr) return;
+    thinkingAnimationFrame_ = 1;
+    advanceThinkingAnimation();
+    thinkingAnimationTimer_->start();
+}
+
+void MainWindow::stopThinkingAnimation()
+{
+    thinkingAnimationTimer_->stop();
+    thinkingAnimationFrame_ = 1;
+}
+
+void MainWindow::advanceThinkingAnimation()
+{
+    if (agentActivityMessage_ == nullptr)
+    {
+        stopThinkingAnimation();
+        return;
+    }
+    updateAgentActivity(
+        tr("Thinking%1")
+            .arg(QString(thinkingAnimationFrame_, QLatin1Char('.'))));
+    thinkingAnimationFrame_ = thinkingAnimationFrame_ % 3 + 1;
 }
 
 void MainWindow::updateAgentActivity(const QString& text)
@@ -865,8 +853,9 @@ void MainWindow::updateAgentActivity(const QString& text)
 
 void MainWindow::removeAgentActivity()
 {
+    stopThinkingAnimation();
     if (agentActivityMessage_ == nullptr) return;
-    conversationLayout_->removeWidget(agentActivityMessage_);
+    chatView_->conversationLayout()->removeWidget(agentActivityMessage_);
     delete agentActivityMessage_;
     agentActivityMessage_ = nullptr;
 }
@@ -876,19 +865,22 @@ void MainWindow::updateAgentState(application::AgentRun::State state)
     switch (state)
     {
         case application::AgentRun::State::Deciding:
-            statusLabel_->setText(tr("Thinking..."));
-            updateAgentActivity(tr("Thinking..."));
+            chatView_->setStatusText(tr("Thinking..."));
+            startThinkingAnimation();
             break;
         case application::AgentRun::State::WaitingForApproval:
-            statusLabel_->setText(tr("Waiting for tool approval"));
+            stopThinkingAnimation();
+            chatView_->setStatusText(tr("Waiting for tool approval"));
             updateAgentActivity(tr("Waiting for tool approval..."));
             break;
         case application::AgentRun::State::ExecutingTool:
-            statusLabel_->setText(tr("Using a tool..."));
+            stopThinkingAnimation();
+            chatView_->setStatusText(tr("Using a tool..."));
             updateAgentActivity(tr("Using a tool..."));
             break;
         case application::AgentRun::State::GeneratingAnswer:
-            statusLabel_->setText(tr("Preparing the answer..."));
+            stopThinkingAnimation();
+            chatView_->setStatusText(tr("Preparing the answer..."));
             updateAgentActivity(tr("Preparing the answer..."));
             break;
         case application::AgentRun::State::Completed:
@@ -925,23 +917,27 @@ void MainWindow::loadMcpServers()
             << "Built-in filesystem MCP unavailable:" << errorMessage;
 }
 
-void MainWindow::updateWorkspaceLink()
+void MainWindow::setModelPath(const QString& modelPath)
 {
-    if (workspacePathLabel_ == nullptr || workspacePath_.isEmpty()) return;
+    const auto path = modelPath.trimmed();
+    if (path != pendingModelSelection_.selectedPath &&
+        path != activeModelSelection_.selectedPath)
+        modelInfoText_ = tr("Model not checked");
+    modelPath_ = path;
+    auto badgeState = modelPath_.isEmpty() ? ModelBadgeState::Neutral
+                                           : ModelBadgeState::Unverified;
+    if (modelPath_ == activeModelSelection_.selectedPath)
+        badgeState = modelBadgeState(activeModelSelection_);
+    else if (modelPath_ == pendingModelSelection_.selectedPath)
+        badgeState = modelBadgeState(pendingModelSelection_);
+    chatView_->setModelPresentation(modelPath_, modelInfoText_, badgeState);
 
-    const auto nativePath = QDir::toNativeSeparators(workspacePath_);
-    const auto availableWidth = qMax(80, workspacePathLabel_->width() - 4);
-    const auto displayPath = workspacePathLabel_->fontMetrics().elidedText(
-        nativePath, Qt::ElideMiddle, availableWidth);
-    const auto href = QUrl::fromLocalFile(workspacePath_)
-                          .toString(QUrl::FullyEncoded)
-                          .toHtmlEscaped();
-    workspacePathLabel_->setText(
-        QStringLiteral("<a style=\"color:#2563eb;text-decoration:none\" "
-                       "href=\"%1\">%2</a>")
-            .arg(href, displayPath.toHtmlEscaped()));
-    workspacePathLabel_->setToolTip(
-        tr("Open workspace folder: %1").arg(nativePath));
+    const auto state = workerClient_.state();
+    const auto ready = state == infrastructure::WorkerClient::State::Ready ||
+                       state == infrastructure::WorkerClient::State::ModelReady;
+    chatView_->setModelControlsEnabled(
+        ready && !verifyingModelPackage_,
+        ready && !verifyingModelPackage_ && !modelPath_.isEmpty());
 }
 
 bool MainWindow::startBuiltInFilesystem(const QString& workspacePath,
@@ -971,8 +967,63 @@ void MainWindow::beginModelLoad(models::ModelSelection selection)
 {
     pendingModelSelection_ = std::move(selection);
     updateModelInformation(pendingModelSelection_);
-    updateState(workerClient_.state());
+    replacingModel_ = workerClient_.state() ==
+                      infrastructure::WorkerClient::State::ModelReady;
+    if (replacingModel_)
+    {
+        chatView_->setStatusText(tr("Releasing current model..."));
+        workerClient_.unloadModel();
+        return;
+    }
+
+    startPendingModelLoad();
+}
+
+void MainWindow::startPendingModelLoad()
+{
+    chatView_->setStatusText(replacingModel_ ? tr("Loading new model...")
+                                             : tr("Loading model..."));
     workerClient_.loadModel(pendingModelSelection_.modelPath);
+}
+
+void MainWindow::continueModelLoadAfterUnload()
+{
+    activeModelSelection_ = {};
+    if (!replacingModel_ || pendingModelSelection_.modelPath.isEmpty()) return;
+    startPendingModelLoad();
+}
+
+void MainWindow::handleModelLoadFailure(const QString& code,
+                                        const QString& message)
+{
+    const auto previousModelWasUnloaded = replacingModel_;
+    replacingModel_ = false;
+    activeModelSelection_ = {};
+    pendingModelSelection_ = {};
+    modelInfoText_ = tr("Model load failed");
+    chatView_->setModelPresentation(modelPath_, modelInfoText_,
+                                    ModelBadgeState::Invalid);
+
+    const auto detail =
+        previousModelWasUnloaded
+            ? tr("%1 The previous model has already been unloaded; no model "
+                 "is currently loaded.")
+                  .arg(message)
+            : message;
+    showError(code, detail);
+}
+
+void MainWindow::handleModelUnloadFailure(const QString& code,
+                                          const QString& message)
+{
+    replacingModel_ = false;
+    pendingModelSelection_ = {};
+    modelPath_ = activeModelSelection_.selectedPath;
+    updateModelInformation(activeModelSelection_);
+    showError(code,
+              tr("Unable to release the current model: %1 The current model "
+                 "is still available.")
+                  .arg(message));
 }
 
 bool MainWindow::modelHashesAreCached(
@@ -1014,9 +1065,11 @@ void MainWindow::updateModelInformation(const models::ModelSelection& selection)
 
     if (selection.descriptor.origin == models::ModelOrigin::DirectGguf)
     {
-        modelInfoLabel_->setText(tr("Unverified GGUF - %1 - %2 GiB")
-                                     .arg(selection.descriptor.displayName)
-                                     .arg(sizeGiB, 0, 'f', 2));
+        modelInfoText_ = tr("Unverified GGUF - %1 - %2 GiB")
+                             .arg(selection.descriptor.displayName)
+                             .arg(sizeGiB, 0, 'f', 2);
+        chatView_->setModelPresentation(modelPath_, modelInfoText_,
+                                        ModelBadgeState::Unverified);
         return;
     }
 
@@ -1024,11 +1077,12 @@ void MainWindow::updateModelInformation(const models::ModelSelection& selection)
                                       models::VerificationStatus::Verified
                                   ? tr("Verified package")
                                   : tr("Package not yet verified");
-    modelInfoLabel_->setText(
-        tr("%1 - %2 - %3 GiB - %4 GB RAM - %5 token context")
-            .arg(verification, selection.descriptor.displayName)
-            .arg(sizeGiB, 0, 'f', 2)
-            .arg(selection.descriptor.recommendedRamGb)
-            .arg(selection.preset.contextSize));
+    modelInfoText_ = tr("%1 - %2 - %3 GiB - %4 GB RAM - %5 token context")
+                         .arg(verification, selection.descriptor.displayName)
+                         .arg(sizeGiB, 0, 'f', 2)
+                         .arg(selection.descriptor.recommendedRamGb)
+                         .arg(selection.preset.contextSize);
+    chatView_->setModelPresentation(modelPath_, modelInfoText_,
+                                    modelBadgeState(selection));
 }
 }  // namespace qtllm::ui

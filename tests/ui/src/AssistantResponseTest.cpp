@@ -1,4 +1,6 @@
 #include "AssistantResponse.hpp"
+#include "AutoHideTabWidget.hpp"
+#include "ChatView.hpp"
 #include "MainWindow.hpp"
 #include "MessageWidget.hpp"
 #include "Theme.hpp"
@@ -7,11 +9,15 @@
 #include <QApplication>
 #include <QColor>
 #include <QDir>
+#include <QEnterEvent>
 #include <QFileInfo>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QSizePolicy>
+#include <QStackedWidget>
+#include <QTabBar>
 #include <QTextBlock>
 #include <QTextBrowser>
 #include <QTextFormat>
@@ -42,6 +48,8 @@ class AssistantResponseTest final : public QObject
     void restoresPromptAfterGenerationError();
     void clearsVisibleAndInMemoryConversation();
     void showsWorkspaceAsComposerLink();
+    void separatesModelLocationAndReloadActions();
+    void placesModelControlsInComposerAndMergesPrimaryAction();
 };
 
 void AssistantResponseTest::initTestCase()
@@ -299,7 +307,10 @@ void AssistantResponseTest::showsAgentActivityUntilRunEnds()
     auto* body = activity->findChild<QTextBrowser*>(
         QStringLiteral("assistantMessageBody"));
     QVERIFY(body != nullptr);
-    QCOMPARE(body->toPlainText(), QStringLiteral("Thinking..."));
+    QCOMPARE(body->toPlainText(), QStringLiteral("Thinking."));
+    QVERIFY(QMetaObject::invokeMethod(&window, "advanceThinkingAnimation",
+                                      Qt::DirectConnection));
+    QCOMPARE(body->toPlainText(), QStringLiteral("Thinking.."));
 
     emit controller->eventRecorded(
         {QStringLiteral("run-id"),
@@ -414,11 +425,30 @@ void AssistantResponseTest::clearsVisibleAndInMemoryConversation()
         window.findChild<QPlainTextEdit*>(QStringLiteral("promptEditor"));
     auto* activityLog =
         window.findChild<QPlainTextEdit*>(QStringLiteral("activityLog"));
-    auto* clearButton = window.findChild<QPushButton*>(
+    auto* clearButton = window.findChild<QToolButton*>(
         QStringLiteral("clearConversationButton"));
+    auto* transcriptTabs =
+        window.findChild<QTabWidget*>(QStringLiteral("transcriptTabs"));
+    auto* autoHideTabs = qobject_cast<ui::AutoHideTabWidget*>(transcriptTabs);
+    auto* transcriptActions =
+        window.findChild<QWidget*>(QStringLiteral("transcriptActions"));
     QVERIFY(prompt != nullptr);
     QVERIFY(activityLog != nullptr);
     QVERIFY(clearButton != nullptr);
+    QVERIFY(transcriptTabs != nullptr);
+    QVERIFY(autoHideTabs != nullptr);
+    QVERIFY(transcriptActions != nullptr);
+    QCOMPARE(transcriptTabs->tabPosition(), QTabWidget::South);
+    QVERIFY(autoHideTabs->tabBar()->isHidden());
+    QEnterEvent enterEvent(QPointF(1, 1), QPointF(1, 1), QPointF(1, 1));
+    QCoreApplication::sendEvent(autoHideTabs, &enterEvent);
+    QVERIFY(!autoHideTabs->tabBar()->isHidden());
+    QEvent leaveEvent(QEvent::Leave);
+    QCoreApplication::sendEvent(autoHideTabs, &leaveEvent);
+    QVERIFY(autoHideTabs->tabBar()->isHidden());
+    QCOMPARE(clearButton->parentWidget(), transcriptActions);
+    QVERIFY(clearButton->text().isEmpty());
+    QVERIFY(!clearButton->toolTip().isEmpty());
     QVERIFY(!clearButton->isEnabled());
 
     prompt->setPlainText(QStringLiteral("temporary message"));
@@ -450,6 +480,153 @@ void AssistantResponseTest::showsWorkspaceAsComposerLink()
     QVERIFY(workspaceLink->text().contains(QStringLiteral("<a ")));
     QVERIFY(window.findChild<QLineEdit*>(QStringLiteral("workspacePathEdit")) ==
             nullptr);
+}
+
+void AssistantResponseTest::separatesModelLocationAndReloadActions()
+{
+    ui::ChatView view;
+    view.setModelPresentation(QDir::homePath(), QStringLiteral("Test model"),
+                              ui::ModelBadgeState::Verified);
+    auto* modelLink = view.findChild<QLabel*>(QStringLiteral("modelPathLink"));
+    auto* guideModelName =
+        view.findChild<QLabel*>(QStringLiteral("guideModelNameLabel"));
+    auto* reloadButton =
+        view.findChild<QToolButton*>(QStringLiteral("modelReloadButton"));
+    QVERIFY(modelLink != nullptr);
+    QVERIFY(guideModelName != nullptr);
+    QVERIFY(reloadButton != nullptr);
+    QCOMPARE(modelLink->property("modelState").toString(),
+             QStringLiteral("verified"));
+    QCOMPARE(guideModelName->property("modelState").toString(),
+             QStringLiteral("verified"));
+
+    view.setModelPresentation(QDir::homePath(), QStringLiteral("Test model"),
+                              ui::ModelBadgeState::Unverified);
+    QCOMPARE(modelLink->property("modelState").toString(),
+             QStringLiteral("unverified"));
+
+    QSignalSpy locationRequested(&view, &ui::ChatView::modelLocationRequested);
+    QSignalSpy folderRequested(&view, &ui::ChatView::modelFolderRequested);
+    QVERIFY(QMetaObject::invokeMethod(
+        modelLink, "linkActivated", Qt::DirectConnection,
+        Q_ARG(QString, QStringLiteral("open-model-location"))));
+    QCOMPARE(locationRequested.count(), 1);
+    QCOMPARE(folderRequested.count(), 0);
+
+    reloadButton->click();
+    QCOMPARE(locationRequested.count(), 1);
+    QCOMPARE(folderRequested.count(), 1);
+}
+
+void AssistantResponseTest::
+    placesModelControlsInComposerAndMergesPrimaryAction()
+{
+    ui::MainWindow window;
+    auto* chatView = qobject_cast<ui::ChatView*>(window.centralWidget());
+    auto* composer =
+        window.findChild<QWidget*>(QStringLiteral("promptComposer"));
+    auto* modelLink =
+        window.findChild<QLabel*>(QStringLiteral("modelPathLink"));
+    auto* modelReloadButton =
+        window.findChild<QToolButton*>(QStringLiteral("modelReloadButton"));
+    auto* guideLoadButton =
+        window.findChild<QPushButton*>(QStringLiteral("guideLoadModelButton"));
+    auto* guideStatus =
+        window.findChild<QLabel*>(QStringLiteral("guideStatusLabel"));
+    auto* statusLabel =
+        window.findChild<QLabel*>(QStringLiteral("statusLabel"));
+    auto* primaryAction =
+        window.findChild<QPushButton*>(QStringLiteral("primaryActionButton"));
+    auto* contentStack =
+        window.findChild<QStackedWidget*>(QStringLiteral("contentStack"));
+    auto* transcriptPage =
+        window.findChild<QWidget*>(QStringLiteral("transcriptPage"));
+    auto* transcriptTabs =
+        window.findChild<QTabWidget*>(QStringLiteral("transcriptTabs"));
+    auto* transcriptActions =
+        window.findChild<QWidget*>(QStringLiteral("transcriptActions"));
+    auto* rootLayout =
+        window.findChild<QVBoxLayout*>(QStringLiteral("rootLayout"));
+
+    QVERIFY(chatView != nullptr);
+    QCOMPARE(window.centralWidget(), chatView);
+    QVERIFY(composer != nullptr);
+    QVERIFY(modelLink != nullptr);
+    QVERIFY(modelReloadButton != nullptr);
+    QVERIFY(guideLoadButton != nullptr);
+    QVERIFY(guideStatus != nullptr);
+    QVERIFY(statusLabel != nullptr);
+    QVERIFY(primaryAction != nullptr);
+    QVERIFY(contentStack != nullptr);
+    QVERIFY(transcriptPage != nullptr);
+    QVERIFY(transcriptTabs != nullptr);
+    QVERIFY(transcriptActions != nullptr);
+    QVERIFY(rootLayout != nullptr);
+    QCOMPARE(modelLink->parentWidget(), composer);
+    QCOMPARE(modelReloadButton->parentWidget(), transcriptActions);
+    QCOMPARE(transcriptTabs->tabPosition(), QTabWidget::South);
+    QCOMPARE(primaryAction->parentWidget(), composer);
+    QCOMPARE(rootLayout->stretch(0), 1);
+    QCOMPARE(rootLayout->stretch(1), 0);
+    QCOMPARE(composer->sizePolicy().verticalPolicy(), QSizePolicy::Maximum);
+    QCOMPARE(composer->maximumHeight(), 150);
+    QVERIFY(!primaryAction->icon().isNull());
+    QVERIFY(modelLink->text().contains(QStringLiteral("<a ")));
+    QVERIFY(!modelLink->toolTip().isEmpty());
+    QVERIFY(modelReloadButton->menu() == nullptr);
+    QVERIFY(modelReloadButton->text().isEmpty());
+    QVERIFY(!modelReloadButton->toolTip().isEmpty());
+    QCOMPARE(guideLoadButton->text(), QStringLiteral("Load model"));
+    QCOMPARE(contentStack->currentWidget()->objectName(),
+             QStringLiteral("modelGuidePage"));
+    QVERIFY(transcriptPage->isHidden());
+    QVERIFY(composer->isHidden());
+    QVERIFY(statusLabel->isHidden());
+    QVERIFY(primaryAction->text().isEmpty());
+    QVERIFY(!primaryAction->property("stopMode").toBool());
+    QVERIFY(window.findChild<QWidget*>(QStringLiteral("modelBar")) == nullptr);
+    QVERIFY(window.findChild<QLineEdit*>(QStringLiteral("modelPathEdit")) ==
+            nullptr);
+    QVERIFY(window.findChild<QLabel*>(QStringLiteral("modelInfoLabel")) ==
+            nullptr);
+    QVERIFY(window.findChild<QToolButton*>(
+                QStringLiteral("modelBrowseButton")) == nullptr);
+    QVERIFY(window.findChild<QPushButton*>(QStringLiteral("loadModelButton")) ==
+            nullptr);
+    QVERIFY(window.findChild<QPushButton*>(QStringLiteral("stopButton")) ==
+            nullptr);
+
+    QVERIFY(QMetaObject::invokeMethod(
+        &window, "updateState", Qt::DirectConnection,
+        Q_ARG(qtllm::infrastructure::WorkerClient::State,
+              qtllm::infrastructure::WorkerClient::State::Ready)));
+    QVERIFY(guideStatus->text().isEmpty());
+    QVERIFY(guideStatus->isHidden());
+
+    QVERIFY(QMetaObject::invokeMethod(
+        &window, "updateState", Qt::DirectConnection,
+        Q_ARG(qtllm::infrastructure::WorkerClient::State,
+              qtllm::infrastructure::WorkerClient::State::Generating)));
+    QVERIFY(primaryAction->property("stopMode").toBool());
+    QCOMPARE(primaryAction->toolTip(), QStringLiteral("Stop generation"));
+    QCOMPARE(contentStack->currentWidget()->objectName(),
+             QStringLiteral("transcriptPage"));
+    QVERIFY(!transcriptPage->isHidden());
+    QVERIFY(!composer->isHidden());
+    QVERIFY(!statusLabel->isHidden());
+
+    QVERIFY(QMetaObject::invokeMethod(
+        &window, "updateState", Qt::DirectConnection,
+        Q_ARG(qtllm::infrastructure::WorkerClient::State,
+              qtllm::infrastructure::WorkerClient::State::UnloadingModel)));
+    QCOMPARE(guideStatus->text(), QStringLiteral("Releasing current model..."));
+    QVERIFY(!guideStatus->isHidden());
+
+    QVERIFY(QMetaObject::invokeMethod(
+        &window, "updateState", Qt::DirectConnection,
+        Q_ARG(qtllm::infrastructure::WorkerClient::State,
+              qtllm::infrastructure::WorkerClient::State::LoadingModel)));
+    QCOMPARE(guideStatus->text(), QStringLiteral("Loading model..."));
 }
 }  // namespace qtllm::tests
 

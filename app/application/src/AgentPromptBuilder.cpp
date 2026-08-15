@@ -41,7 +41,16 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools)
                                               "choose another action. ");
     return QStringLiteral(
                "You are the decision engine for a local desktop agent. "
-               "Return exactly one JSON action and no other text. %1"
+               "Return exactly one JSON action and no other text. Prefer a "
+               "final action unless a tool is necessary to satisfy the "
+               "user's explicit request. Greetings, casual conversation, "
+               "and requests answerable from the messages must return final "
+               "without calling a tool. Never inspect the filesystem merely "
+               "to discover context. For a filesystem path not supplied by "
+               "the user, use a relative path; if an authorized root must be "
+               "known, call the available tool whose name ends with "
+               ".list_allowed_directories instead of probing a drive root. "
+               "%1"
                "A final action has action set to final and a non-empty "
                "content string. A tool action has action set to call_tool, "
                "an exact listed tool name, and an arguments object. When the "

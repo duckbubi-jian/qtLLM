@@ -89,6 +89,7 @@ class ModelPackageTest final : public QObject
     void rejectsPathTraversal();
     void rejectsExecutableContent();
     void rejectsUndeclaredGguf();
+    void acceptsSplitModelPackage();
     void rejectsMismatchedPreset();
     void rejectsNewerRuntimeRequirement();
     void upgradesPackageGgufSelectionToPackage();
@@ -115,10 +116,22 @@ void ModelPackageTest::inspectsAndVerifiesValidPackage()
     QCOMPARE(result.selection.modelPath,
              QDir(directory.path()).filePath(QStringLiteral("model.gguf")));
 
-    result = models::ModelPackage::verify(std::move(result.selection));
+    quint64 verifiedBytes = 0;
+    quint64 totalBytes = 0;
+    auto progressUpdates = 0;
+    result = models::ModelPackage::verify(std::move(result.selection),
+                                          [&](quint64 verified, quint64 total)
+                                          {
+                                              verifiedBytes = verified;
+                                              totalBytes = total;
+                                              ++progressUpdates;
+                                          });
     QVERIFY2(result.succeeded(), qPrintable(result.errorMessage));
     QCOMPARE(result.selection.descriptor.verificationStatus,
              models::VerificationStatus::Verified);
+    QCOMPARE(verifiedBytes, static_cast<quint64>(model.size()));
+    QCOMPARE(totalBytes, static_cast<quint64>(model.size()));
+    QVERIFY(progressUpdates >= 2);
 }
 
 void ModelPackageTest::detectsHashMismatch()
@@ -191,6 +204,59 @@ void ModelPackageTest::rejectsUndeclaredGguf()
                                                       QStringLiteral("0.1.0"));
     QVERIFY(!result.succeeded());
     QCOMPARE(result.errorCode, QStringLiteral("invalid_model_package"));
+}
+
+void ModelPackageTest::acceptsSplitModelPackage()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto firstShard = QByteArrayLiteral("GGUF-test-model-shard-one");
+    const auto secondShard = QByteArrayLiteral("GGUF-test-model-shard-two");
+    auto manifest = validManifest(firstShard);
+    auto files = manifest.value(QStringLiteral("modelFiles")).toArray();
+    auto firstFile = files.at(0).toObject();
+    firstFile.insert(QStringLiteral("path"),
+                     QStringLiteral("model-00001-of-00002.gguf"));
+    files.replace(0, firstFile);
+    const auto secondHash = QString::fromLatin1(
+        QCryptographicHash::hash(secondShard, QCryptographicHash::Sha256)
+            .toHex());
+    const QJsonObject secondFile{
+        {QStringLiteral("path"), QStringLiteral("model-00002-of-00002.gguf")},
+        {QStringLiteral("sizeBytes"), secondShard.size()},
+        {QStringLiteral("sha256"), secondHash}};
+    files.append(secondFile);
+    manifest.insert(QStringLiteral("modelFiles"), files);
+    QVERIFY(
+        writeFile(QDir(directory.path())
+                      .filePath(QStringLiteral("model-00001-of-00002.gguf")),
+                  firstShard));
+    QVERIFY(
+        writeFile(QDir(directory.path())
+                      .filePath(QStringLiteral("model-00002-of-00002.gguf")),
+                  secondShard));
+    QVERIFY(writeFile(
+        QDir(directory.path()).filePath(QStringLiteral("manifest.json")),
+        QJsonDocument(manifest).toJson()));
+    QVERIFY(writeFile(
+        QDir(directory.path()).filePath(QStringLiteral("preset.json")),
+        QJsonDocument(validPreset()).toJson()));
+    QVERIFY(writeFile(
+        QDir(directory.path()).filePath(QStringLiteral("LICENSE.txt")),
+        QByteArrayLiteral("Test license\n")));
+
+    auto result = models::ModelPackage::inspect(directory.path(),
+                                                QStringLiteral("0.1.0"));
+    QVERIFY2(result.succeeded(), qPrintable(result.errorMessage));
+    QCOMPARE(result.selection.descriptor.modelFiles.size(), 2);
+    QCOMPARE(result.selection.modelPath,
+             QDir(directory.path())
+                 .filePath(QStringLiteral("model-00001-of-00002.gguf")));
+
+    result = models::ModelPackage::verify(std::move(result.selection));
+    QVERIFY2(result.succeeded(), qPrintable(result.errorMessage));
+    QCOMPARE(result.selection.descriptor.verificationStatus,
+             models::VerificationStatus::Verified);
 }
 
 void ModelPackageTest::rejectsMismatchedPreset()

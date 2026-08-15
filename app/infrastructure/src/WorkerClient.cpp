@@ -94,6 +94,7 @@ void WorkerClient::loadModel(const QString& modelPath, int gpuLayers)
 void WorkerClient::unloadModel()
 {
     if (state_ != State::ModelReady) return;
+    setState(State::UnloadingModel);
     unloadRequestId_ =
         send(QString::fromLatin1(protocol::message_type::unloadModel));
 }
@@ -301,6 +302,7 @@ void WorkerClient::handleMessage(const protocol::Message& message)
     {
         modelPath_ =
             message.payload.value(QStringLiteral("modelPath")).toString();
+        loadRequestId_.clear();
         setState(State::ModelReady);
         emit modelLoaded(
             modelPath_,
@@ -313,7 +315,9 @@ void WorkerClient::handleMessage(const protocol::Message& message)
              message.requestId == unloadRequestId_)
     {
         modelPath_.clear();
+        unloadRequestId_.clear();
         setState(State::Ready);
+        emit modelUnloaded();
     }
     else if (message.type == QLatin1String(protocol::message_type::token) &&
              message.requestId == generationRequestId_)
@@ -339,8 +343,20 @@ void WorkerClient::handleMessage(const protocol::Message& message)
             message.payload.value(QStringLiteral("code")).toString();
         const auto errorMessage =
             message.payload.value(QStringLiteral("message")).toString();
-        if (message.requestId == loadRequestId_) setState(State::Ready);
-        if (message.requestId == generationRequestId_)
+        if (message.requestId == loadRequestId_)
+        {
+            loadRequestId_.clear();
+            modelPath_.clear();
+            setState(State::Ready);
+            emit modelLoadFailed(code, errorMessage);
+        }
+        else if (message.requestId == unloadRequestId_)
+        {
+            unloadRequestId_.clear();
+            setState(State::ModelReady);
+            emit modelUnloadFailed(code, errorMessage);
+        }
+        else if (message.requestId == generationRequestId_)
         {
             generationRequestId_.clear();
             setState(State::ModelReady);

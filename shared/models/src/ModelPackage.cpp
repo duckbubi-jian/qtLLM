@@ -566,11 +566,20 @@ ModelPackageResult ModelPackage::inspect(const QString& selectedPath,
     return {std::move(selection), {}, {}};
 }
 
-ModelPackageResult ModelPackage::verify(ModelSelection selection)
+ModelPackageResult ModelPackage::verify(ModelSelection selection,
+                                        VerificationProgress progress)
 {
     if (selection.descriptor.origin == ModelOrigin::DirectGguf)
         return {std::move(selection), {}, {}};
 
+    quint64 totalBytes = 0;
+    for (const auto& modelFile : selection.descriptor.modelFiles)
+        totalBytes += static_cast<quint64>(modelFile.sizeBytes);
+    quint64 verifiedBytes = 0;
+    if (progress) progress(verifiedBytes, totalBytes);
+
+    constexpr qsizetype hashBufferSize = 16 * 1024 * 1024;
+    QByteArray buffer(hashBufferSize, Qt::Uninitialized);
     for (const auto& modelFile : selection.descriptor.modelFiles)
     {
         QString absolutePath;
@@ -587,12 +596,20 @@ ModelPackageResult ModelPackage::verify(ModelSelection selection)
                                .arg(modelFile.path, file.errorString()),
                            std::move(selection));
         QCryptographicHash hash(QCryptographicHash::Sha256);
-        if (!hash.addData(&file))
-            return failure(QStringLiteral("model_hash_failed"),
-                           QStringLiteral("Unable to read %1 while computing "
-                                          "SHA-256.")
-                               .arg(modelFile.path),
-                           std::move(selection));
+        while (!file.atEnd())
+        {
+            const auto bytesRead = file.read(buffer.data(), buffer.size());
+            if (bytesRead <= 0)
+                return failure(
+                    QStringLiteral("model_hash_failed"),
+                    QStringLiteral("Unable to read %1 while computing "
+                                   "SHA-256: %2")
+                        .arg(modelFile.path, file.errorString()),
+                    std::move(selection));
+            hash.addData(buffer.constData(), bytesRead);
+            verifiedBytes += static_cast<quint64>(bytesRead);
+            if (progress) progress(verifiedBytes, totalBytes);
+        }
         const auto actual = QString::fromLatin1(hash.result().toHex());
         if (actual != modelFile.sha256)
             return failure(

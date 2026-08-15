@@ -4,6 +4,9 @@
 #include "ModelDescriptor.hpp"
 
 #include <QString>
+#include <QtGlobal>
+
+#include <functional>
 
 namespace qtllm::models
 {
@@ -40,8 +43,11 @@ struct ModelPackageResult
 class ModelPackage final
 {
    public:
+    using VerificationProgress = std::function<void(quint64, quint64)>;
+
     [[nodiscard]] static ModelPackageResult inspect(
         const QString& selectedPath, const QString& runtimeVersion);
-    [[nodiscard]] static ModelPackageResult verify(ModelSelection selection);
+    [[nodiscard]] static ModelPackageResult verify(
+        ModelSelection selection, VerificationProgress progress = {});
 };
 }  // namespace qtllm::models

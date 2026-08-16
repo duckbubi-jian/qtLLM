@@ -12,6 +12,27 @@ namespace
 constexpr auto mcpProtocolVersion = "2024-11-05";
 constexpr auto clientName = "qtLLM";
 constexpr auto clientVersion = "0.2.0";
+constexpr qsizetype maximumServerInstructions = 4'096;
+constexpr qsizetype maximumCombinedInstructions = 8'192;
+
+QJsonObject structuredToolResult(const QJsonObject& result)
+{
+    const auto structured = result.value(QStringLiteral("structuredContent"));
+    return structured.isObject() ? structured.toObject() : QJsonObject{};
+}
+
+QString textToolResult(const QJsonObject& result)
+{
+    QStringList text;
+    for (const auto& value : result.value(QStringLiteral("content")).toArray())
+    {
+        const auto item = value.toObject();
+        if (item.value(QStringLiteral("type")).toString() ==
+            QLatin1String("text"))
+            text.append(item.value(QStringLiteral("text")).toString());
+    }
+    return text.join(QLatin1Char('\n')).trimmed();
+}
 }  // namespace
 
 McpClientManager::McpClientManager(QObject* parent) : QObject(parent)
@@ -73,7 +94,7 @@ bool McpClientManager::addServer(McpServerConfig config, QString& errorMessage)
 
     auto transport = QSharedPointer<StdioMcpTransport>::create(config);
     auto* transportPointer = transport.get();
-    servers_.insert(config.serverId, {transport, {}, false});
+    servers_.insert(config.serverId, {transport, {}, {}, false});
     connectTransport(config.serverId, transportPointer);
     return true;
 }
@@ -115,6 +136,25 @@ StdioMcpTransport* McpClientManager::transport(const QString& serverId) const
 QList<agent::ToolDefinition> McpClientManager::tools() const
 {
     return registry_.tools();
+}
+
+QString McpClientManager::agentInstructions() const
+{
+    auto serverIds = servers_.keys();
+    serverIds.sort(Qt::CaseSensitive);
+    QStringList instructions;
+    for (const auto& serverId : serverIds)
+    {
+        const auto server = servers_.constFind(serverId);
+        if (server == servers_.constEnd() || !server->initialized ||
+            server->instructions.trimmed().isEmpty())
+            continue;
+        instructions.append(QStringLiteral("%1: %2").arg(
+            serverId,
+            server->instructions.trimmed().left(maximumServerInstructions)));
+    }
+    return instructions.join(QLatin1Char('\n'))
+        .left(maximumCombinedInstructions);
 }
 
 const ToolRegistry& McpClientManager::registry() const
@@ -290,7 +330,11 @@ void McpClientManager::handleResponse(const QString& serverId,
             return;
         }
         if (auto server = servers_.find(serverId); server != servers_.end())
+        {
             server->initialized = true;
+            server->instructions =
+                result.value(QStringLiteral("instructions")).toString();
+        }
         if (auto* serverTransport = transport(serverId))
             serverTransport->notify(
                 QStringLiteral("notifications/initialized"));
@@ -343,7 +387,27 @@ void McpClientManager::handleResponse(const QString& serverId,
     toolResult.requestId = requestId;
     toolResult.serverId = serverId;
     toolResult.toolName = pending.toolName;
-    toolResult.isError = result.value(QStringLiteral("isError")).toBool();
+    const auto structuredResult = structuredToolResult(result);
+    const auto structuredFailure =
+        structuredResult.value(QStringLiteral("ok")).isBool() &&
+        !structuredResult.value(QStringLiteral("ok")).toBool();
+    toolResult.isError =
+        result.value(QStringLiteral("isError")).toBool() || structuredFailure;
+    if (toolResult.isError)
+    {
+        const auto error =
+            structuredResult.value(QStringLiteral("error")).toObject();
+        toolResult.errorCode = error.value(QStringLiteral("code")).toString();
+        toolResult.errorMessage =
+            error.value(QStringLiteral("message")).toString().trimmed();
+        if (toolResult.errorCode.isEmpty())
+            toolResult.errorCode = QStringLiteral("mcp_tool_error");
+        if (toolResult.errorMessage.isEmpty())
+            toolResult.errorMessage = textToolResult(result);
+        if (toolResult.errorMessage.isEmpty())
+            toolResult.errorMessage =
+                QStringLiteral("MCP tool reported an error.");
+    }
     const auto serialized =
         QJsonDocument(result).toJson(QJsonDocument::Compact);
     const auto server = servers_.constFind(serverId);

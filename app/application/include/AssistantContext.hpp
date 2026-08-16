@@ -8,6 +8,7 @@ struct AssistantContext
 {
     QString modelName;
     QString workspaceRoot;
+    QString mcpInstructions;
 };
 
 [[nodiscard]] QString assistantContextJson(const AssistantContext& context);

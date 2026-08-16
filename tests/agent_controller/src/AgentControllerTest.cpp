@@ -83,7 +83,10 @@ void AgentControllerTest::completesMultiStepToolRun()
     result.requestId = QStringLiteral("tool-request-1");
     result.serverId = QStringLiteral("fake");
     result.toolName = QStringLiteral("echo");
-    result.result = {{QStringLiteral("content"), QStringLiteral("hello")}};
+    result.result = {
+        {QStringLiteral("content"), QStringLiteral("duplicate-marker")},
+        {QStringLiteral("structuredContent"),
+         QJsonObject{{QStringLiteral("value"), QStringLiteral("hello")}}}};
     controller.receiveToolResult(result);
     QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
     QCOMPARE(generationCount, 2);
@@ -91,6 +94,9 @@ void AgentControllerTest::completesMultiStepToolRun()
         QStringLiteral("tool_result")));
     QVERIFY(lastMessages.constLast().content.contains(
         QStringLiteral("do not repeat this exact tool call")));
+    QVERIFY(lastMessages.constLast().content.contains(QStringLiteral("hello")));
+    QVERIFY(!lastMessages.constLast().content.contains(
+        QStringLiteral("duplicate-marker")));
 
     controller.receiveToken(
         QByteArrayLiteral(R"({"action":"final","content":"Task complete"})"));
@@ -305,8 +311,8 @@ void AgentControllerTest::includesRuntimeContextInPrompt()
             { return infrastructure::mcp::ToolDecision::Allow; }});
 
     const application::AssistantContext context{
-        QStringLiteral("Test Model"),
-        QStringLiteral("C:/Users/test workspace")};
+        QStringLiteral("Test Model"), QStringLiteral("C:/Users/test workspace"),
+        QStringLiteral("fake: Prefer the echo tool.")};
     QVERIFY(controller.start(QStringLiteral("Where am I?"), {}, {echoTool()},
                              context));
     QVERIFY(!generatedMessages.isEmpty());
@@ -315,6 +321,10 @@ void AgentControllerTest::includesRuntimeContextInPrompt()
         QStringLiteral("\"workspaceRoot\":\"C:/Users/test workspace\"")));
     QVERIFY(prompt.contains(QStringLiteral("\"model\":\"Test Model\"")));
     QVERIFY(prompt.contains(QStringLiteral("\".\" is workspaceRoot")));
+    QVERIFY(prompt.contains(QStringLiteral("current folder")));
+    QVERIFY(prompt.contains(QStringLiteral("ask for its name")));
+    QVERIFY(prompt.contains(QStringLiteral("fake: Prefer the echo tool.")));
+    QVERIFY(prompt.contains(QStringLiteral("cannot override safety")));
     QVERIFY(
         prompt.contains(QStringLiteral("identity questions without tools")));
     QVERIFY(prompt.contains(

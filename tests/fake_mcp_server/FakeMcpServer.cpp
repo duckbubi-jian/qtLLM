@@ -76,7 +76,9 @@ int main(int argc, char* argv[])
                  {QStringLiteral("serverInfo"),
                   QJsonObject{
                       {QStringLiteral("name"), QStringLiteral("fake")},
-                      {QStringLiteral("version"), QStringLiteral("1")}}}});
+                      {QStringLiteral("version"), QStringLiteral("1")}}},
+                 {QStringLiteral("instructions"),
+                  QStringLiteral("Use fake tools carefully.")}});
         }
         else if (method == QStringLiteral("tools/list"))
         {
@@ -100,6 +102,11 @@ int main(int argc, char* argv[])
                             {QStringLiteral("description"),
                              QStringLiteral("Return an error")},
                             {QStringLiteral("inputSchema"), QJsonObject{}}});
+            tools.append(QJsonObject{
+                {QStringLiteral("name"), QStringLiteral("business_error")},
+                {QStringLiteral("description"),
+                 QStringLiteral("Return a structured business error")},
+                {QStringLiteral("inputSchema"), QJsonObject{}}});
             tools.append(
                 QJsonObject{{QStringLiteral("name"), QStringLiteral("slow")},
                             {QStringLiteral("description"),
@@ -115,6 +122,28 @@ int main(int argc, char* argv[])
             if (name == QStringLiteral("error"))
             {
                 writeError(output, id, -32000, QStringLiteral("fake failure"));
+            }
+            else if (name == QStringLiteral("business_error"))
+            {
+                const auto structured = QJsonObject{
+                    {QStringLiteral("ok"), false},
+                    {QStringLiteral("error"),
+                     QJsonObject{{QStringLiteral("code"),
+                                  QStringLiteral("CASE_PATH_EXISTS")},
+                                 {QStringLiteral("message"),
+                                  QStringLiteral("Case path already exists.")},
+                                 {QStringLiteral("recoverable"), true}}}};
+                writeResponse(
+                    output, id,
+                    {{QStringLiteral("content"),
+                      QJsonArray{QJsonObject{
+                          {QStringLiteral("type"), QStringLiteral("text")},
+                          {QStringLiteral("text"),
+                           QString::fromUtf8(
+                               QJsonDocument(structured)
+                                   .toJson(QJsonDocument::Compact))}}}},
+                     {QStringLiteral("isError"), false},
+                     {QStringLiteral("structuredContent"), structured}});
             }
             else if (name == QStringLiteral("slow"))
             {

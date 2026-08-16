@@ -27,6 +27,7 @@ class McpClientManager final : public QObject
     [[nodiscard]] QStringList serverIds() const;
     [[nodiscard]] StdioMcpTransport* transport(const QString& serverId) const;
     [[nodiscard]] QList<agent::ToolDefinition> tools() const;
+    [[nodiscard]] QString agentInstructions() const;
     [[nodiscard]] const ToolRegistry& registry() const;
 
     void startServer(const QString& serverId);
@@ -70,6 +71,7 @@ class McpClientManager final : public QObject
     {
         QSharedPointer<StdioMcpTransport> transport;
         QList<agent::ToolDefinition> tools;
+        QString instructions;
         bool initialized = false;
     };
 

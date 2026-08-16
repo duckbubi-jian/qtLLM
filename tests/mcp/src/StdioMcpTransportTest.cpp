@@ -52,13 +52,15 @@ void StdioMcpTransportTest::listsAndCallsTools()
         &manager, &infrastructure::mcp::McpClientManager::serverInitialized);
     QVERIFY(!manager.initialize(QStringLiteral("fake")).isEmpty());
     QTRY_COMPARE_WITH_TIMEOUT(initializedSpy.count(), 1, 2'000);
+    QCOMPARE(manager.agentInstructions(),
+             QStringLiteral("fake: Use fake tools carefully."));
 
     QSignalSpy toolsSpy(&manager,
                         &infrastructure::mcp::McpClientManager::toolsChanged);
     QVERIFY(!manager.listTools(QStringLiteral("fake")).isEmpty());
     QTRY_COMPARE_WITH_TIMEOUT(toolsSpy.count(), 1, 2'000);
     const auto tools = manager.tools();
-    QCOMPARE(tools.size(), 3);
+    QCOMPARE(tools.size(), 4);
     QVERIFY(manager.registry().find(QStringLiteral("fake.echo")) != nullptr);
 
     QSignalSpy resultSpy(
@@ -100,6 +102,16 @@ void StdioMcpTransportTest::propagatesRemoteErrors()
     QVERIFY(!manager.callTool(QStringLiteral("fake.error"), {}).isEmpty());
     QTRY_COMPARE_WITH_TIMEOUT(resultSpy.count(), 1, 2'000);
     QVERIFY(qvariant_cast<agent::ToolResult>(resultSpy.at(0).at(0)).isError);
+
+    QVERIFY(
+        !manager.callTool(QStringLiteral("fake.business_error"), {}).isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(resultSpy.count(), 2, 2'000);
+    const auto businessError =
+        qvariant_cast<agent::ToolResult>(resultSpy.at(1).at(0));
+    QVERIFY(businessError.isError);
+    QCOMPARE(businessError.errorCode, QStringLiteral("CASE_PATH_EXISTS"));
+    QCOMPARE(businessError.errorMessage,
+             QStringLiteral("Case path already exists."));
 }
 
 void StdioMcpTransportTest::timesOutAndCanCancel()

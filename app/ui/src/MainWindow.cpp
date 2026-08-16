@@ -1135,8 +1135,8 @@ void MainWindow::beginAgentPrompt(const QString& prompt)
     agentRunActive_ = true;
     updateState(workerClient_.state());
     const application::AssistantContext context{
-        activeModelSelection_.descriptor.displayName,
-        filesystemConfiguredExternally_ ? QString{} : workspacePath_};
+        activeModelSelection_.descriptor.displayName, workspacePath_,
+        mcpManager_.agentInstructions()};
     if (!agentController_.start(prompt, activeModelSelection_.preset,
                                 mcpManager_.tools(), context))
     {

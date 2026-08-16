@@ -11,6 +11,7 @@
 #include <QByteArray>
 #include <QJsonObject>
 #include <QObject>
+#include <QStringList>
 #include <QTimer>
 
 #include <functional>
@@ -86,10 +87,14 @@ class AgentController final : public QObject
    private:
     static bool isTerminal(AgentRun::State state);
     void requestDecision();
+    void compactContextIfNeeded();
     void handleAction(const agent::Action& action, const QByteArray& rawAction);
     void executeTool(const agent::Action& action);
     void retryInvalidAction(const QByteArray& rawAction,
                             const QString& errorMessage);
+    void retryNoProgressAction(const QByteArray& rawAction,
+                               const QString& errorMessage);
+    bool completePendingReviewedFinal(const QString& reason);
     void setState(AgentRun::State state);
     void recordEvent(agent::EventType type, const QString& message = {},
                      const QString& toolName = {},
@@ -104,9 +109,12 @@ class AgentController final : public QObject
     QList<agent::ToolDefinition> availableTools_;
     QList<chat::Message> conversationMessages_;
     std::optional<agent::Action> pendingApproval_;
+    std::optional<agent::Action> activeToolAction_;
     QByteArray decisionBytes_;
     QString activeToolCallSignature_;
     QString lastFailedToolCallSignature_;
+    QStringList completedToolCallHistory_;
+    QList<QJsonObject> toolEvidence_;
     QTimer* runTimer_ = nullptr;
 };
 }  // namespace qtllm::application

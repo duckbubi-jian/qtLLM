@@ -1,7 +1,9 @@
 #include "AgentController.hpp"
 
+#include "AgentContextCompactor.hpp"
 #include "AgentPromptBuilder.hpp"
 
+#include <QDebug>
 #include <QJsonDocument>
 #include <QUuid>
 
@@ -15,12 +17,76 @@ namespace
 constexpr auto maximumDecisionBytes = 65'536;
 constexpr auto minimumDecisionTokens = 256;
 constexpr auto runTimeoutMilliseconds = 120'000;
+constexpr qsizetype maximumDetectedCycleLength = 4;
+constexpr qsizetype maximumLoggedEventDataBytes = 4'096;
 
 QString toolCallSignature(const agent::Action& action)
 {
     return action.toolName + QLatin1Char('\n') +
            QString::fromUtf8(
                QJsonDocument(action.arguments).toJson(QJsonDocument::Compact));
+}
+
+QString repeatedCompletedCallError(const QStringList& history,
+                                   const QString& candidate)
+{
+    auto sequence = history;
+    sequence.append(candidate);
+    for (qsizetype cycleLength = 1; cycleLength <= maximumDetectedCycleLength &&
+                                    sequence.size() >= cycleLength * 2;
+         ++cycleLength)
+    {
+        const auto cycleStart = sequence.size() - cycleLength * 2;
+        auto repeats = true;
+        for (qsizetype offset = 0; offset < cycleLength; ++offset)
+        {
+            if (sequence.at(cycleStart + offset) !=
+                sequence.at(cycleStart + cycleLength + offset))
+            {
+                repeats = false;
+                break;
+            }
+        }
+        if (!repeats) continue;
+        if (cycleLength == 1)
+            return QStringLiteral(
+                "The identical tool call already completed successfully. "
+                "Do not execute it again. Continue with a different "
+                "unfinished step, or return final if all requested work is "
+                "complete.");
+        return QStringLiteral(
+            "This tool call would continue a repeated cycle of completed "
+            "calls. Do not toggle resources open and closed or repeat "
+            "completed work. Continue with a different unfinished step, or "
+            "return final if all requested work is complete.");
+    }
+    return {};
+}
+
+QString eventDataSummary(const QJsonObject& data)
+{
+    auto bytes = QJsonDocument(data).toJson(QJsonDocument::Compact);
+    if (bytes.size() > maximumLoggedEventDataBytes)
+    {
+        bytes = bytes.left(maximumLoggedEventDataBytes);
+        bytes.append("...");
+    }
+    return QString::fromUtf8(bytes);
+}
+
+QString singleLine(QString value)
+{
+    return value.replace(QLatin1Char('\r'), QLatin1Char(' '))
+        .replace(QLatin1Char('\n'), QLatin1Char(' '))
+        .trimmed();
+}
+
+qsizetype messageCharacters(const QList<chat::Message>& messages)
+{
+    qsizetype total = 0;
+    for (const auto& message : messages)
+        total += message.content.size();
+    return total;
 }
 }  // namespace
 
@@ -61,13 +127,17 @@ bool AgentController::start(const QString& userRequest,
     run.startedAt = QDateTime::currentDateTimeUtc();
     run.inferenceMessages = AgentPromptBuilder::initialMessages(
         request, tools, conversationMessages_, context);
+    run.requestMessageIndex = run.inferenceMessages.size() - 1;
     activeRun_ = std::move(run);
     preset_ = preset;
     availableTools_ = tools;
     pendingApproval_.reset();
+    activeToolAction_.reset();
     decisionBytes_.clear();
     activeToolCallSignature_.clear();
     lastFailedToolCallSignature_.clear();
+    completedToolCallHistory_.clear();
+    toolEvidence_.clear();
     if (!runTimer_->isActive()) runTimer_->start();
 
     recordEvent(agent::EventType::RunStarted,
@@ -85,6 +155,7 @@ void AgentController::cancel()
     setState(AgentRun::State::Cancelled);
     if (runTimer_->isActive()) runTimer_->stop();
     pendingApproval_.reset();
+    activeToolAction_.reset();
     activeRun_->toolRequestId.clear();
     if (previousState == AgentRun::State::Deciding &&
         dependencies_.cancelGeneration)
@@ -170,8 +241,10 @@ void AgentController::receiveToken(const QByteArray& bytes)
 void AgentController::completeGeneration(bool cancelled,
                                          const QJsonObject& metrics)
 {
-    Q_UNUSED(metrics)
     if (!hasActiveRun() || state_ != AgentRun::State::Deciding) return;
+    const auto promptTokens =
+        metrics.value(QStringLiteral("promptTokens")).toInt();
+    if (promptTokens > 0) activeRun_->lastPromptTokens = promptTokens;
     if (cancelled)
     {
         failRun(QStringLiteral("generation_cancelled"),
@@ -205,6 +278,12 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
     activeRun_->toolRequestId.clear();
     const auto completedToolCallSignature =
         std::exchange(activeToolCallSignature_, QString{});
+    const auto completedToolAction =
+        std::exchange(activeToolAction_, std::nullopt);
+    completedToolCallHistory_.append(completedToolCallSignature);
+    if (completedToolAction.has_value())
+        toolEvidence_.append(AgentContextCompactor::toolEvidence(
+            toolEvidence_.size() + 1, *completedToolAction, result));
     if (result.isError)
         lastFailedToolCallSignature_ = completedToolCallSignature;
     else
@@ -212,6 +291,7 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
         lastFailedToolCallSignature_.clear();
         ++activeRun_->successfulToolResults;
     }
+    activeRun_->stagnationRecoveries = 0;
     recordEvent(agent::EventType::ToolFinished,
                 result.isError ? result.errorMessage
                                : QStringLiteral("Tool call completed."),
@@ -232,13 +312,53 @@ bool AgentController::isTerminal(AgentRun::State state)
 void AgentController::requestDecision()
 {
     if (!activeRun_) return;
+    compactContextIfNeeded();
     decisionBytes_.clear();
     setState(AgentRun::State::Deciding);
     recordEvent(agent::EventType::DecisionStarted,
                 QStringLiteral("Generating the next agent decision."));
+    activeRun_->lastSubmittedCharacters =
+        messageCharacters(activeRun_->inferenceMessages);
     dependencies_.generate(
         activeRun_->inferenceMessages, preset_,
         qMax(minimumDecisionTokens, preset_.maxOutputTokens));
+}
+
+void AgentController::compactContextIfNeeded()
+{
+    if (!activeRun_) return;
+    auto estimatedPromptTokens = activeRun_->lastPromptTokens;
+    const auto currentCharacters =
+        messageCharacters(activeRun_->inferenceMessages);
+    if (estimatedPromptTokens > 0 && activeRun_->lastSubmittedCharacters > 0 &&
+        currentCharacters > activeRun_->lastSubmittedCharacters)
+    {
+        estimatedPromptTokens = static_cast<int>(
+            (static_cast<qint64>(estimatedPromptTokens) * currentCharacters +
+             activeRun_->lastSubmittedCharacters - 1) /
+            activeRun_->lastSubmittedCharacters);
+    }
+    if (!AgentContextCompactor::shouldCompact(estimatedPromptTokens, preset_))
+        return;
+    const auto result = AgentContextCompactor::compact(
+        activeRun_->inferenceMessages, activeRun_->requestMessageIndex,
+        activeRun_->userRequest, toolEvidence_,
+        activeRun_->completionReviewPerformed, preset_);
+    if (!result.compacted) return;
+    ++activeRun_->contextCompactions;
+    qInfo().noquote()
+        << QStringLiteral(
+               "Agent context compacted: run=%1 promptTokens=%2 "
+               "estimatedPromptTokens=%3 messages=%4->%5 evidence=%6 "
+               "compactions=%7")
+               .arg(activeRun_->id)
+               .arg(activeRun_->lastPromptTokens)
+               .arg(estimatedPromptTokens)
+               .arg(result.messagesBefore)
+               .arg(result.messagesAfter)
+               .arg(toolEvidence_.size())
+               .arg(activeRun_->contextCompactions);
+    activeRun_->lastPromptTokens = 0;
 }
 
 void AgentController::handleAction(const agent::Action& action,
@@ -247,9 +367,13 @@ void AgentController::handleAction(const agent::Action& action,
     if (!activeRun_) return;
     if (action.type == agent::ActionType::Final)
     {
-        if (activeRun_->successfulToolResults > activeRun_->reviewedToolResults)
+        if (activeRun_->successfulToolResults > 0 &&
+            !activeRun_->completionReviewPerformed &&
+            AgentPromptBuilder::requiresCompletionReview(
+                activeRun_->userRequest))
         {
-            activeRun_->reviewedToolResults = activeRun_->successfulToolResults;
+            activeRun_->completionReviewPerformed = true;
+            activeRun_->pendingReviewedFinal = action.content;
             activeRun_->inferenceMessages.append(
                 {chat::Role::Assistant, QString::fromUtf8(rawAction)});
             activeRun_->inferenceMessages.append(
@@ -258,20 +382,30 @@ void AgentController::handleAction(const agent::Action& action,
             requestDecision();
             return;
         }
+        activeRun_->pendingReviewedFinal.clear();
         completeRun(action.content);
         return;
     }
 
+    const auto signature = toolCallSignature(action);
     if (!lastFailedToolCallSignature_.isEmpty() &&
-        toolCallSignature(action) == lastFailedToolCallSignature_)
+        signature == lastFailedToolCallSignature_)
     {
-        retryInvalidAction(
+        retryNoProgressAction(
             rawAction,
             QStringLiteral(
                 "The identical tool call already failed. Do not call it "
                 "again. Return a final action now, or use meaningfully "
                 "different arguments only when the user's request requires "
                 "another attempt."));
+        return;
+    }
+
+    const auto repeatedCallError =
+        repeatedCompletedCallError(completedToolCallHistory_, signature);
+    if (!repeatedCallError.isEmpty())
+    {
+        retryNoProgressAction(rawAction, repeatedCallError);
         return;
     }
 
@@ -295,6 +429,7 @@ void AgentController::handleAction(const agent::Action& action,
         retryInvalidAction(rawAction, validationError);
         return;
     }
+    activeRun_->pendingReviewedFinal.clear();
     activeRun_->inferenceMessages.append(
         {chat::Role::Assistant, QString::fromUtf8(rawAction)});
     const auto decision = dependencies_.toolPolicy(action.toolName);
@@ -321,6 +456,7 @@ void AgentController::handleAction(const agent::Action& action,
 void AgentController::executeTool(const agent::Action& action)
 {
     if (!activeRun_) return;
+    activeToolAction_ = action;
     activeToolCallSignature_ = toolCallSignature(action);
     setState(AgentRun::State::ExecutingTool);
     recordEvent(agent::EventType::ToolStarted,
@@ -337,17 +473,67 @@ void AgentController::retryInvalidAction(const QByteArray& rawAction,
                                          const QString& errorMessage)
 {
     if (!activeRun_) return;
+    if (completePendingReviewedFinal(errorMessage)) return;
     if (activeRun_->repairAttempts >= 1)
     {
         failRun(QStringLiteral("invalid_agent_action"), errorMessage);
         return;
     }
     ++activeRun_->repairAttempts;
+    qWarning().noquote()
+        << QStringLiteral(
+               "Agent action correction: run=%1 attempt=%2 reason=%3 "
+               "action=%4")
+               .arg(activeRun_->id)
+               .arg(activeRun_->repairAttempts)
+               .arg(singleLine(errorMessage),
+                    singleLine(QString::fromUtf8(rawAction)).left(2'048));
     activeRun_->inferenceMessages.append(
         {chat::Role::Assistant, QString::fromUtf8(rawAction)});
     activeRun_->inferenceMessages.append(
         AgentPromptBuilder::correctionMessage(errorMessage));
     requestDecision();
+}
+
+void AgentController::retryNoProgressAction(const QByteArray& rawAction,
+                                            const QString& errorMessage)
+{
+    if (!activeRun_) return;
+    if (completePendingReviewedFinal(errorMessage)) return;
+    if (activeRun_->stagnationRecoveries >= 1)
+    {
+        failRun(QStringLiteral("agent_stalled"), errorMessage);
+        return;
+    }
+    ++activeRun_->stagnationRecoveries;
+    qWarning().noquote()
+        << QStringLiteral(
+               "Agent stagnation recovery: run=%1 attempt=%2 reason=%3 "
+               "action=%4")
+               .arg(activeRun_->id)
+               .arg(activeRun_->stagnationRecoveries)
+               .arg(singleLine(errorMessage),
+                    singleLine(QString::fromUtf8(rawAction)).left(2'048));
+    activeRun_->inferenceMessages.append(
+        {chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    activeRun_->inferenceMessages.append(
+        AgentPromptBuilder::noProgressMessage(errorMessage));
+    requestDecision();
+}
+
+bool AgentController::completePendingReviewedFinal(const QString& reason)
+{
+    if (!activeRun_ || activeRun_->pendingReviewedFinal.isEmpty()) return false;
+    const auto content =
+        std::exchange(activeRun_->pendingReviewedFinal, QString{});
+    recordEvent(
+        agent::EventType::Warning,
+        QStringLiteral(
+            "Completion review made no safe progress; using the already "
+            "prepared final answer. Review detail: %1")
+            .arg(reason));
+    completeRun(content);
+    return true;
 }
 
 void AgentController::setState(AgentRun::State state)
@@ -366,6 +552,15 @@ void AgentController::recordEvent(agent::EventType type, const QString& message,
     agent::Event event{activeRun_->id, type, message,
                        toolName,       data, QDateTime::currentDateTimeUtc()};
     activeRun_->events.append(event);
+    auto logMessage = QStringLiteral("Agent event: run=%1 type=%2")
+                          .arg(activeRun_->id, agent::eventTypeName(type));
+    if (!toolName.isEmpty())
+        logMessage += QStringLiteral(" tool=%1").arg(toolName);
+    if (!message.isEmpty())
+        logMessage += QStringLiteral(" message=%1").arg(singleLine(message));
+    if (!data.isEmpty())
+        logMessage += QStringLiteral(" data=%1").arg(eventDataSummary(data));
+    qInfo().noquote() << logMessage;
     emit eventRecorded(event);
 }
 
@@ -393,6 +588,7 @@ void AgentController::failRun(const QString& code, const QString& message)
     setState(AgentRun::State::Failed);
     if (runTimer_->isActive()) runTimer_->stop();
     pendingApproval_.reset();
+    activeToolAction_.reset();
     activeRun_->toolRequestId.clear();
     if (previousState == AgentRun::State::Deciding &&
         dependencies_.cancelGeneration)

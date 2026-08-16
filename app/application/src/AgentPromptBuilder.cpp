@@ -3,6 +3,10 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QRegularExpression>
+#include <QStringList>
+
+#include <algorithm>
 
 namespace qtllm::application
 {
@@ -69,7 +73,16 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools,
                                               "requested outcome and numbered "
                                               "step is complete. After an "
                                               "error, change the arguments or "
-                                              "choose another action. ");
+                                              "choose another action. For a "
+                                              "multi-step request, form a "
+                                              "short internal checklist in "
+                                              "the user's order and execute "
+                                              "one necessary operation at a "
+                                              "time. Preserve active cases "
+                                              "and sessions between steps; "
+                                              "do not close and reopen the "
+                                              "same resource merely to "
+                                              "inspect or verify it. ");
     return QStringLiteral(
                "You are the decision engine for a local desktop agent. "
                "Return exactly one JSON action and no other text. Prefer a "
@@ -106,6 +119,30 @@ QList<chat::Message> AgentPromptBuilder::initialMessages(
     messages.append(conversationHistory);
     messages.append({chat::Role::User, userRequest.trimmed()});
     return messages;
+}
+
+bool AgentPromptBuilder::requiresCompletionReview(const QString& userRequest)
+{
+    const auto request = userRequest.trimmed();
+    static const QRegularExpression numberedStep(
+        QStringLiteral(R"((^|\n)\s*(\d+[.、):]|[-*]\s+))"));
+    if (numberedStep.match(request).hasMatch()) return true;
+
+    auto nonEmptyLines = 0;
+    for (const auto& line : request.split(QLatin1Char('\n')))
+        if (!line.trimmed().isEmpty()) ++nonEmptyLines;
+    if (nonEmptyLines >= 3) return true;
+
+    static const QStringList multiStepMarkers{
+        QStringLiteral("然后"),         QStringLiteral("最后"),
+        QStringLiteral("分别"),         QStringLiteral("完成后"),
+        QStringLiteral("接着"),         QStringLiteral("随后"),
+        QStringLiteral(" after that "), QStringLiteral(" then "),
+        QStringLiteral(" finally ")};
+    const auto padded = QLatin1Char(' ') + request.toLower() + QLatin1Char(' ');
+    return std::any_of(multiStepMarkers.cbegin(), multiStepMarkers.cend(),
+                       [&padded](const QString& marker)
+                       { return padded.contains(marker); });
 }
 
 chat::Message AgentPromptBuilder::toolResultMessage(
@@ -166,5 +203,18 @@ chat::Message AgentPromptBuilder::correctionMessage(const QString& errorMessage)
                 "%1 Return one corrected JSON action. Do not assume any tool "
                 "was executed.")
                 .arg(errorMessage)};
+}
+
+chat::Message AgentPromptBuilder::noProgressMessage(const QString& errorMessage)
+{
+    return {
+        chat::Role::User,
+        QStringLiteral(
+            "The local controller skipped the previous action because it "
+            "would not advance the task: %1 The earlier tool result remains "
+            "valid in the conversation or agent_progress evidence. Return "
+            "one meaningfully different action for an unfinished step, or "
+            "return final now. Do not repeat the skipped action.")
+            .arg(errorMessage)};
 }
 }  // namespace qtllm::application

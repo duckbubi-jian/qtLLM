@@ -17,9 +17,12 @@ class AgentPromptBuilder final
         const QString& userRequest, const QList<agent::ToolDefinition>& tools,
         const QList<chat::Message>& conversationHistory = {},
         const AssistantContext& context = {});
+    [[nodiscard]] static bool requiresCompletionReview(
+        const QString& userRequest);
     static chat::Message toolResultMessage(const agent::ToolResult& result);
     static chat::Message completionReviewMessage(
         const QString& originalRequest);
     static chat::Message correctionMessage(const QString& errorMessage);
+    static chat::Message noProgressMessage(const QString& errorMessage);
 };
 }  // namespace qtllm::application

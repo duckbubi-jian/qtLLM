@@ -86,7 +86,7 @@ MainWindow::MainWindow(QWidget* parent)
               { return toolPolicy_.evaluate(toolName); }},
           this)
 {
-    setWindowTitle(tr("qtLLM"));
+    setWindowTitle(tr("qtLLM - Local AI Assistant"));
     resize(1080, 760);
     setMinimumSize(720, 520);
 

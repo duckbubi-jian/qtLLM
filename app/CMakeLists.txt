@@ -106,6 +106,19 @@ qt_add_executable(qtLLM
     ${app_forms}
 )
 
+qt_add_resources(qtLLM qtllm_resources
+    PREFIX "/qtllm"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/resources"
+    FILES
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/qtllm-icon.png"
+)
+
+if(WIN32)
+    target_sources(qtLLM PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/qtllm.rc"
+    )
+endif()
+
 add_dependencies(qtLLM qtllm-worker qtllm-mcp-filesystem)
 
 target_include_directories(qtLLM

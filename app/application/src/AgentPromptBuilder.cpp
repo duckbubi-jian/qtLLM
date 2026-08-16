@@ -62,8 +62,12 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools,
                                               "placeholder tool name. After "
                                               "a tool result, use the result "
                                               "and never repeat an identical "
-                                              "call. Return final when the "
-                                              "result is sufficient; after an "
+                                              "call. A successful tool result "
+                                              "completes only that operation, "
+                                              "not the whole user request. "
+                                              "Before final, verify every "
+                                              "requested outcome and numbered "
+                                              "step is complete. After an "
                                               "error, change the arguments or "
                                               "choose another action. ");
     return QStringLiteral(
@@ -125,13 +129,33 @@ chat::Message AgentPromptBuilder::toolResultMessage(
                   "The tool reported an error. Do not repeat the same call "
                   "unchanged; correct its arguments or choose another action.")
             : QStringLiteral(
-                  "The tool completed successfully. Use this result and do "
-                  "not repeat this exact tool call. Return final if the result "
-                  "is sufficient; otherwise choose a different call.");
+                  "This tool call completed successfully, but that proves "
+                  "only this operation is complete. Do not repeat this exact "
+                  "call. Re-read the original user request and continue with "
+                  "the next necessary call if any requested outcome or "
+                  "numbered step remains. Return final only when all requested "
+                  "work is complete.");
     return {chat::Role::User,
             QStringLiteral("<tool_result name=\"%1\">%2</tool_result>\n%3")
                 .arg(result.serverId + QLatin1Char('.') + result.toolName, json,
                      guidance)};
+}
+
+chat::Message AgentPromptBuilder::completionReviewMessage(
+    const QString& originalRequest)
+{
+    return {
+        chat::Role::User,
+        QStringLiteral(
+            "Completion review required. A successful tool call proves only "
+            "that one operation succeeded, not that the whole task is "
+            "complete. Compare the proposed final answer with every requested "
+            "outcome and numbered step in the original request below. If "
+            "anything remains, return the next necessary call_tool action "
+            "without repeating completed calls. Return final only if all "
+            "requested work is complete, and do not claim work without a "
+            "successful tool result.\n<original_request>%1</original_request>")
+            .arg(originalRequest.trimmed())};
 }
 
 chat::Message AgentPromptBuilder::correctionMessage(const QString& errorMessage)

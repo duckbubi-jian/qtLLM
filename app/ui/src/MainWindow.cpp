@@ -86,7 +86,6 @@ MainWindow::MainWindow(QWidget* parent)
               { return toolPolicy_.evaluate(toolName); }},
           this)
 {
-    setWindowTitle(tr("qtLLM - Local AI Assistant"));
     resize(1080, 760);
     setMinimumSize(720, 520);
 
@@ -181,11 +180,10 @@ MainWindow::MainWindow(QWidget* parent)
                 updateState(workerClient_.state());
             });
     connect(&chatController_, &application::ChatController::errorOccurred, this,
-            [this](const QString& code, const QString& message,
-                   const QString& retryPrompt)
+            [this](const QString& code, const QString& message)
             {
                 conversationMessages_ = chatController_.conversationMessages();
-                showError(code, message, retryPrompt);
+                showError(code, message);
                 updateState(workerClient_.state());
             });
     connect(&agentController_,
@@ -275,13 +273,6 @@ MainWindow::MainWindow(QWidget* parent)
                 }
                 else if (!message.isEmpty())
                 {
-                    if (code != QLatin1String("approval_denied") &&
-                        chatView_->promptEditor()->toPlainText().isEmpty() &&
-                        agentController_.activeRun().has_value())
-                    {
-                        chatView_->promptEditor()->setPlainText(
-                            agentController_.activeRun()->userRequest);
-                    }
                     showError(code, message);
                 }
                 updateState(workerClient_.state());
@@ -899,8 +890,7 @@ void MainWindow::finishGeneration(bool cancelled, const QJsonObject& metrics)
     updateClearButton();
 }
 
-void MainWindow::showError(const QString& code, const QString& message,
-                           const QString& retryPrompt)
+void MainWindow::showError(const QString& code, const QString& message)
 {
     removeAgentActivity();
     chatView_->setStatusText(tr("Error: %1").arg(message));
@@ -911,12 +901,6 @@ void MainWindow::showError(const QString& code, const QString& message,
         renderTimer_->stop();
         renderAssistant(true);
         currentAssistant_ = nullptr;
-    }
-    if (!retryPrompt.isEmpty() &&
-        chatView_->promptEditor()->toPlainText().isEmpty())
-    {
-        chatView_->promptEditor()->setPlainText(retryPrompt);
-        chatView_->promptEditor()->setFocus();
     }
     updateClearButton();
     qWarning().noquote() << code << message;
@@ -935,6 +919,8 @@ void MainWindow::buildUi()
             [this] { renderAssistant(); });
 
     thinkingAnimationTimer_ = new QTimer(this);
+    thinkingAnimationTimer_->setObjectName(
+        QStringLiteral("thinkingAnimationTimer"));
     thinkingAnimationTimer_->setInterval(360);
     connect(thinkingAnimationTimer_, &QTimer::timeout, this,
             &MainWindow::advanceThinkingAnimation);
@@ -1172,6 +1158,7 @@ void MainWindow::showAgentActivity()
 void MainWindow::startThinkingAnimation()
 {
     if (agentActivityMessage_ == nullptr) return;
+    if (thinkingAnimationTimer_->isActive()) return;
     thinkingAnimationFrame_ = 1;
     advanceThinkingAnimation();
     thinkingAnimationTimer_->start();
@@ -1179,7 +1166,7 @@ void MainWindow::startThinkingAnimation()
 
 void MainWindow::stopThinkingAnimation()
 {
-    thinkingAnimationTimer_->stop();
+    if (thinkingAnimationTimer_->isActive()) thinkingAnimationTimer_->stop();
     thinkingAnimationFrame_ = 1;
 }
 

@@ -48,8 +48,7 @@ class ChatController final : public QObject
     void assistantResponseStarted();
     void tokenReceived(const QByteArray& bytes);
     void generationFinished(bool cancelled, const QJsonObject& metrics);
-    void errorOccurred(const QString& code, const QString& message,
-                       const QString& retryPrompt);
+    void errorOccurred(const QString& code, const QString& message);
     void conversationCleared();
 
    private:

@@ -89,8 +89,7 @@ void ChatControllerTest::rollsBackCancelledAndFailedPrompts()
     controller.handleError(QStringLiteral("generation_failed"),
                            QStringLiteral("failed"));
     QCOMPARE(errorSpy.count(), 1);
-    QCOMPARE(errorSpy.constFirst().at(2).toString(),
-             QStringLiteral("Retry me"));
+    QCOMPARE(errorSpy.constFirst().size(), 2);
     QVERIFY(controller.conversationMessages().isEmpty());
     QVERIFY(!controller.isGenerating());
 }

@@ -18,6 +18,8 @@ class AgentPromptBuilder final
         const QList<chat::Message>& conversationHistory = {},
         const AssistantContext& context = {});
     static chat::Message toolResultMessage(const agent::ToolResult& result);
+    static chat::Message completionReviewMessage(
+        const QString& originalRequest);
     static chat::Message correctionMessage(const QString& errorMessage);
 };
 }  // namespace qtllm::application

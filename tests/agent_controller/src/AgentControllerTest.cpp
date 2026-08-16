@@ -93,10 +93,23 @@ void AgentControllerTest::completesMultiStepToolRun()
     QVERIFY(lastMessages.constLast().content.contains(
         QStringLiteral("tool_result")));
     QVERIFY(lastMessages.constLast().content.contains(
-        QStringLiteral("do not repeat this exact tool call")));
+        QStringLiteral("Do not repeat this exact call")));
+    QVERIFY(lastMessages.constLast().content.contains(
+        QStringLiteral("only this operation is complete")));
     QVERIFY(lastMessages.constLast().content.contains(QStringLiteral("hello")));
     QVERIFY(!lastMessages.constLast().content.contains(
         QStringLiteral("duplicate-marker")));
+
+    controller.receiveToken(
+        QByteArrayLiteral(R"({"action":"final","content":"Task complete"})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(generationCount, 3);
+    QCOMPARE(finalSpy.count(), 0);
+    QVERIFY(lastMessages.constLast().content.contains(
+        QStringLiteral("Completion review required")));
+    QVERIFY(lastMessages.constLast().content.contains(
+        QStringLiteral("<original_request>Use a tool</original_request>")));
 
     controller.receiveToken(
         QByteArrayLiteral(R"({"action":"final","content":"Task complete"})"));
@@ -429,6 +442,12 @@ void AgentControllerTest::hasNoToolCallCountLimit()
         QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
     }
     QCOMPARE(toolCallCount, 20);
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"final","content":"All operations completed"})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(finalSpy.count(), 0);
 
     controller.receiveToken(QByteArrayLiteral(
         R"({"action":"final","content":"All operations completed"})"));

@@ -121,17 +121,15 @@ void ChatController::completeGeneration(bool cancelled,
 
 void ChatController::handleError(const QString& code, const QString& message)
 {
-    QString retryPrompt;
     if (generationPending_ && !conversationMessages_.isEmpty() &&
         conversationMessages_.constLast().role == chat::Role::User)
     {
-        retryPrompt = conversationMessages_.constLast().content;
         discardPendingUserMessage();
     }
 
     generationPending_ = false;
     responseBytes_.clear();
-    emit errorOccurred(code, message, retryPrompt);
+    emit errorOccurred(code, message);
 }
 
 void ChatController::discardPendingUserMessage()

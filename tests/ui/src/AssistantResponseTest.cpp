@@ -29,6 +29,7 @@
 #include <QTextBlock>
 #include <QTextBrowser>
 #include <QTextFormat>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QtTest>
@@ -53,7 +54,7 @@ class AssistantResponseTest final : public QObject
     void showsAgentActivityUntilRunEnds();
     void recordsRedactedAgentActivity();
     void enterSendsAndShiftEnterAddsNewline();
-    void restoresPromptAfterGenerationError();
+    void leavesPromptEmptyAfterGenerationError();
     void clearsVisibleAndInMemoryConversation();
     void showsWorkspaceAsComposerLink();
     void managesMcpServersFromAgentMenu();
@@ -329,7 +330,10 @@ void AssistantResponseTest::showsAgentActivityUntilRunEnds()
 {
     ui::MainWindow window;
     auto* controller = window.findChild<application::AgentController*>();
+    auto* prompt =
+        window.findChild<QPlainTextEdit*>(QStringLiteral("promptEditor"));
     QVERIFY(controller != nullptr);
+    QVERIFY(prompt != nullptr);
 
     emit controller->userRequestAccepted(QStringLiteral("run-id"),
                                          QStringLiteral("hello"));
@@ -349,6 +353,15 @@ void AssistantResponseTest::showsAgentActivityUntilRunEnds()
         QStringLiteral("assistantMessageBody"));
     QVERIFY(body != nullptr);
     QCOMPARE(body->toPlainText(), QStringLiteral("Thinking."));
+    auto* thinkingTimer =
+        window.findChild<QTimer*>(QStringLiteral("thinkingAnimationTimer"));
+    QVERIFY(thinkingTimer != nullptr);
+    QVERIFY(thinkingTimer->isActive());
+    const auto thinkingTimerId = thinkingTimer->timerId();
+
+    emit controller->stateChanged(application::AgentRun::State::Deciding);
+    QVERIFY(thinkingTimer->isActive());
+    QCOMPARE(thinkingTimer->timerId(), thinkingTimerId);
     QVERIFY(QMetaObject::invokeMethod(&window, "advanceThinkingAnimation",
                                       Qt::DirectConnection));
     QCOMPARE(body->toPlainText(), QStringLiteral("Thinking.."));
@@ -380,6 +393,11 @@ void AssistantResponseTest::showsAgentActivityUntilRunEnds()
     QCOMPARE(activityMessages.size(), 3);
     for (auto* message : activityMessages)
         QVERIFY(!message->property("agentActivity").toBool());
+    emit controller->runFinished(QStringLiteral("failed-run"),
+                                 application::AgentRun::State::Failed,
+                                 QStringLiteral("generation_failed"),
+                                 QStringLiteral("Generation failed."));
+    QVERIFY(prompt->toPlainText().isEmpty());
 }
 
 void AssistantResponseTest::recordsRedactedAgentActivity()
@@ -450,21 +468,24 @@ void AssistantResponseTest::enterSendsAndShiftEnterAddsNewline()
 
     QTest::keyClick(prompt, Qt::Key_Return);
     QCOMPARE(chatRequestSpy.count(), 1);
-    QCOMPARE(prompt->toPlainText(), QStringLiteral("first line"));
+    QVERIFY(prompt->toPlainText().isEmpty());
     QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 2);
 }
 
-void AssistantResponseTest::restoresPromptAfterGenerationError()
+void AssistantResponseTest::leavesPromptEmptyAfterGenerationError()
 {
     ui::MainWindow window;
+    auto* chatView = qobject_cast<ui::ChatView*>(window.centralWidget());
     auto* prompt =
         window.findChild<QPlainTextEdit*>(QStringLiteral("promptEditor"));
+    QVERIFY(chatView != nullptr);
     QVERIFY(prompt != nullptr);
 
-    const auto originalPrompt = QStringLiteral("keep this input for retry");
+    chatView->setAgentModeSelected(false);
+    const auto originalPrompt = QStringLiteral("do not restore this input");
     prompt->setPlainText(originalPrompt);
     QVERIFY(QMetaObject::invokeMethod(&window, "sendPrompt"));
-    QCOMPARE(prompt->toPlainText(), originalPrompt);
+    QVERIFY(prompt->toPlainText().isEmpty());
 }
 
 void AssistantResponseTest::clearsVisibleAndInMemoryConversation()
@@ -737,14 +758,15 @@ void AssistantResponseTest::separatesModelLocationAndReloadActions()
     QVERIFY(!modeSwitch->isChecked());
     QCOMPARE(modeSwitch->text(), QStringLiteral("Agent"));
     QCOMPARE(promptEditor->placeholderText(),
-             QStringLiteral("Write a message"));
+             QStringLiteral("Write a message (Shift+Enter for a new line)"));
     QCOMPARE(promptComposer->property("agentMode").toBool(), false);
     QVERIFY(!modeSwitch->toolTip().isEmpty());
     QSignalSpy modeSpy(&view, &ui::ChatView::modeChanged);
     view.setAgentModeSelected(true);
     QVERIFY(modeSwitch->isChecked());
     QCOMPARE(promptEditor->placeholderText(),
-             QStringLiteral("Describe a task for the agent"));
+             QStringLiteral(
+                 "Describe a task for the agent (Shift+Enter for a new line)"));
     QCOMPARE(promptComposer->property("agentMode").toBool(), true);
     QCOMPARE(modeSpy.count(), 0);
     modeSwitch->click();

@@ -50,8 +50,7 @@ class MainWindow final : public QMainWindow
     void updateState(infrastructure::WorkerClient::State state);
     void appendToken(const QByteArray& bytes);
     void finishGeneration(bool cancelled, const QJsonObject& metrics);
-    void showError(const QString& code, const QString& message,
-                   const QString& retryPrompt = {});
+    void showError(const QString& code, const QString& message);
     void advanceThinkingAnimation();
 
    private:

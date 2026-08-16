@@ -297,8 +297,9 @@ void ChatView::updateModePresentation()
     ui_->promptComposer->style()->unpolish(ui_->promptComposer);
     ui_->promptComposer->style()->polish(ui_->promptComposer);
     ui_->promptEditor->setPlaceholderText(
-        agentMode ? tr("Describe a task for the agent")
-                  : tr("Write a message"));
+        agentMode
+            ? tr("Describe a task for the agent (Shift+Enter for a new line)")
+            : tr("Write a message (Shift+Enter for a new line)"));
     ui_->agentModeSwitch->setToolTip(agentMode ? tr("Switch to Chat mode")
                                                : tr("Switch to Agent mode"));
 }

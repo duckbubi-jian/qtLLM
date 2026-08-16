@@ -107,6 +107,6 @@ class AgentController final : public QObject
     QByteArray decisionBytes_;
     QString activeToolCallSignature_;
     QString lastFailedToolCallSignature_;
-    QTimer runTimer_;
+    QTimer* runTimer_ = nullptr;
 };
 }  // namespace qtllm::application

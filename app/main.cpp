@@ -13,7 +13,7 @@ int main(int argc, char* argv[])
     QApplication application(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("qtLLM"));
     QGuiApplication::setApplicationDisplayName(
-        QStringLiteral("qtLLM - Local AI Assistant (仅学习可用)"));
+        QStringLiteral("qtLLM - Local AI Assistant"));
     QCoreApplication::setApplicationVersion(QStringLiteral("0.2.0"));
     application.setWindowIcon(QIcon(QStringLiteral(":/qtllm/qtllm-icon.png")));
     QString loggingError;
@@ -24,10 +24,12 @@ int main(int argc, char* argv[])
                              .arg(qtllm::logging::logFilePath()));
     qtllm::ui::applyApplicationTheme(application);
 
-    qtllm::ui::MainWindow window;
-    window.show();
-
-    const auto result = application.exec();
+    int result = 0;
+    {
+        qtllm::ui::MainWindow window;
+        window.show();
+        result = application.exec();
+    }
     qtllm::logging::info(
         QStringLiteral("qtLLM exiting with code %1").arg(result));
     qtllm::logging::shutdown();

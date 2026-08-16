@@ -25,11 +25,13 @@ QString toolCallSignature(const agent::Action& action)
 }  // namespace
 
 AgentController::AgentController(Dependencies dependencies, QObject* parent)
-    : QObject(parent), dependencies_(std::move(dependencies))
+    : QObject(parent),
+      dependencies_(std::move(dependencies)),
+      runTimer_(new QTimer(this))
 {
-    runTimer_.setSingleShot(true);
-    runTimer_.setInterval(runTimeoutMilliseconds);
-    connect(&runTimer_, &QTimer::timeout, this,
+    runTimer_->setSingleShot(true);
+    runTimer_->setInterval(runTimeoutMilliseconds);
+    connect(runTimer_, &QTimer::timeout, this,
             &AgentController::notifyLongRunning);
 }
 
@@ -66,7 +68,7 @@ bool AgentController::start(const QString& userRequest,
     decisionBytes_.clear();
     activeToolCallSignature_.clear();
     lastFailedToolCallSignature_.clear();
-    runTimer_.start();
+    if (!runTimer_->isActive()) runTimer_->start();
 
     recordEvent(agent::EventType::RunStarted,
                 QStringLiteral("Agent run started."));
@@ -81,7 +83,7 @@ void AgentController::cancel()
     const auto previousState = state_;
     const auto toolRequestId = activeRun_->toolRequestId;
     setState(AgentRun::State::Cancelled);
-    runTimer_.stop();
+    if (runTimer_->isActive()) runTimer_->stop();
     pendingApproval_.reset();
     activeRun_->toolRequestId.clear();
     if (previousState == AgentRun::State::Deciding &&
@@ -206,7 +208,10 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
     if (result.isError)
         lastFailedToolCallSignature_ = completedToolCallSignature;
     else
+    {
         lastFailedToolCallSignature_.clear();
+        ++activeRun_->successfulToolResults;
+    }
     recordEvent(agent::EventType::ToolFinished,
                 result.isError ? result.errorMessage
                                : QStringLiteral("Tool call completed."),
@@ -242,6 +247,17 @@ void AgentController::handleAction(const agent::Action& action,
     if (!activeRun_) return;
     if (action.type == agent::ActionType::Final)
     {
+        if (activeRun_->successfulToolResults > activeRun_->reviewedToolResults)
+        {
+            activeRun_->reviewedToolResults = activeRun_->successfulToolResults;
+            activeRun_->inferenceMessages.append(
+                {chat::Role::Assistant, QString::fromUtf8(rawAction)});
+            activeRun_->inferenceMessages.append(
+                AgentPromptBuilder::completionReviewMessage(
+                    activeRun_->userRequest));
+            requestDecision();
+            return;
+        }
         completeRun(action.content);
         return;
     }
@@ -363,7 +379,7 @@ void AgentController::completeRun(const QString& content)
     conversationMessages_.append({chat::Role::User, activeRun_->userRequest});
     conversationMessages_.append({chat::Role::Assistant, content});
     setState(AgentRun::State::Completed);
-    runTimer_.stop();
+    if (runTimer_->isActive()) runTimer_->stop();
     recordEvent(agent::EventType::Completed,
                 QStringLiteral("Agent run completed."));
     emit runFinished(activeRun_->id, state_, {}, {});
@@ -375,7 +391,7 @@ void AgentController::failRun(const QString& code, const QString& message)
     const auto previousState = state_;
     const auto toolRequestId = activeRun_->toolRequestId;
     setState(AgentRun::State::Failed);
-    runTimer_.stop();
+    if (runTimer_->isActive()) runTimer_->stop();
     pendingApproval_.reset();
     activeRun_->toolRequestId.clear();
     if (previousState == AgentRun::State::Deciding &&

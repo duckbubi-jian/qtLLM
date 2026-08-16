@@ -38,6 +38,7 @@ void WorkerClientTest::storesLastModelPathInExplicitIniFile()
     QVERIFY(settings.lastModelPath().isEmpty());
     QCOMPARE(settings.workspacePath(), QDir::homePath());
     QVERIFY(!settings.agentModeEnabled());
+    QVERIFY(settings.builtInFilesystemMcpEnabled());
     QVERIFY(settings.setLastModelPath(modelPath));
     QCOMPARE(settings.lastModelPath(), modelPath);
     const auto workspacePath = directory.path();
@@ -45,12 +46,15 @@ void WorkerClientTest::storesLastModelPathInExplicitIniFile()
     QCOMPARE(settings.workspacePath(), workspacePath);
     QVERIFY(settings.setAgentModeEnabled(true));
     QVERIFY(settings.agentModeEnabled());
+    QVERIFY(settings.setBuiltInFilesystemMcpEnabled(false));
+    QVERIFY(!settings.builtInFilesystemMcpEnabled());
     QVERIFY(QFileInfo::exists(settingsPath));
 
     const infrastructure::SettingsStore reloaded(settingsPath);
     QCOMPARE(reloaded.lastModelPath(), modelPath);
     QCOMPARE(reloaded.workspacePath(), workspacePath);
     QVERIFY(reloaded.agentModeEnabled());
+    QVERIFY(!reloaded.builtInFilesystemMcpEnabled());
 }
 
 void WorkerClientTest::defaultsToApplicationDirectory()

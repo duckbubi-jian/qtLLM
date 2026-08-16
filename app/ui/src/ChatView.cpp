@@ -10,6 +10,7 @@
 #include <QFontDatabase>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
@@ -21,6 +22,8 @@
 #include <QStackedWidget>
 #include <QStyle>
 #include <QTabBar>
+#include <QTimer>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace qtllm::ui
@@ -126,6 +129,10 @@ ChatView::ChatView(QWidget* parent)
     ui_->workspacePathLink->installEventFilter(this);
     ui_->modelPathLink->installEventFilter(this);
     ui_->promptEditor->installEventFilter(this);
+
+    mcpMenu_ = new QMenu(ui_->mcpMenuButton);
+    mcpMenu_->setObjectName(QStringLiteral("mcpServerMenu"));
+    ui_->mcpMenuButton->setMenu(mcpMenu_);
 
     connect(ui_->modelReloadAction, &QAction::triggered, this,
             &ChatView::modelFolderRequested);
@@ -249,6 +256,17 @@ void ChatView::setModeSelectionEnabled(bool enabled)
     ui_->agentModeSwitch->setEnabled(enabled);
 }
 
+void ChatView::setMcpSelectionEnabled(bool enabled)
+{
+    ui_->mcpMenuButton->setEnabled(enabled);
+}
+
+void ChatView::setMcpServers(const QList<McpServerPresentation>& servers)
+{
+    mcpServers_ = servers;
+    rebuildMcpMenu();
+}
+
 void ChatView::setAgentModeSelected(bool selected)
 {
     const QSignalBlocker blocker(ui_->agentModeSwitch);
@@ -274,6 +292,7 @@ void ChatView::setStatusText(const QString& text)
 void ChatView::updateModePresentation()
 {
     const auto agentMode = ui_->agentModeSwitch->isChecked();
+    ui_->mcpMenuButton->setVisible(agentMode);
     ui_->promptComposer->setProperty("agentMode", agentMode);
     ui_->promptComposer->style()->unpolish(ui_->promptComposer);
     ui_->promptComposer->style()->polish(ui_->promptComposer);
@@ -282,6 +301,60 @@ void ChatView::updateModePresentation()
                   : tr("Write a message"));
     ui_->agentModeSwitch->setToolTip(agentMode ? tr("Switch to Chat mode")
                                                : tr("Switch to Agent mode"));
+}
+
+void ChatView::rebuildMcpMenu()
+{
+    mcpMenu_->clear();
+    auto* heading = mcpMenu_->addAction(tr("MCP servers"));
+    heading->setEnabled(false);
+
+    for (const auto& server : mcpServers_)
+    {
+        auto label = server.displayName;
+        if (!server.detail.isEmpty())
+            label += QStringLiteral(" (%1)").arg(server.detail);
+        auto* action = mcpMenu_->addAction(label);
+        action->setObjectName(
+            QStringLiteral("mcpServerAction_%1").arg(server.serverId));
+        action->setCheckable(true);
+        action->setChecked(server.enabled);
+        action->setEnabled(server.available);
+        action->setData(server.serverId);
+        connect(action, &QAction::toggled, this,
+                [this, server](bool enabled)
+                {
+                    QTimer::singleShot(
+                        0, this,
+                        [this, server, enabled]
+                        {
+                            if (server.builtIn)
+                                emit builtInFilesystemMcpToggled(enabled);
+                            else
+                                emit externalMcpServerToggled(server.serverId,
+                                                              enabled);
+                        });
+                });
+    }
+
+    mcpMenu_->addSeparator();
+    auto* addAction = mcpMenu_->addAction(tr("Add MCP server..."));
+    addAction->setObjectName(QStringLiteral("addMcpServerAction"));
+    connect(addAction, &QAction::triggered, this,
+            &ChatView::addMcpServerRequested);
+
+    auto* removeMenu = mcpMenu_->addMenu(tr("Remove MCP server"));
+    removeMenu->setObjectName(QStringLiteral("removeMcpServerMenu"));
+    for (const auto& server : mcpServers_)
+    {
+        if (server.builtIn) continue;
+        auto* removeAction = removeMenu->addAction(server.displayName);
+        removeAction->setObjectName(
+            QStringLiteral("removeMcpServerAction_%1").arg(server.serverId));
+        connect(removeAction, &QAction::triggered, this, [this, server]
+                { emit removeExternalMcpServerRequested(server.serverId); });
+    }
+    removeMenu->setEnabled(!removeMenu->actions().isEmpty());
 }
 
 bool ChatView::eventFilter(QObject* watched, QEvent* event)

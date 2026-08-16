@@ -1,11 +1,13 @@
 #pragma once
 
+#include <QList>
 #include <QString>
 #include <QWidget>
 
 #include <memory>
 
 class QEvent;
+class QMenu;
 class QPlainTextEdit;
 class QScrollArea;
 class QVBoxLayout;
@@ -24,6 +26,16 @@ enum class ModelBadgeState
     Verified,
     Unverified,
     Invalid
+};
+
+struct McpServerPresentation
+{
+    QString serverId;
+    QString displayName;
+    QString detail;
+    bool enabled = false;
+    bool builtIn = false;
+    bool available = true;
 };
 
 class ChatView final : public QWidget
@@ -51,6 +63,8 @@ class ChatView final : public QWidget
     void setPrimaryAction(bool stopMode, bool enabled);
     void setAgentModeSelected(bool selected);
     void setModeSelectionEnabled(bool enabled);
+    void setMcpSelectionEnabled(bool enabled);
+    void setMcpServers(const QList<McpServerPresentation>& servers);
     void setConversationVisible(bool visible);
     void setStatusText(const QString& text);
 
@@ -64,6 +78,10 @@ class ChatView final : public QWidget
     void clearConversationRequested();
     void promptSubmitted();
     void modeChanged(bool agentMode);
+    void addMcpServerRequested();
+    void builtInFilesystemMcpToggled(bool enabled);
+    void externalMcpServerToggled(const QString& serverId, bool enabled);
+    void removeExternalMcpServerRequested(const QString& serverId);
 
    protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -72,12 +90,15 @@ class ChatView final : public QWidget
     void updateModelPresentation();
     void updateWorkspacePresentation();
     void updateModePresentation();
+    void rebuildMcpMenu();
 
     std::unique_ptr<Ui::ChatView> ui_;
     QString modelPath_;
     QString modelInformation_;
     ModelBadgeState modelBadgeState_ = ModelBadgeState::Neutral;
     QString workspacePath_;
+    QList<McpServerPresentation> mcpServers_;
+    QMenu* mcpMenu_ = nullptr;
     bool primaryActionStops_ = false;
 };
 }  // namespace qtllm::ui

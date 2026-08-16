@@ -3,6 +3,7 @@
 #include "ChatController.hpp"
 #include "ChatView.hpp"
 #include "MainWindow.hpp"
+#include "McpServerDialog.hpp"
 #include "MessageWidget.hpp"
 #include "ModeSwitch.hpp"
 #include "Theme.hpp"
@@ -13,14 +14,18 @@
 #include <QColor>
 #include <QDir>
 #include <QEnterEvent>
+#include <QFile>
 #include <QFileInfo>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMenu>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSizePolicy>
 #include <QStackedWidget>
 #include <QTabBar>
+#include <QTabWidget>
+#include <QTemporaryDir>
 #include <QTextBlock>
 #include <QTextBrowser>
 #include <QTextFormat>
@@ -51,6 +56,8 @@ class AssistantResponseTest final : public QObject
     void restoresPromptAfterGenerationError();
     void clearsVisibleAndInMemoryConversation();
     void showsWorkspaceAsComposerLink();
+    void managesMcpServersFromAgentMenu();
+    void validatesNewMcpServerConfiguration();
     void separatesModelLocationAndReloadActions();
     void placesModelControlsInComposerAndMergesPrimaryAction();
 };
@@ -545,6 +552,164 @@ void AssistantResponseTest::showsWorkspaceAsComposerLink()
     chatView->setWorkspaceControlsEnabled(false);
     QVERIFY(workspaceLink->isEnabled());
     QVERIFY(!workspaceChangeAction->isEnabled());
+}
+
+void AssistantResponseTest::managesMcpServersFromAgentMenu()
+{
+    ui::ChatView view;
+    auto* button =
+        view.findChild<QToolButton*>(QStringLiteral("mcpMenuButton"));
+    auto* menu = view.findChild<QMenu*>(QStringLiteral("mcpServerMenu"));
+    QVERIFY(button != nullptr);
+    QVERIFY(menu != nullptr);
+    QVERIFY(button->isHidden());
+
+    view.setMcpServers({{QStringLiteral("builtin-filesystem"),
+                         QStringLiteral("Built-in filesystem"),
+                         QStringLiteral("7 tools"), true, true, true},
+                        {QStringLiteral("external"), QStringLiteral("external"),
+                         QStringLiteral("Off"), false, false, true}});
+    view.setAgentModeSelected(true);
+    QVERIFY(!button->isHidden());
+    QCOMPARE(button->popupMode(), QToolButton::InstantPopup);
+    QCOMPARE(button->menu(), menu);
+
+    auto* builtInAction = menu->findChild<QAction*>(
+        QStringLiteral("mcpServerAction_builtin-filesystem"));
+    auto* externalAction =
+        menu->findChild<QAction*>(QStringLiteral("mcpServerAction_external"));
+    auto* addAction =
+        menu->findChild<QAction*>(QStringLiteral("addMcpServerAction"));
+    auto* removeMenu =
+        menu->findChild<QMenu*>(QStringLiteral("removeMcpServerMenu"));
+    auto* removeExternalAction = menu->findChild<QAction*>(
+        QStringLiteral("removeMcpServerAction_external"));
+    auto* removeBuiltInAction = menu->findChild<QAction*>(
+        QStringLiteral("removeMcpServerAction_builtin-filesystem"));
+    QVERIFY(builtInAction != nullptr);
+    QVERIFY(externalAction != nullptr);
+    QVERIFY(addAction != nullptr);
+    QVERIFY(removeMenu != nullptr);
+    QVERIFY(removeExternalAction != nullptr);
+    QVERIFY(removeBuiltInAction == nullptr);
+    QVERIFY(builtInAction->isCheckable());
+    QVERIFY(builtInAction->isChecked());
+    QVERIFY(!externalAction->isChecked());
+
+    QSignalSpy builtInSpy(&view, &ui::ChatView::builtInFilesystemMcpToggled);
+    QSignalSpy externalSpy(&view, &ui::ChatView::externalMcpServerToggled);
+    QSignalSpy addSpy(&view, &ui::ChatView::addMcpServerRequested);
+    QSignalSpy removeSpy(&view,
+                         &ui::ChatView::removeExternalMcpServerRequested);
+    builtInAction->trigger();
+    QTRY_COMPARE(builtInSpy.count(), 1);
+    QCOMPARE(builtInSpy.constFirst().constFirst().toBool(), false);
+    externalAction->trigger();
+    QTRY_COMPARE(externalSpy.count(), 1);
+    QCOMPARE(externalSpy.constFirst().at(0).toString(),
+             QStringLiteral("external"));
+    QCOMPARE(externalSpy.constFirst().at(1).toBool(), true);
+    addAction->trigger();
+    QCOMPARE(addSpy.count(), 1);
+    removeExternalAction->trigger();
+    QCOMPARE(removeSpy.count(), 1);
+    QCOMPARE(removeSpy.constFirst().constFirst().toString(),
+             QStringLiteral("external"));
+
+    view.setAgentModeSelected(false);
+    QVERIFY(button->isHidden());
+}
+
+void AssistantResponseTest::validatesNewMcpServerConfiguration()
+{
+    QTemporaryDir packageDirectory;
+    QVERIFY(packageDirectory.isValid());
+#ifdef Q_OS_WIN
+    const auto packageProgram =
+        QDir(packageDirectory.path())
+            .filePath(QStringLiteral("sample-server.exe"));
+#else
+    const auto packageProgram =
+        QDir(packageDirectory.path()).filePath(QStringLiteral("sample-server"));
+#endif
+    QVERIFY(
+        QFile::copy(QCoreApplication::applicationFilePath(), packageProgram));
+#ifndef Q_OS_WIN
+    QVERIFY(QFile::setPermissions(
+        packageProgram, QFile::permissions(packageProgram) |
+                            QFileDevice::ExeOwner | QFileDevice::ExeGroup |
+                            QFileDevice::ExeOther));
+#endif
+
+    ui::McpServerDialog duplicateDialog({QStringLiteral("sample-server")});
+    auto* duplicateFolderEdit = duplicateDialog.findChild<QLineEdit*>(
+        QStringLiteral("fastMcpFolderEdit"));
+    auto* duplicateErrorLabel =
+        duplicateDialog.findChild<QLabel*>(QStringLiteral("errorLabel"));
+    QVERIFY(duplicateFolderEdit != nullptr);
+    QVERIFY(duplicateErrorLabel != nullptr);
+    duplicateFolderEdit->setText(packageDirectory.path());
+    QSignalSpy duplicateAcceptedSpy(&duplicateDialog, &QDialog::accepted);
+    QVERIFY(QMetaObject::invokeMethod(&duplicateDialog, "accept"));
+    QCOMPARE(duplicateAcceptedSpy.count(), 0);
+    QVERIFY(!duplicateErrorLabel->isHidden());
+
+    ui::McpServerDialog fastMcpDialog({QStringLiteral("existing")});
+    auto* configurationTabs = fastMcpDialog.findChild<QTabWidget*>(
+        QStringLiteral("configurationTabs"));
+    auto* fastMcpFolderEdit = fastMcpDialog.findChild<QLineEdit*>(
+        QStringLiteral("fastMcpFolderEdit"));
+    QVERIFY(configurationTabs != nullptr);
+    QVERIFY(fastMcpFolderEdit != nullptr);
+    QCOMPARE(configurationTabs->currentIndex(), 0);
+    fastMcpFolderEdit->setText(packageDirectory.path());
+    QSignalSpy fastMcpAcceptedSpy(&fastMcpDialog, &QDialog::accepted);
+    QVERIFY(QMetaObject::invokeMethod(&fastMcpDialog, "accept"));
+    QCOMPARE(fastMcpAcceptedSpy.count(), 1);
+
+    const auto fastMcpConfig = fastMcpDialog.configuration();
+    QCOMPARE(fastMcpConfig.serverId, QStringLiteral("sample-server"));
+    QCOMPARE(fastMcpConfig.program,
+             QFileInfo(packageProgram).canonicalFilePath());
+    QVERIFY(fastMcpConfig.arguments.isEmpty());
+    QCOMPARE(fastMcpConfig.workingDirectory,
+             QFileInfo(packageDirectory.path()).canonicalFilePath());
+    QVERIFY(fastMcpConfig.enabled);
+
+    ui::McpServerDialog customDialog({QStringLiteral("existing")});
+    auto* customTabs = customDialog.findChild<QTabWidget*>(
+        QStringLiteral("configurationTabs"));
+    auto* serverIdEdit =
+        customDialog.findChild<QLineEdit*>(QStringLiteral("serverIdEdit"));
+    auto* programEdit =
+        customDialog.findChild<QLineEdit*>(QStringLiteral("programEdit"));
+    auto* argumentsEdit =
+        customDialog.findChild<QLineEdit*>(QStringLiteral("argumentsEdit"));
+    auto* workingDirectoryEdit = customDialog.findChild<QLineEdit*>(
+        QStringLiteral("workingDirectoryEdit"));
+    QVERIFY(customTabs != nullptr);
+    QVERIFY(serverIdEdit != nullptr);
+    QVERIFY(programEdit != nullptr);
+    QVERIFY(argumentsEdit != nullptr);
+    QVERIFY(workingDirectoryEdit != nullptr);
+
+    customTabs->setCurrentIndex(1);
+    serverIdEdit->setText(QStringLiteral("custom-server"));
+    programEdit->setText(packageProgram);
+    argumentsEdit->setText(QStringLiteral("--stdio \"two words\""));
+    workingDirectoryEdit->setText(packageDirectory.path());
+    QSignalSpy acceptedSpy(&customDialog, &QDialog::accepted);
+    QVERIFY(QMetaObject::invokeMethod(&customDialog, "accept"));
+    QCOMPARE(acceptedSpy.count(), 1);
+
+    const auto config = customDialog.configuration();
+    QCOMPARE(config.serverId, QStringLiteral("custom-server"));
+    QCOMPARE(config.program, QFileInfo(packageProgram).absoluteFilePath());
+    QCOMPARE(config.arguments, QStringList({QStringLiteral("--stdio"),
+                                            QStringLiteral("two words")}));
+    QCOMPARE(config.workingDirectory,
+             QFileInfo(packageDirectory.path()).canonicalFilePath());
+    QVERIFY(config.enabled);
 }
 
 void AssistantResponseTest::separatesModelLocationAndReloadActions()

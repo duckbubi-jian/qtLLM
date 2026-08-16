@@ -2,6 +2,7 @@
 
 #include "BuiltInMcpServer.hpp"
 #include "ChatView.hpp"
+#include "McpServerDialog.hpp"
 #include "MessageWidget.hpp"
 #include "SensitiveData.hpp"
 #include "ToolApprovalWidget.hpp"
@@ -12,6 +13,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QScrollArea>
@@ -23,6 +25,7 @@
 #include <QVBoxLayout>
 #include <QtConcurrent/QtConcurrentRun>
 
+#include <algorithm>
 #include <utility>
 
 namespace qtllm::ui
@@ -284,16 +287,28 @@ MainWindow::MainWindow(QWidget* parent)
                 updateState(workerClient_.state());
             });
     connect(&mcpManager_, &infrastructure::mcp::McpClientManager::serverStarted,
-            this, [this](const QString& serverId)
-            { mcpManager_.initialize(serverId); });
+            this,
+            [this](const QString& serverId)
+            {
+                mcpServerErrors_.remove(serverId);
+                refreshMcpServerMenu();
+                mcpManager_.initialize(serverId);
+            });
+    connect(&mcpManager_, &infrastructure::mcp::McpClientManager::serverStopped,
+            this, [this](const QString&) { refreshMcpServerMenu(); });
     connect(&mcpManager_,
             &infrastructure::mcp::McpClientManager::serverInitialized, this,
             [this](const QString& serverId, const QJsonObject&)
-            { mcpManager_.listTools(serverId); });
+            {
+                refreshMcpServerMenu();
+                mcpManager_.listTools(serverId);
+            });
     connect(&mcpManager_, &infrastructure::mcp::McpClientManager::toolsChanged,
             this,
-            [this](const QString&, const QList<agent::ToolDefinition>& tools)
+            [this](const QString& serverId,
+                   const QList<agent::ToolDefinition>& tools)
             {
+                mcpServerErrors_.remove(serverId);
                 const auto alwaysAllowed =
                     settingsStore_.alwaysAllowedMcpTools();
                 for (const auto& tool : tools)
@@ -304,12 +319,28 @@ MainWindow::MainWindow(QWidget* parent)
                         rule.alwaysAllow = true;
                     toolPolicy_.setRule(tool.qualifiedName, rule);
                 }
+                refreshMcpServerMenu();
             });
     connect(&mcpManager_, &infrastructure::mcp::McpClientManager::serverError,
             this,
             [this](const QString& serverId, const QString& code,
                    const QString& message)
-            { qWarning().noquote() << serverId << code << message; });
+            {
+                mcpServerErrors_.insert(serverId, message);
+                refreshMcpServerMenu();
+                qWarning().noquote() << serverId << code << message;
+            });
+    connect(
+        &mcpManager_, &infrastructure::mcp::McpClientManager::requestFailed,
+        this,
+        [this](const QString& serverId, const QString&, const QString& method,
+               const QString& code, const QString& message)
+        {
+            if (method == QLatin1String("tools/call")) return;
+            mcpServerErrors_.insert(serverId, message);
+            refreshMcpServerMenu();
+            qWarning().noquote() << serverId << method << code << message;
+        });
     connect(
         &mcpManager_, &infrastructure::mcp::McpClientManager::toolResultReady,
         &agentController_, &application::AgentController::receiveToolResult);
@@ -369,7 +400,8 @@ void MainWindow::selectWorkspaceDirectory()
     if (workspacePath == workspacePath_) return;
 
     QString errorMessage;
-    if (!startBuiltInFilesystem(workspacePath, errorMessage))
+    if (settingsStore_.builtInFilesystemMcpEnabled() &&
+        !startBuiltInFilesystem(workspacePath, errorMessage))
     {
         showError(QStringLiteral("filesystem_mcp_unavailable"), errorMessage);
         return;
@@ -379,6 +411,7 @@ void MainWindow::selectWorkspaceDirectory()
     if (!settingsStore_.setWorkspacePath(workspacePath))
         qWarning().noquote()
             << "Unable to persist workspace path:" << workspacePath;
+    refreshMcpServerMenu();
 }
 
 void MainWindow::openWorkspaceDirectory()
@@ -390,6 +423,223 @@ void MainWindow::openWorkspaceDirectory()
         qWarning().noquote()
             << "Unable to open workspace folder:" << workspacePath_;
     }
+}
+
+void MainWindow::addMcpServer()
+{
+    if (agentRunActive_ || chatController_.isGenerating()) return;
+
+    auto existingIds = QStringList{QStringLiteral("filesystem")};
+    for (const auto& config : mcpConfigurations_)
+        existingIds.append(config.serverId);
+    existingIds.removeDuplicates();
+
+    McpServerDialog dialog(existingIds, this);
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    auto config = dialog.configuration();
+    QString errorMessage;
+    if (!mcpManager_.addServer(config, errorMessage))
+    {
+        showError(QStringLiteral("mcp_config_rejected"), errorMessage);
+        return;
+    }
+
+    mcpConfigurations_.append(config);
+    if (!settingsStore_.setMcpServerConfigs(mcpConfigurations_))
+    {
+        mcpConfigurations_.removeLast();
+        QString removalError;
+        mcpManager_.removeServer(config.serverId, removalError);
+        showError(QStringLiteral("mcp_config_not_saved"),
+                  tr("The MCP server configuration could not be saved."));
+        return;
+    }
+
+    mcpServerErrors_.remove(config.serverId);
+    mcpManager_.startServer(config.serverId);
+    refreshMcpServerMenu();
+}
+
+void MainWindow::setBuiltInFilesystemMcpEnabled(bool enabled)
+{
+    if (agentRunActive_ || chatController_.isGenerating())
+    {
+        refreshMcpServerMenu();
+        return;
+    }
+    if (filesystemConfiguredExternally_)
+    {
+        refreshMcpServerMenu();
+        return;
+    }
+
+    if (enabled)
+    {
+        QString errorMessage;
+        if (!startBuiltInFilesystem(workspacePath_, errorMessage))
+        {
+            showError(QStringLiteral("filesystem_mcp_unavailable"),
+                      errorMessage);
+            refreshMcpServerMenu();
+            return;
+        }
+        if (!settingsStore_.setBuiltInFilesystemMcpEnabled(true))
+        {
+            QString removalError;
+            mcpManager_.removeServer(QStringLiteral("filesystem"),
+                                     removalError);
+            builtInFilesystemRunning_ = false;
+            showError(QStringLiteral("mcp_config_not_saved"),
+                      tr("The built-in MCP selection could not be saved."));
+        }
+    }
+    else
+    {
+        if (!settingsStore_.setBuiltInFilesystemMcpEnabled(false))
+        {
+            showError(QStringLiteral("mcp_config_not_saved"),
+                      tr("The built-in MCP selection could not be saved."));
+            refreshMcpServerMenu();
+            return;
+        }
+        if (builtInFilesystemRunning_)
+        {
+            QString errorMessage;
+            if (!mcpManager_.removeServer(QStringLiteral("filesystem"),
+                                          errorMessage))
+            {
+                settingsStore_.setBuiltInFilesystemMcpEnabled(true);
+                showError(QStringLiteral("mcp_stop_failed"), errorMessage);
+                refreshMcpServerMenu();
+                return;
+            }
+            builtInFilesystemRunning_ = false;
+        }
+        mcpServerErrors_.remove(QStringLiteral("filesystem"));
+    }
+    refreshMcpServerMenu();
+}
+
+void MainWindow::setExternalMcpServerEnabled(const QString& serverId,
+                                             bool enabled)
+{
+    if (agentRunActive_ || chatController_.isGenerating())
+    {
+        refreshMcpServerMenu();
+        return;
+    }
+
+    auto iterator = std::find_if(
+        mcpConfigurations_.begin(), mcpConfigurations_.end(),
+        [&serverId](const infrastructure::mcp::McpServerConfig& config)
+        { return config.serverId == serverId; });
+    if (iterator == mcpConfigurations_.end() || iterator->enabled == enabled)
+    {
+        refreshMcpServerMenu();
+        return;
+    }
+
+    const auto previous = iterator->enabled;
+    iterator->enabled = enabled;
+    if (!settingsStore_.setMcpServerConfigs(mcpConfigurations_))
+    {
+        iterator->enabled = previous;
+        showError(QStringLiteral("mcp_config_not_saved"),
+                  tr("The MCP server selection could not be saved."));
+        refreshMcpServerMenu();
+        return;
+    }
+
+    QString errorMessage;
+    if (enabled)
+    {
+        if (!mcpManager_.addServer(*iterator, errorMessage))
+        {
+            iterator->enabled = false;
+            settingsStore_.setMcpServerConfigs(mcpConfigurations_);
+            showError(QStringLiteral("mcp_start_failed"), errorMessage);
+            refreshMcpServerMenu();
+            return;
+        }
+        mcpServerErrors_.remove(serverId);
+        mcpManager_.startServer(serverId);
+    }
+    else
+    {
+        if (mcpManager_.serverIds().contains(serverId) &&
+            !mcpManager_.removeServer(serverId, errorMessage))
+        {
+            iterator->enabled = true;
+            settingsStore_.setMcpServerConfigs(mcpConfigurations_);
+            showError(QStringLiteral("mcp_stop_failed"), errorMessage);
+            refreshMcpServerMenu();
+            return;
+        }
+        mcpServerErrors_.remove(serverId);
+    }
+    refreshMcpServerMenu();
+}
+
+void MainWindow::removeExternalMcpServer(const QString& serverId)
+{
+    if (agentRunActive_ || chatController_.isGenerating()) return;
+
+    const auto iterator = std::find_if(
+        mcpConfigurations_.cbegin(), mcpConfigurations_.cend(),
+        [&serverId](const infrastructure::mcp::McpServerConfig& config)
+        { return config.serverId == serverId; });
+    if (iterator == mcpConfigurations_.cend())
+    {
+        refreshMcpServerMenu();
+        return;
+    }
+
+    const auto confirmation = QMessageBox::question(
+        this, tr("Remove MCP server"),
+        tr("Remove MCP server '%1'? The server files will not be deleted.")
+            .arg(serverId),
+        QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+    if (confirmation != QMessageBox::Yes) return;
+
+    auto updatedConfigurations = mcpConfigurations_;
+    updatedConfigurations.removeAt(
+        std::distance(mcpConfigurations_.cbegin(), iterator));
+    if (!settingsStore_.setMcpServerConfigs(updatedConfigurations))
+    {
+        showError(QStringLiteral("mcp_config_not_saved"),
+                  tr("The MCP server configuration could not be removed."));
+        return;
+    }
+
+    QString errorMessage;
+    if (mcpManager_.serverIds().contains(serverId) &&
+        !mcpManager_.removeServer(serverId, errorMessage))
+    {
+        settingsStore_.setMcpServerConfigs(mcpConfigurations_);
+        showError(QStringLiteral("mcp_stop_failed"), errorMessage);
+        return;
+    }
+
+    mcpConfigurations_ = std::move(updatedConfigurations);
+    mcpServerErrors_.remove(serverId);
+    filesystemConfiguredExternally_ = std::any_of(
+        mcpConfigurations_.cbegin(), mcpConfigurations_.cend(),
+        [](const infrastructure::mcp::McpServerConfig& config)
+        { return config.serverId.trimmed() == QLatin1String("filesystem"); });
+    if (!filesystemConfiguredExternally_ &&
+        settingsStore_.builtInFilesystemMcpEnabled() &&
+        !builtInFilesystemRunning_)
+    {
+        if (!startBuiltInFilesystem(workspacePath_, errorMessage))
+        {
+            mcpServerErrors_.insert(QStringLiteral("filesystem"), errorMessage);
+            showError(QStringLiteral("filesystem_mcp_unavailable"),
+                      errorMessage);
+        }
+    }
+    updateState(workerClient_.state());
+    refreshMcpServerMenu();
 }
 
 void MainWindow::loadSelectedModel()
@@ -563,6 +813,7 @@ void MainWindow::updateState(infrastructure::WorkerClient::State state)
                                            !filesystemConfiguredExternally_);
     chatView_->setPromptEnabled(modelReady && !conversationBusy);
     chatView_->setModeSelectionEnabled(modelReady && !conversationBusy);
+    chatView_->setMcpSelectionEnabled(modelReady && !conversationBusy);
     const auto stopMode = generating || conversationBusy;
     updatePrimaryAction(stopMode);
     chatView_->setPrimaryAction(stopMode, stopMode || modelReady);
@@ -696,6 +947,14 @@ void MainWindow::buildUi()
             &MainWindow::selectWorkspaceDirectory);
     connect(chatView_, &ChatView::workspaceOpenRequested, this,
             &MainWindow::openWorkspaceDirectory);
+    connect(chatView_, &ChatView::addMcpServerRequested, this,
+            &MainWindow::addMcpServer);
+    connect(chatView_, &ChatView::builtInFilesystemMcpToggled, this,
+            &MainWindow::setBuiltInFilesystemMcpEnabled);
+    connect(chatView_, &ChatView::externalMcpServerToggled, this,
+            &MainWindow::setExternalMcpServerEnabled);
+    connect(chatView_, &ChatView::removeExternalMcpServerRequested, this,
+            &MainWindow::removeExternalMcpServer);
     connect(chatView_, &ChatView::modelLoadRequested, this,
             &MainWindow::loadSelectedModel);
     connect(chatView_, &ChatView::primaryActionRequested, this,
@@ -990,7 +1249,8 @@ void MainWindow::updateAgentState(application::AgentRun::State state)
 
 void MainWindow::loadMcpServers()
 {
-    for (const auto& config : settingsStore_.mcpServerConfigs())
+    mcpConfigurations_ = settingsStore_.mcpServerConfigs();
+    for (const auto& config : mcpConfigurations_)
     {
         if (config.serverId.trimmed() == QLatin1String("filesystem"))
             filesystemConfiguredExternally_ = true;
@@ -998,17 +1258,64 @@ void MainWindow::loadMcpServers()
         QString errorMessage;
         if (!mcpManager_.addServer(config, errorMessage))
         {
+            mcpServerErrors_.insert(config.serverId, errorMessage);
             qWarning().noquote() << "MCP config rejected:" << errorMessage;
             continue;
         }
         mcpManager_.startServer(config.serverId);
     }
 
-    if (filesystemConfiguredExternally_) return;
-    QString errorMessage;
-    if (!startBuiltInFilesystem(workspacePath_, errorMessage))
-        qWarning().noquote()
-            << "Built-in filesystem MCP unavailable:" << errorMessage;
+    if (!filesystemConfiguredExternally_ &&
+        settingsStore_.builtInFilesystemMcpEnabled())
+    {
+        QString errorMessage;
+        if (!startBuiltInFilesystem(workspacePath_, errorMessage))
+        {
+            mcpServerErrors_.insert(QStringLiteral("filesystem"), errorMessage);
+            qWarning().noquote()
+                << "Built-in filesystem MCP unavailable:" << errorMessage;
+        }
+    }
+    refreshMcpServerMenu();
+}
+
+void MainWindow::refreshMcpServerMenu()
+{
+    QHash<QString, int> toolCounts;
+    for (const auto& tool : mcpManager_.tools())
+        ++toolCounts[tool.serverId];
+
+    const auto detailFor =
+        [this, &toolCounts](const QString& serverId, bool enabled)
+    {
+        if (!enabled) return tr("Off");
+        if (mcpServerErrors_.contains(serverId)) return tr("Unavailable");
+        const auto* serverTransport = mcpManager_.transport(serverId);
+        if (serverTransport == nullptr || !serverTransport->isRunning())
+            return tr("Unavailable");
+        const auto toolCount = toolCounts.value(serverId);
+        if (toolCount > 0) return tr("%n tools", nullptr, toolCount);
+        return tr("Starting");
+    };
+
+    QList<McpServerPresentation> presentations;
+    const auto builtInAvailable = !filesystemConfiguredExternally_;
+    const auto builtInEnabled =
+        builtInAvailable && settingsStore_.builtInFilesystemMcpEnabled();
+    presentations.append(
+        {QStringLiteral("builtin-filesystem"), tr("Built-in filesystem"),
+         builtInAvailable
+             ? detailFor(QStringLiteral("filesystem"), builtInEnabled)
+             : tr("Replaced by external filesystem"),
+         builtInEnabled, true, builtInAvailable});
+
+    for (const auto& config : mcpConfigurations_)
+    {
+        presentations.append({config.serverId, config.serverId,
+                              detailFor(config.serverId, config.enabled),
+                              config.enabled, false, true});
+    }
+    chatView_->setMcpServers(presentations);
 }
 
 void MainWindow::setModelPath(const QString& modelPath)
@@ -1053,6 +1360,7 @@ bool MainWindow::startBuiltInFilesystem(const QString& workspacePath,
     }
     if (!mcpManager_.addServer(config, errorMessage)) return false;
     builtInFilesystemRunning_ = true;
+    mcpServerErrors_.remove(QStringLiteral("filesystem"));
     mcpManager_.startServer(config.serverId);
     return true;
 }

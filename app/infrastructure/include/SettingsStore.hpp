@@ -29,6 +29,8 @@ class SettingsStore final
     [[nodiscard]] QList<mcp::McpServerConfig> mcpServerConfigs() const;
     bool setMcpServerConfigs(
         const QList<mcp::McpServerConfig>& configurations) const;
+    [[nodiscard]] bool builtInFilesystemMcpEnabled() const;
+    bool setBuiltInFilesystemMcpEnabled(bool enabled) const;
     [[nodiscard]] QStringList alwaysAllowedMcpTools() const;
     bool setAlwaysAllowedMcpTools(const QStringList& qualifiedToolNames) const;
 

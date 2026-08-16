@@ -3,6 +3,7 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QRegularExpression>
 
 namespace qtllm::infrastructure::mcp
 {
@@ -35,6 +36,14 @@ bool McpClientManager::addServer(McpServerConfig config, QString& errorMessage)
     if (config.serverId.isEmpty())
     {
         errorMessage = QStringLiteral("MCP serverId must not be empty.");
+        return false;
+    }
+    static const QRegularExpression validServerId(
+        QStringLiteral("^[A-Za-z0-9_-]+$"));
+    if (!validServerId.match(config.serverId).hasMatch())
+    {
+        errorMessage = QStringLiteral(
+            "MCP serverId may contain letters, numbers, '-' and '_' only.");
         return false;
     }
     if (config.program.trimmed().isEmpty())

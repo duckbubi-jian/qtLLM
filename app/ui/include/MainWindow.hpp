@@ -9,6 +9,8 @@
 
 #include <QByteArray>
 #include <QFutureWatcher>
+#include <QHash>
+#include <QList>
 #include <QMainWindow>
 #include <QString>
 
@@ -32,6 +34,10 @@ class MainWindow final : public QMainWindow
     void openModelDirectory();
     void selectWorkspaceDirectory();
     void openWorkspaceDirectory();
+    void addMcpServer();
+    void setBuiltInFilesystemMcpEnabled(bool enabled);
+    void setExternalMcpServerEnabled(const QString& serverId, bool enabled);
+    void removeExternalMcpServer(const QString& serverId);
     void loadSelectedModel();
     void finishModelPackageVerification();
     void continueModelLoadAfterUnload();
@@ -78,6 +84,7 @@ class MainWindow final : public QMainWindow
     void appendAgentAnswer(const QString& answer);
     void updateAgentState(application::AgentRun::State state);
     void loadMcpServers();
+    void refreshMcpServerMenu();
     void setModelPath(const QString& modelPath);
     void updatePrimaryAction(bool stopMode);
     bool startBuiltInFilesystem(const QString& workspacePath,
@@ -102,6 +109,8 @@ class MainWindow final : public QMainWindow
     QString workspacePath_;
     QByteArray pendingUtf8_;
     QList<chat::Message> conversationMessages_;
+    QList<infrastructure::mcp::McpServerConfig> mcpConfigurations_;
+    QHash<QString, QString> mcpServerErrors_;
     models::ModelSelection pendingModelSelection_;
     models::ModelSelection activeModelSelection_;
     bool verifyingModelPackage_ = false;

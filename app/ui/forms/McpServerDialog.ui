@@ -1,0 +1,221 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>McpServerDialog</class>
+ <widget class="QDialog" name="McpServerDialog">
+  <property name="windowTitle">
+   <string>Add MCP server</string>
+  </property>
+  <property name="minimumSize">
+   <size>
+    <width>520</width>
+    <height>0</height>
+   </size>
+  </property>
+  <layout class="QVBoxLayout" name="dialogLayout">
+   <property name="leftMargin">
+    <number>18</number>
+   </property>
+   <property name="topMargin">
+    <number>18</number>
+   </property>
+   <property name="rightMargin">
+    <number>18</number>
+   </property>
+   <property name="bottomMargin">
+    <number>14</number>
+   </property>
+   <property name="spacing">
+    <number>12</number>
+   </property>
+   <item>
+    <widget class="QTabWidget" name="configurationTabs">
+     <property name="currentIndex">
+      <number>0</number>
+     </property>
+     <widget class="QWidget" name="fastMcpTab">
+      <attribute name="title">
+       <string>FastMCP package</string>
+      </attribute>
+      <layout class="QFormLayout" name="fastMcpForm">
+       <property name="leftMargin">
+        <number>12</number>
+       </property>
+       <property name="topMargin">
+        <number>14</number>
+       </property>
+       <property name="rightMargin">
+        <number>12</number>
+       </property>
+       <property name="bottomMargin">
+        <number>14</number>
+       </property>
+       <property name="horizontalSpacing">
+        <number>12</number>
+       </property>
+       <item row="0" column="0">
+        <widget class="QLabel" name="fastMcpFolderLabel">
+         <property name="text">
+          <string>Package folder</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="1">
+        <layout class="QHBoxLayout" name="fastMcpFolderLayout">
+         <property name="spacing">
+          <number>6</number>
+         </property>
+         <item>
+          <widget class="QLineEdit" name="fastMcpFolderEdit"/>
+         </item>
+         <item>
+          <widget class="QToolButton" name="fastMcpFolderBrowseButton">
+           <property name="toolTip">
+            <string>Select FastMCP package folder</string>
+           </property>
+           <property name="accessibleName">
+            <string>Select FastMCP package folder</string>
+           </property>
+           <property name="autoRaise">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="customTab">
+      <attribute name="title">
+       <string>Custom</string>
+      </attribute>
+      <layout class="QFormLayout" name="serverForm">
+       <property name="leftMargin">
+        <number>12</number>
+       </property>
+       <property name="topMargin">
+        <number>14</number>
+       </property>
+       <property name="rightMargin">
+        <number>12</number>
+       </property>
+       <property name="bottomMargin">
+        <number>14</number>
+       </property>
+       <property name="horizontalSpacing">
+        <number>12</number>
+       </property>
+       <property name="verticalSpacing">
+        <number>10</number>
+       </property>
+       <item row="0" column="0">
+        <widget class="QLabel" name="serverIdLabel">
+         <property name="text">
+          <string>Server ID</string>
+         </property>
+        </widget>
+       </item>
+       <item row="0" column="1">
+        <widget class="QLineEdit" name="serverIdEdit"/>
+       </item>
+       <item row="1" column="0">
+        <widget class="QLabel" name="programLabel">
+         <property name="text">
+          <string>Program</string>
+         </property>
+        </widget>
+       </item>
+       <item row="1" column="1">
+        <layout class="QHBoxLayout" name="programLayout">
+         <property name="spacing">
+          <number>6</number>
+         </property>
+         <item>
+          <widget class="QLineEdit" name="programEdit"/>
+         </item>
+         <item>
+          <widget class="QToolButton" name="programBrowseButton">
+           <property name="toolTip">
+            <string>Select MCP server program</string>
+           </property>
+           <property name="accessibleName">
+            <string>Select MCP server program</string>
+           </property>
+           <property name="autoRaise">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+       <item row="2" column="0">
+        <widget class="QLabel" name="argumentsLabel">
+         <property name="text">
+          <string>Arguments</string>
+         </property>
+        </widget>
+       </item>
+       <item row="2" column="1">
+        <widget class="QLineEdit" name="argumentsEdit"/>
+       </item>
+       <item row="3" column="0">
+        <widget class="QLabel" name="workingDirectoryLabel">
+         <property name="text">
+          <string>Working directory</string>
+         </property>
+        </widget>
+       </item>
+       <item row="3" column="1">
+        <layout class="QHBoxLayout" name="workingDirectoryLayout">
+         <property name="spacing">
+          <number>6</number>
+         </property>
+         <item>
+          <widget class="QLineEdit" name="workingDirectoryEdit"/>
+         </item>
+         <item>
+          <widget class="QToolButton" name="workingDirectoryBrowseButton">
+           <property name="toolTip">
+            <string>Select MCP working directory</string>
+           </property>
+           <property name="accessibleName">
+            <string>Select MCP working directory</string>
+           </property>
+           <property name="autoRaise">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </item>
+      </layout>
+     </widget>
+    </widget>
+   </item>
+   <item>
+    <widget class="QLabel" name="errorLabel">
+     <property name="visible">
+      <bool>false</bool>
+     </property>
+     <property name="styleSheet">
+      <string notr="true">color: #b42318;</string>
+     </property>
+     <property name="wordWrap">
+      <bool>true</bool>
+     </property>
+    </widget>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="orientation">
+      <enum>Qt::Horizontal</enum>
+     </property>
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Save</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

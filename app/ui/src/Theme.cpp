@@ -115,6 +115,28 @@ QWidget#promptComposer[agentMode="true"] {
     background: #f8fbff;
     border-color: #bfdbfe;
 }
+QToolButton#mcpMenuButton {
+    min-width: 28px;
+    max-width: 28px;
+    min-height: 28px;
+    max-height: 28px;
+    padding: 0;
+    color: #334155;
+    background: #ffffff;
+    border: 1px solid #d7dbe0;
+    border-radius: 14px;
+    font-size: 15pt;
+}
+QToolButton#mcpMenuButton:hover {
+    color: #1d4ed8;
+    background: #eff6ff;
+    border-color: #93c5fd;
+}
+QToolButton#mcpMenuButton:disabled {
+    color: #94a3b8;
+    background: #f1f5f9;
+    border-color: #e2e8f0;
+}
 QLabel#workspacePathLink {
     min-height: 24px;
     max-height: 24px;

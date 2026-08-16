@@ -171,6 +171,21 @@ bool SettingsStore::setMcpServerConfigs(
     return true;
 }
 
+bool SettingsStore::builtInFilesystemMcpEnabled() const
+{
+    const QSettings settings(filePath_, QSettings::IniFormat);
+    return settings.value(QStringLiteral("mcp/builtInFilesystemEnabled"), true)
+        .toBool();
+}
+
+bool SettingsStore::setBuiltInFilesystemMcpEnabled(bool enabled) const
+{
+    QSettings settings(filePath_, QSettings::IniFormat);
+    settings.setValue(QStringLiteral("mcp/builtInFilesystemEnabled"), enabled);
+    settings.sync();
+    return settings.status() == QSettings::NoError;
+}
+
 QStringList SettingsStore::alwaysAllowedMcpTools() const
 {
     const QSettings settings(filePath_, QSettings::IniFormat);

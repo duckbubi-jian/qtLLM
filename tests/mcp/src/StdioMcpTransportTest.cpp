@@ -23,6 +23,7 @@ class StdioMcpTransportTest final : public QObject
     void validatesArgumentsBeforeCallingServer();
     void appliesLocalToolPolicy();
     void roundTripsServerConfiguration();
+    void rejectsInvalidServerIds();
     void builtInFilesystemWritesCppFile();
 };
 
@@ -215,6 +216,17 @@ void StdioMcpTransportTest::roundTripsServerConfiguration()
     QCOMPARE(parsed.environment, config.environment);
     QCOMPARE(parsed.toolAllowlist, config.toolAllowlist);
     QCOMPARE(parsed.maxResultBytes, config.maxResultBytes);
+}
+
+void StdioMcpTransportTest::rejectsInvalidServerIds()
+{
+    auto config = testConfig();
+    config.serverId = QStringLiteral("invalid.server");
+    infrastructure::mcp::McpClientManager manager;
+    QString errorMessage;
+    QVERIFY(!manager.addServer(config, errorMessage));
+    QVERIFY(errorMessage.contains(QStringLiteral("serverId")));
+    QVERIFY(manager.serverIds().isEmpty());
 }
 
 void StdioMcpTransportTest::builtInFilesystemWritesCppFile()

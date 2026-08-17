@@ -1,5 +1,6 @@
 #include "AgentPromptBuilder.hpp"
 #include "ToolCatalogBuilder.hpp"
+#include "ToolResultStatus.hpp"
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -57,7 +58,14 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools,
                                               "placeholder tool name. After "
                                               "a tool result, use the result "
                                               "and never repeat an identical "
-                                              "call. A successful tool result "
+                                              "call unless its structured "
+                                              "result explicitly reports "
+                                              "running, pending, or queued. "
+                                              "Only then may you repeat the "
+                                              "same status call until it "
+                                              "reports a terminal state or "
+                                              "the user stops the run. A "
+                                              "successful tool result "
                                               "completes only that operation, "
                                               "not the whole user request. "
                                               "Before final, verify every "
@@ -148,8 +156,12 @@ bool AgentPromptBuilder::requiresCompletionReview(const QString& userRequest)
 chat::Message AgentPromptBuilder::toolResultMessage(
     const agent::ToolResult& result)
 {
-    const auto structured =
+    const auto rawStructured =
         result.result.value(QStringLiteral("structuredContent"));
+    const auto structured = result.structuredContent.isUndefined() ||
+                                    result.structuredContent.isNull()
+                                ? rawStructured
+                                : result.structuredContent;
     QJsonObject payload;
     if (structured.isObject())
         payload = structured.toObject();
@@ -165,18 +177,24 @@ chat::Message AgentPromptBuilder::toolResultMessage(
     payload.insert(QStringLiteral("isError"), result.isError);
     const auto json = QString::fromUtf8(
         QJsonDocument(payload).toJson(QJsonDocument::Compact));
-    const auto guidance =
-        result.isError
-            ? QStringLiteral(
-                  "The tool reported an error. Do not repeat the same call "
-                  "unchanged; correct its arguments or choose another action.")
-            : QStringLiteral(
-                  "This tool call completed successfully, but that proves "
-                  "only this operation is complete. Do not repeat this exact "
-                  "call. Re-read the original user request and continue with "
-                  "the next necessary call if any requested outcome or "
-                  "numbered step remains. Return final only when all requested "
-                  "work is complete.");
+    QString guidance;
+    if (result.isError)
+        guidance = QStringLiteral(
+            "The tool reported an error. Do not repeat the same call "
+            "unchanged; correct its arguments or choose another action.");
+    else if (toolResultIndicatesInProgress(result))
+        guidance = QStringLiteral(
+            "The structured tool result explicitly reports that the "
+            "operation is still in progress. Repeat this exact status call "
+            "as needed until it reports a terminal state, or stop if the "
+            "user cancels. Do not claim the operation is complete yet.");
+    else
+        guidance = QStringLiteral(
+            "This tool call completed successfully, but that proves only "
+            "this operation is complete. Do not repeat this exact call. "
+            "Re-read the original user request and continue with the next "
+            "necessary call if any requested outcome or numbered step "
+            "remains. Return final only when all requested work is complete.");
     return {chat::Role::User,
             QStringLiteral("<tool_result name=\"%1\">%2</tool_result>\n%3")
                 .arg(result.serverId + QLatin1Char('.') + result.toolName, json,

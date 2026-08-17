@@ -2,6 +2,7 @@
 
 #include "AgentContextCompactor.hpp"
 #include "AgentPromptBuilder.hpp"
+#include "ToolResultStatus.hpp"
 
 #include <QDebug>
 #include <QJsonDocument>
@@ -17,6 +18,7 @@ namespace
 constexpr auto maximumDecisionBytes = 65'536;
 constexpr auto minimumDecisionTokens = 256;
 constexpr auto runTimeoutMilliseconds = 120'000;
+constexpr auto minimumPollIntervalMilliseconds = 1'000;
 constexpr qsizetype maximumDetectedCycleLength = 4;
 constexpr qsizetype maximumLoggedEventDataBytes = 4'096;
 
@@ -93,12 +95,16 @@ qsizetype messageCharacters(const QList<chat::Message>& messages)
 AgentController::AgentController(Dependencies dependencies, QObject* parent)
     : QObject(parent),
       dependencies_(std::move(dependencies)),
-      runTimer_(new QTimer(this))
+      runTimer_(new QTimer(this)),
+      pollTimer_(new QTimer(this))
 {
     runTimer_->setSingleShot(true);
     runTimer_->setInterval(runTimeoutMilliseconds);
     connect(runTimer_, &QTimer::timeout, this,
             &AgentController::notifyLongRunning);
+    pollTimer_->setSingleShot(true);
+    connect(pollTimer_, &QTimer::timeout, this,
+            &AgentController::executePendingPoll);
 }
 
 void AgentController::notifyLongRunning()
@@ -133,11 +139,15 @@ bool AgentController::start(const QString& userRequest,
     availableTools_ = tools;
     pendingApproval_.reset();
     activeToolAction_.reset();
+    pendingPollAction_.reset();
     decisionBytes_.clear();
     activeToolCallSignature_.clear();
     lastFailedToolCallSignature_.clear();
+    pollableToolCallSignature_.clear();
+    lastPollCompletedAtMs_ = 0;
     completedToolCallHistory_.clear();
     toolEvidence_.clear();
+    if (pollTimer_->isActive()) pollTimer_->stop();
     if (!runTimer_->isActive()) runTimer_->start();
 
     recordEvent(agent::EventType::RunStarted,
@@ -154,8 +164,12 @@ void AgentController::cancel()
     const auto toolRequestId = activeRun_->toolRequestId;
     setState(AgentRun::State::Cancelled);
     if (runTimer_->isActive()) runTimer_->stop();
+    if (pollTimer_->isActive()) pollTimer_->stop();
     pendingApproval_.reset();
     activeToolAction_.reset();
+    pendingPollAction_.reset();
+    pollableToolCallSignature_.clear();
+    lastPollCompletedAtMs_ = 0;
     activeRun_->toolRequestId.clear();
     if (previousState == AgentRun::State::Deciding &&
         dependencies_.cancelGeneration)
@@ -281,6 +295,16 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
     const auto completedToolAction =
         std::exchange(activeToolAction_, std::nullopt);
     completedToolCallHistory_.append(completedToolCallSignature);
+    if (toolResultIndicatesInProgress(result))
+    {
+        pollableToolCallSignature_ = completedToolCallSignature;
+        lastPollCompletedAtMs_ = QDateTime::currentMSecsSinceEpoch();
+    }
+    else
+    {
+        pollableToolCallSignature_.clear();
+        lastPollCompletedAtMs_ = 0;
+    }
     if (completedToolAction.has_value())
         toolEvidence_.append(AgentContextCompactor::toolEvidence(
             toolEvidence_.size() + 1, *completedToolAction, result));
@@ -401,8 +425,12 @@ void AgentController::handleAction(const agent::Action& action,
         return;
     }
 
+    const auto isStatusPoll = !pollableToolCallSignature_.isEmpty() &&
+                              signature == pollableToolCallSignature_;
     const auto repeatedCallError =
-        repeatedCompletedCallError(completedToolCallHistory_, signature);
+        isStatusPoll
+            ? QString{}
+            : repeatedCompletedCallError(completedToolCallHistory_, signature);
     if (!repeatedCallError.isEmpty())
     {
         retryNoProgressAction(rawAction, repeatedCallError);
@@ -456,8 +484,23 @@ void AgentController::handleAction(const agent::Action& action,
 void AgentController::executeTool(const agent::Action& action)
 {
     if (!activeRun_) return;
+    const auto signature = toolCallSignature(action);
+    if (!pollableToolCallSignature_.isEmpty() &&
+        signature == pollableToolCallSignature_ && lastPollCompletedAtMs_ > 0)
+    {
+        const auto elapsed =
+            QDateTime::currentMSecsSinceEpoch() - lastPollCompletedAtMs_;
+        const auto remaining = minimumPollIntervalMilliseconds - elapsed;
+        if (remaining > 0)
+        {
+            pendingPollAction_ = action;
+            setState(AgentRun::State::ExecutingTool);
+            pollTimer_->start(static_cast<int>(remaining));
+            return;
+        }
+    }
     activeToolAction_ = action;
-    activeToolCallSignature_ = toolCallSignature(action);
+    activeToolCallSignature_ = signature;
     setState(AgentRun::State::ExecutingTool);
     recordEvent(agent::EventType::ToolStarted,
                 QStringLiteral("Tool call started."), action.toolName,
@@ -467,6 +510,13 @@ void AgentController::executeTool(const agent::Action& action)
     if (activeRun_->toolRequestId.isEmpty())
         failRun(QStringLiteral("tool_call_failed"),
                 QStringLiteral("Tool call could not be started."));
+}
+
+void AgentController::executePendingPoll()
+{
+    if (!hasActiveRun() || !pendingPollAction_.has_value()) return;
+    const auto action = std::exchange(pendingPollAction_, std::nullopt);
+    executeTool(*action);
 }
 
 void AgentController::retryInvalidAction(const QByteArray& rawAction,
@@ -575,6 +625,10 @@ void AgentController::completeRun(const QString& content)
     conversationMessages_.append({chat::Role::Assistant, content});
     setState(AgentRun::State::Completed);
     if (runTimer_->isActive()) runTimer_->stop();
+    if (pollTimer_->isActive()) pollTimer_->stop();
+    pendingPollAction_.reset();
+    pollableToolCallSignature_.clear();
+    lastPollCompletedAtMs_ = 0;
     recordEvent(agent::EventType::Completed,
                 QStringLiteral("Agent run completed."));
     emit runFinished(activeRun_->id, state_, {}, {});
@@ -587,8 +641,12 @@ void AgentController::failRun(const QString& code, const QString& message)
     const auto toolRequestId = activeRun_->toolRequestId;
     setState(AgentRun::State::Failed);
     if (runTimer_->isActive()) runTimer_->stop();
+    if (pollTimer_->isActive()) pollTimer_->stop();
     pendingApproval_.reset();
     activeToolAction_.reset();
+    pendingPollAction_.reset();
+    pollableToolCallSignature_.clear();
+    lastPollCompletedAtMs_ = 0;
     activeRun_->toolRequestId.clear();
     if (previousState == AgentRun::State::Deciding &&
         dependencies_.cancelGeneration)

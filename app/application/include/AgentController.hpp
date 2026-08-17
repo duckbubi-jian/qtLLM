@@ -71,6 +71,7 @@ class AgentController final : public QObject
 
    private slots:
     void notifyLongRunning();
+    void executePendingPoll();
 
    signals:
     void stateChanged(qtllm::application::AgentRun::State state);
@@ -110,11 +111,15 @@ class AgentController final : public QObject
     QList<chat::Message> conversationMessages_;
     std::optional<agent::Action> pendingApproval_;
     std::optional<agent::Action> activeToolAction_;
+    std::optional<agent::Action> pendingPollAction_;
     QByteArray decisionBytes_;
     QString activeToolCallSignature_;
     QString lastFailedToolCallSignature_;
+    QString pollableToolCallSignature_;
+    qint64 lastPollCompletedAtMs_ = 0;
     QStringList completedToolCallHistory_;
     QList<QJsonObject> toolEvidence_;
     QTimer* runTimer_ = nullptr;
+    QTimer* pollTimer_ = nullptr;
 };
 }  // namespace qtllm::application

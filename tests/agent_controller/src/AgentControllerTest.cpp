@@ -25,6 +25,8 @@ class AgentControllerTest final : public QObject
     void toolCatalogOmitsWholeDefinitions();
     void rejectsUnchangedRetryAfterToolError();
     void rejectsRepeatedSuccessfulToolCall();
+    void allowsRepeatedPollingUntilTerminalStatus();
+    void cancelsPendingStatusPoll();
     void rejectsAlternatingCompletedToolCycle();
     void reviewsCompletionOnlyOnce();
     void reviewUsesPreparedFinalWhenToolCallRepeats();
@@ -581,6 +583,134 @@ void AgentControllerTest::rejectsRepeatedSuccessfulToolCall()
     QCOMPARE(generationCount, 3);
     QVERIFY(generatedMessages.constLast().content.contains(
         QStringLiteral("already completed successfully")));
+}
+
+void AgentControllerTest::allowsRepeatedPollingUntilTerminalStatus()
+{
+    auto generationCount = 0;
+    auto toolCallCount = 0;
+    QList<chat::Message> generatedMessages;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>& messages,
+                const models::InferencePreset&, int)
+            {
+                ++generationCount;
+                generatedMessages = messages;
+            },
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-%1").arg(toolCallCount);
+            },
+            [](const QString&) {},
+            [](const QString&, const QJsonObject&, QString&) { return true; },
+            [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+
+    const auto action = QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.echo","arguments":{}})");
+    QVERIFY(controller.start(QStringLiteral("Wait for the operation"), {},
+                             {echoTool()}));
+    controller.receiveToken(action);
+    controller.completeGeneration(false);
+    QCOMPARE(toolCallCount, 1);
+
+    agent::ToolResult firstResult;
+    firstResult.requestId = QStringLiteral("tool-request-1");
+    firstResult.serverId = QStringLiteral("fake");
+    firstResult.toolName = QStringLiteral("echo");
+    firstResult.structuredContent =
+        QJsonObject{{QStringLiteral("ok"), true},
+                    {QStringLiteral("result"),
+                     QJsonObject{{QStringLiteral("isRunning"), true},
+                                 {QStringLiteral("progress"), 33.0}}}};
+    controller.receiveToolResult(firstResult);
+    QCOMPARE(generationCount, 2);
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("still in progress")));
+
+    controller.receiveToken(action);
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::ExecutingTool);
+    QCOMPARE(toolCallCount, 1);
+    QTRY_COMPARE_WITH_TIMEOUT(toolCallCount, 2, 2'000);
+
+    agent::ToolResult secondResult;
+    secondResult.requestId = QStringLiteral("tool-request-2");
+    secondResult.serverId = QStringLiteral("fake");
+    secondResult.toolName = QStringLiteral("echo");
+    secondResult.result = {
+        {QStringLiteral("structuredContent"),
+         QJsonObject{{QStringLiteral("status"), QStringLiteral("in_progress")},
+                     {QStringLiteral("progress"), 66.0}}}};
+    controller.receiveToolResult(secondResult);
+
+    controller.receiveToken(action);
+    controller.completeGeneration(false);
+    QCOMPARE(toolCallCount, 2);
+    QTRY_COMPARE_WITH_TIMEOUT(toolCallCount, 3, 2'000);
+
+    agent::ToolResult terminalResult;
+    terminalResult.requestId = QStringLiteral("tool-request-3");
+    terminalResult.serverId = QStringLiteral("fake");
+    terminalResult.toolName = QStringLiteral("echo");
+    terminalResult.structuredContent =
+        QJsonObject{{QStringLiteral("result"),
+                     QJsonObject{{QStringLiteral("isRunning"), false}}}};
+    controller.receiveToolResult(terminalResult);
+
+    controller.receiveToken(action);
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(toolCallCount, 3);
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("already completed successfully")));
+    controller.cancel();
+}
+
+void AgentControllerTest::cancelsPendingStatusPoll()
+{
+    auto toolCallCount = 0;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [](const QList<chat::Message>&, const models::InferencePreset&,
+               int) {},
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-%1").arg(toolCallCount);
+            },
+            [](const QString&) {},
+            [](const QString&, const QJsonObject&, QString&) { return true; },
+            [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+
+    const auto action = QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.echo","arguments":{}})");
+    QVERIFY(controller.start(QStringLiteral("Wait for the operation"), {},
+                             {echoTool()}));
+    controller.receiveToken(action);
+    controller.completeGeneration(false);
+
+    agent::ToolResult runningResult;
+    runningResult.requestId = QStringLiteral("tool-request-1");
+    runningResult.serverId = QStringLiteral("fake");
+    runningResult.toolName = QStringLiteral("echo");
+    runningResult.structuredContent =
+        QJsonObject{{QStringLiteral("isRunning"), true}};
+    controller.receiveToolResult(runningResult);
+
+    controller.receiveToken(action);
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::ExecutingTool);
+    QCOMPARE(toolCallCount, 1);
+    controller.cancel();
+    QCOMPARE(controller.state(), application::AgentRun::State::Cancelled);
+    QTest::qWait(1'100);
+    QCOMPARE(toolCallCount, 1);
 }
 
 void AgentControllerTest::rejectsAlternatingCompletedToolCycle()

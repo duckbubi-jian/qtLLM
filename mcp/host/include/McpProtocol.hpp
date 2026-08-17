@@ -31,6 +31,8 @@ struct McpInitializeResult
 [[nodiscard]] QString latestSupportedProtocolVersion();
 [[nodiscard]] QStringList supportedProtocolVersions();
 [[nodiscard]] bool isSupportedProtocolVersion(const QString& version);
+[[nodiscard]] QStringList supportedLoggingLevels();
+[[nodiscard]] bool isSupportedLoggingLevel(const QString& level);
 [[nodiscard]] bool parseInitializeResult(const QJsonObject& object,
                                          McpInitializeResult& result,
                                          QString& errorMessage);

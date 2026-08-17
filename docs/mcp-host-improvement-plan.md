@@ -2,7 +2,7 @@
 
 ## 文档规则
 
-- 本文只记录尚未完成的工作；完成项直接删除。
+- 本文只记录尚未完成的工作，完成项直接删除。
 - 当前已实现能力以
   [`mcp-protocol-compatibility.md`](mcp-protocol-compatibility.md) 为准。
 - 产品目标是通用、离线优先的 stdio MCP Host，不是 coding agent。
@@ -10,54 +10,12 @@
 
 ## 实施顺序
 
-1. P1：stdio 第三方兼容与剩余协议能力。
 1. P2：真实模型 Agent + MCP 验收。
 1. P3：Server 发起请求。
 1. P4：离线发布级 conformance。
 
-P1 和 P2 完成后，当前 stdio MCP Host 才能视为稳定可用。P3 涉及新的授权
-边界，必须单独评审，不能阻塞 P1 和 P2。
-
-## P1：stdio 第三方兼容与剩余协议能力
-
-### Completion
-
-- 实现 `completion/complete` 请求、结果解析、大小限制和取消。
-- 仅在协商版本和 Server `completions` capability 同时允许时调用。
-- Completion 结果保留 `hasMore` 等协议字段，不自动写入 Agent 上下文。
-- 在 MCP 控制面为 Prompt 参数和 Resource template 参数提供显式补全入口。
-
-### Logging level
-
-- 实现 `logging/setLevel`，日志级别按 Server 独立保存。
-- Server 未声明 logging capability 时拒绝调用，不发送探测请求。
-- 控制面允许选择级别并显示生效或失败状态。
-- 日志仍执行现有的限流、长度限制和敏感信息脱敏。
-
-### Server instructions 边界
-
-- 为 instructions 增加明确的 `serverId` 来源标记和大小预算。
-- 每个 Server 可独立启用或禁用 instructions。
-- instructions 只能作为不可信上下文，不能覆盖本地 ToolPolicy、授权根或系统
-  安全规则。
-- UI 显示实际进入 Agent 上下文的 instructions 来源。
-
-### 第三方 stdio 兼容矩阵
-
-- 建立 native、Python 和 Node 风格 Server 的离线 fixture。
-- 覆盖可执行文件路径、参数引用、工作目录、环境变量 allowlist 和 Windows
-  `.cmd`/包装脚本边界。
-- 覆盖 CRLF、分段 JSON、启动噪声、stderr 风暴、超长消息、异常退出、超时和
-  进程树关闭。
-- 覆盖 `2025-06-18`、`2025-03-26` 和 `2024-11-05` 的能力差异。
-- 形成第三方 Server 配置与故障排查文档，但默认测试不下载或启动联网 Server。
-
-### 验收
-
-- Completion、logging level 和 instructions 均有 Fake transport 与真实 stdio
-  测试。
-- 任一第三方 Server 的异常不会撤销其他 Server 的能力或阻塞 Qt UI。
-- Host 本身不发起 HTTP 请求，不需要公网、凭据或真实模型。
+P2 完成后，当前 stdio MCP Host 才能视为经过真实模型工作流验证。P3 涉及新的授权边界，
+必须单独评审，不能阻塞 P2。
 
 ## P2：真实模型 Agent + MCP 验收
 
@@ -119,7 +77,7 @@ P1 和 P2 完成后，当前 stdio MCP Host 才能视为稳定可用。P3 涉及
 - 在 CPU 与 CUDA 安装目录中运行无网络 stdio 验收。
 - 验证升级保留 Server 配置、工具 allowlist、授权 roots 和逐 Server 设置。
 - 验证应用、worker 或 MCP Server 崩溃不会带崩其他进程，并能清理子进程。
-- 完成第三方 Server 配置迁移、隐私边界和故障排查说明。
+- 完成第三方 Server 配置迁移、隐私边界和发布故障排查说明。
 - 发布包继续排除模型权重、NVIDIA CUDA DLL、用户配置和测试凭据。
 
 ### 验收

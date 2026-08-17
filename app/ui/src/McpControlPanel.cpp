@@ -1,6 +1,7 @@
 #include "McpControlPanel.hpp"
 
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
@@ -10,6 +11,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QRegularExpression>
 #include <QSignalBlocker>
 #include <QSplitter>
 #include <QStyle>
@@ -83,6 +85,29 @@ QToolButton* actionButton(QWidget* parent, const QString& objectName,
     button->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
     button->setToolTip(text);
     return button;
+}
+
+QStringList templateVariables(const QString& uriTemplate)
+{
+    QStringList variables;
+    static const QRegularExpression expression(QStringLiteral("\\{([^}]+)\\}"));
+    auto match = expression.globalMatch(uriTemplate);
+    while (match.hasNext())
+    {
+        auto body = match.next().captured(1);
+        if (!body.isEmpty() && QStringLiteral("+#./;?&").contains(body.front()))
+            body.removeFirst();
+        for (auto variable : body.split(QLatin1Char(','), Qt::SkipEmptyParts))
+        {
+            const auto modifier = variable.indexOf(QLatin1Char(':'));
+            if (modifier >= 0) variable.truncate(modifier);
+            variable.remove(QLatin1Char('*'));
+            variable = variable.trimmed();
+            if (!variable.isEmpty() && !variables.contains(variable))
+                variables.append(variable);
+        }
+    }
+    return variables;
 }
 }  // namespace
 
@@ -182,6 +207,24 @@ McpControlPanel::McpControlPanel(QWidget* parent) : QDialog(parent)
     instructionsEdit_->setObjectName(QStringLiteral("mcpInstructions"));
     instructionsEdit_->setReadOnly(true);
     instructionsEdit_->setMaximumHeight(96);
+    instructionsSourceValue_ = new QLabel(overviewPage);
+    instructionsSourceValue_->setObjectName(
+        QStringLiteral("mcpInstructionsSource"));
+    useInstructionsCheckBox_ =
+        new QCheckBox(tr("Use in agent context"), overviewPage);
+    useInstructionsCheckBox_->setObjectName(
+        QStringLiteral("mcpUseInstructions"));
+    loggingLevelCombo_ = new QComboBox(overviewPage);
+    loggingLevelCombo_->setObjectName(QStringLiteral("mcpLoggingLevel"));
+    loggingLevelCombo_->addItem(tr("Select level"), QString{});
+    for (const auto& level : infrastructure::mcp::supportedLoggingLevels())
+        loggingLevelCombo_->addItem(level, level);
+    loggingStatusValue_ = new QLabel(overviewPage);
+    loggingStatusValue_->setObjectName(QStringLiteral("mcpLoggingStatus"));
+    auto* loggingLayout = new QHBoxLayout;
+    loggingLayout->setContentsMargins(0, 0, 0, 0);
+    loggingLayout->addWidget(loggingLevelCombo_);
+    loggingLayout->addWidget(loggingStatusValue_, 1);
     lastErrorValue_ = new QLabel(overviewPage);
     lastErrorValue_->setObjectName(QStringLiteral("mcpLastError"));
     lastErrorValue_->setWordWrap(true);
@@ -194,6 +237,9 @@ McpControlPanel::McpControlPanel(QWidget* parent) : QDialog(parent)
     overviewLayout->addRow(tr("Configuration"), configurationValue_);
     overviewLayout->addRow(tr("Tool allowlist"), allowlistValue_);
     overviewLayout->addRow(tr("Authorized roots"), rootsValue_);
+    overviewLayout->addRow(tr("Logging level"), loggingLayout);
+    overviewLayout->addRow(tr("Instructions source"), instructionsSourceValue_);
+    overviewLayout->addRow(QString{}, useInstructionsCheckBox_);
     overviewLayout->addRow(tr("Instructions"), instructionsEdit_);
     overviewLayout->addRow(tr("Last error"), lastErrorValue_);
     tabs->addTab(overviewPage, tr("Overview"));
@@ -231,6 +277,30 @@ McpControlPanel::McpControlPanel(QWidget* parent) : QDialog(parent)
     resourcesList_->header()->setSectionResizeMode(
         2, QHeaderView::ResizeToContents);
     resourcesLayout->addWidget(resourcesList_, 1);
+    auto* resourceCompletionLayout = new QHBoxLayout;
+    resourceCompletionArgument_ = new QComboBox(resourcesPage);
+    resourceCompletionArgument_->setObjectName(
+        QStringLiteral("mcpResourceCompletionArgument"));
+    resourceCompletionArgument_->setEditable(true);
+    resourceCompletionArgument_->setMinimumWidth(120);
+    resourceCompletionValue_ = new QLineEdit(resourcesPage);
+    resourceCompletionValue_->setObjectName(
+        QStringLiteral("mcpResourceCompletionValue"));
+    resourceCompletionValue_->setPlaceholderText(tr("Partial value"));
+    completeResourceButton_ =
+        actionButton(resourcesPage, QStringLiteral("completeMcpResourceButton"),
+                     tr("Complete"), QStyle::SP_DialogApplyButton);
+    resourceCompletionLayout->addWidget(resourceCompletionArgument_);
+    resourceCompletionLayout->addWidget(resourceCompletionValue_, 1);
+    resourceCompletionLayout->addWidget(completeResourceButton_);
+    resourcesLayout->addLayout(resourceCompletionLayout);
+    resourceCompletionResultEdit_ = new QPlainTextEdit(resourcesPage);
+    resourceCompletionResultEdit_->setObjectName(
+        QStringLiteral("mcpResourceCompletionResult"));
+    resourceCompletionResultEdit_->setReadOnly(true);
+    resourceCompletionResultEdit_->setMaximumBlockCount(200);
+    resourceCompletionResultEdit_->setMaximumHeight(90);
+    resourcesLayout->addWidget(resourceCompletionResultEdit_);
     resourceResultEdit_ = new QPlainTextEdit(resourcesPage);
     resourceResultEdit_->setObjectName(QStringLiteral("mcpResourceResult"));
     resourceResultEdit_->setReadOnly(true);
@@ -276,6 +346,29 @@ McpControlPanel::McpControlPanel(QWidget* parent) : QDialog(parent)
     promptArgumentsLayout->addWidget(promptArgumentsLabel);
     promptArgumentsLayout->addWidget(promptArgumentsEdit_, 1);
     promptsLayout->addLayout(promptArgumentsLayout);
+    auto* promptCompletionLayout = new QHBoxLayout;
+    promptCompletionArgument_ = new QComboBox(promptsPage);
+    promptCompletionArgument_->setObjectName(
+        QStringLiteral("mcpPromptCompletionArgument"));
+    promptCompletionArgument_->setMinimumWidth(120);
+    promptCompletionValue_ = new QLineEdit(promptsPage);
+    promptCompletionValue_->setObjectName(
+        QStringLiteral("mcpPromptCompletionValue"));
+    promptCompletionValue_->setPlaceholderText(tr("Partial value"));
+    completePromptButton_ =
+        actionButton(promptsPage, QStringLiteral("completeMcpPromptButton"),
+                     tr("Complete"), QStyle::SP_DialogApplyButton);
+    promptCompletionLayout->addWidget(promptCompletionArgument_);
+    promptCompletionLayout->addWidget(promptCompletionValue_, 1);
+    promptCompletionLayout->addWidget(completePromptButton_);
+    promptsLayout->addLayout(promptCompletionLayout);
+    promptCompletionResultEdit_ = new QPlainTextEdit(promptsPage);
+    promptCompletionResultEdit_->setObjectName(
+        QStringLiteral("mcpPromptCompletionResult"));
+    promptCompletionResultEdit_->setReadOnly(true);
+    promptCompletionResultEdit_->setMaximumBlockCount(200);
+    promptCompletionResultEdit_->setMaximumHeight(90);
+    promptsLayout->addWidget(promptCompletionResultEdit_);
     promptResultEdit_ = new QPlainTextEdit(promptsPage);
     promptResultEdit_->setObjectName(QStringLiteral("mcpPromptResult"));
     promptResultEdit_->setReadOnly(true);
@@ -347,6 +440,22 @@ McpControlPanel::McpControlPanel(QWidget* parent) : QDialog(parent)
                     emit serverEnabledChanged(server->serverId, server->builtIn,
                                               enabled);
             });
+    connect(useInstructionsCheckBox_, &QCheckBox::toggled, this,
+            [this](bool enabled)
+            {
+                if (const auto* server = selectedServer())
+                    emit instructionsEnabledChanged(server->serverId,
+                                                    server->builtIn, enabled);
+            });
+    connect(loggingLevelCombo_, &QComboBox::activated, this,
+            [this](int index)
+            {
+                const auto* server = selectedServer();
+                const auto level =
+                    loggingLevelCombo_->itemData(index).toString();
+                if (server != nullptr && !level.isEmpty())
+                    emit loggingLevelRequested(server->serverId, level);
+            });
     connect(startButton_, &QToolButton::clicked, this,
             [this]
             {
@@ -378,28 +487,44 @@ McpControlPanel::McpControlPanel(QWidget* parent) : QDialog(parent)
                     emit refreshToolsRequested(server->serverId);
             });
     connect(resourcesList_, &QTreeWidget::currentItemChanged, this,
-            [this](QTreeWidgetItem*, QTreeWidgetItem*)
-            { updateCatalogActions(); });
-    connect(promptsList_, &QTreeWidget::currentItemChanged, this,
             [this](QTreeWidgetItem* current, QTreeWidgetItem*)
             {
-                QJsonObject arguments;
-                if (current != nullptr)
-                {
-                    const auto* server = selectedServer();
-                    const auto name = current->data(0, Qt::UserRole).toString();
-                    if (server != nullptr)
-                        for (const auto& prompt : server->prompts)
-                            if (prompt.name == name)
-                                for (const auto& argument : prompt.arguments)
-                                    if (argument.required)
-                                        arguments.insert(argument.name,
-                                                         QString{});
-                }
-                promptArgumentsEdit_->setText(QString::fromUtf8(
-                    QJsonDocument(arguments).toJson(QJsonDocument::Compact)));
+                const QSignalBlocker blocker(resourceCompletionArgument_);
+                resourceCompletionArgument_->clear();
+                if (current != nullptr &&
+                    current->data(0, Qt::UserRole + 1).toBool())
+                    resourceCompletionArgument_->addItems(templateVariables(
+                        current->data(0, Qt::UserRole).toString()));
                 updateCatalogActions();
             });
+    connect(resourceCompletionArgument_, &QComboBox::currentTextChanged, this,
+            [this] { updateCatalogActions(); });
+    connect(
+        promptsList_, &QTreeWidget::currentItemChanged, this,
+        [this](QTreeWidgetItem* current, QTreeWidgetItem*)
+        {
+            QJsonObject arguments;
+            const QSignalBlocker completionBlocker(promptCompletionArgument_);
+            promptCompletionArgument_->clear();
+            if (current != nullptr)
+            {
+                const auto* server = selectedServer();
+                const auto name = current->data(0, Qt::UserRole).toString();
+                if (server != nullptr)
+                    for (const auto& prompt : server->prompts)
+                        if (prompt.name == name)
+                            for (const auto& argument : prompt.arguments)
+                            {
+                                promptCompletionArgument_->addItem(
+                                    argument.name);
+                                if (argument.required)
+                                    arguments.insert(argument.name, QString{});
+                            }
+            }
+            promptArgumentsEdit_->setText(QString::fromUtf8(
+                QJsonDocument(arguments).toJson(QJsonDocument::Compact)));
+            updateCatalogActions();
+        });
     connect(readResourceButton_, &QToolButton::clicked, this,
             [this]
             {
@@ -421,6 +546,18 @@ McpControlPanel::McpControlPanel(QWidget* parent) : QDialog(parent)
                         resource->data(0, Qt::UserRole).toString(),
                         !resource->data(0, Qt::UserRole + 2).toBool());
             });
+    connect(completeResourceButton_, &QToolButton::clicked, this,
+            [this]
+            {
+                const auto* server = selectedServer();
+                const auto* resource = resourcesList_->currentItem();
+                if (server == nullptr || resource == nullptr) return;
+                emit completeResourceTemplateRequested(
+                    server->serverId,
+                    resource->data(0, Qt::UserRole).toString(),
+                    resourceCompletionArgument_->currentText().trimmed(),
+                    resourceCompletionValue_->text());
+            });
     connect(getPromptButton_, &QToolButton::clicked, this,
             [this]
             {
@@ -440,6 +577,27 @@ McpControlPanel::McpControlPanel(QWidget* parent) : QDialog(parent)
                 emit getPromptRequested(
                     server->serverId, prompt->data(0, Qt::UserRole).toString(),
                     arguments.object());
+            });
+    connect(completePromptButton_, &QToolButton::clicked, this,
+            [this]
+            {
+                const auto* server = selectedServer();
+                const auto* prompt = promptsList_->currentItem();
+                if (server == nullptr || prompt == nullptr) return;
+                QJsonParseError error;
+                const auto arguments = QJsonDocument::fromJson(
+                    promptArgumentsEdit_->text().toUtf8(), &error);
+                if (error.error != QJsonParseError::NoError ||
+                    !arguments.isObject())
+                {
+                    promptCompletionResultEdit_->setPlainText(
+                        tr("Prompt arguments must be a JSON object."));
+                    return;
+                }
+                emit completePromptRequested(
+                    server->serverId, prompt->data(0, Qt::UserRole).toString(),
+                    promptCompletionArgument_->currentText(),
+                    promptCompletionValue_->text(), arguments.object());
             });
 
     updateDetails();
@@ -483,6 +641,23 @@ void McpControlPanel::showPromptResult(
                 QJsonDocument(message.content).toJson(QJsonDocument::Compact)));
     }
     promptResultEdit_->setPlainText(text.join(QStringLiteral("\n\n")));
+}
+
+void McpControlPanel::showCompletionResult(
+    const infrastructure::mcp::McpCompletionResult& result)
+{
+    const auto* server = selectedServer();
+    if (server == nullptr || server->serverId != result.serverId) return;
+    QStringList text = result.values;
+    QString summary = tr("%n values", nullptr, result.values.size());
+    if (result.totalProvided) summary += tr("; %1 total").arg(result.total);
+    if (result.hasMoreProvided && result.hasMore)
+        summary += tr("; more available");
+    text.prepend(summary);
+    auto* output = result.referenceType == QLatin1String("ref/resource")
+                       ? resourceCompletionResultEdit_
+                       : promptCompletionResultEdit_;
+    output->setPlainText(text.join(QLatin1Char('\n')));
 }
 
 void McpControlPanel::setServers(
@@ -576,8 +751,35 @@ void McpControlPanel::updateDetails()
                                            : QString{});
     allowlistValue_->setText(hasServer ? server->allowlist : QString{});
     rootsValue_->setText(hasServer ? server->authorizedRoots : QString{});
+    const QSignalBlocker instructionsBlocker(useInstructionsCheckBox_);
+    useInstructionsCheckBox_->setChecked(hasServer && server->useInstructions);
+    useInstructionsCheckBox_->setEnabled(hasServer && server->available &&
+                                         server->controlsEnabled);
+    instructionsSourceValue_->setText(hasServer ? server->instructionsSource
+                                                : QString{});
     instructionsEdit_->setPlainText(hasServer ? server->snapshot.instructions
                                               : QString{});
+    const QSignalBlocker loggingBlocker(loggingLevelCombo_);
+    auto loggingIndex =
+        hasServer ? loggingLevelCombo_->findData(server->loggingLevel) : 0;
+    if (loggingIndex < 0) loggingIndex = 0;
+    loggingLevelCombo_->setCurrentIndex(loggingIndex);
+    if (!hasServer)
+        loggingStatusValue_->clear();
+    else if (!server->snapshot.capabilities.logging)
+        loggingStatusValue_->setText(tr("Not supported"));
+    else if (!server->loggingLevel.isEmpty() &&
+             server->appliedLoggingLevel == server->loggingLevel)
+        loggingStatusValue_->setText(
+            tr("Applied: %1").arg(server->appliedLoggingLevel));
+    else if (!server->loggingLevel.isEmpty())
+        loggingStatusValue_->setText(
+            tr("Pending: %1").arg(server->loggingLevel));
+    else if (!server->appliedLoggingLevel.isEmpty())
+        loggingStatusValue_->setText(
+            tr("Applied: %1").arg(server->appliedLoggingLevel));
+    else
+        loggingStatusValue_->setText(tr("Not configured"));
     auto error = QString{};
     if (hasServer && !server->snapshot.lastErrorMessage.isEmpty())
         error = server->snapshot.lastErrorCode.isEmpty()
@@ -653,6 +855,9 @@ void McpControlPanel::updateDetails()
     restartButton_->setEnabled(controls && !busy);
     pingButton_->setEnabled(controls && (state == McpServerState::Ready ||
                                          state == McpServerState::Degraded));
+    loggingLevelCombo_->setEnabled(
+        controls && server->snapshot.capabilities.logging &&
+        (state == McpServerState::Ready || state == McpServerState::Degraded));
     refreshButton_->setEnabled(
         controls &&
         (server->snapshot.capabilities.tools ||
@@ -685,9 +890,24 @@ void McpControlPanel::updateCatalogActions()
     subscribeResourceButton_->setText(subscribed ? tr("Unsubscribe")
                                                  : tr("Subscribe"));
     subscribeResourceButton_->setToolTip(subscribeResourceButton_->text());
+    const auto resourceCompletable =
+        ready && server->snapshot.capabilities.completions &&
+        resource != nullptr && resource->data(0, Qt::UserRole + 1).toBool();
+    resourceCompletionArgument_->setEnabled(resourceCompletable);
+    resourceCompletionValue_->setEnabled(resourceCompletable);
+    completeResourceButton_->setEnabled(
+        resourceCompletable &&
+        !resourceCompletionArgument_->currentText().trimmed().isEmpty());
     getPromptButton_->setEnabled(ready &&
                                  promptsList_->currentItem() != nullptr);
     promptArgumentsEdit_->setEnabled(ready &&
                                      promptsList_->currentItem() != nullptr);
+    const auto promptCompletable = ready &&
+                                   server->snapshot.capabilities.completions &&
+                                   promptsList_->currentItem() != nullptr &&
+                                   promptCompletionArgument_->count() > 0;
+    promptCompletionArgument_->setEnabled(promptCompletable);
+    promptCompletionValue_->setEnabled(promptCompletable);
+    completePromptButton_->setEnabled(promptCompletable);
 }
 }  // namespace qtllm::ui

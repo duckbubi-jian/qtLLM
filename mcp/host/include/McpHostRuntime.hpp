@@ -51,6 +51,8 @@ class McpHostRuntime final : public QObject
     [[nodiscard]] std::optional<McpServerSnapshot> serverSnapshot(
         const QString& serverId) const;
     [[nodiscard]] QList<McpServerSnapshot> serverSnapshots() const;
+    bool setUseInstructions(const QString& serverId, bool enabled,
+                            QString& errorMessage);
 
     void startServer(const QString& serverId);
     void stopServer(const QString& serverId);
@@ -65,6 +67,15 @@ class McpHostRuntime final : public QObject
     QString listPrompts(const QString& serverId);
     QString getPrompt(const QString& serverId, const QString& name,
                       const QJsonObject& arguments = {});
+    QString completePrompt(const QString& serverId, const QString& promptName,
+                           const QString& argumentName, const QString& value,
+                           const QJsonObject& contextArguments = {});
+    QString completeResourceTemplate(const QString& serverId,
+                                     const QString& uriTemplate,
+                                     const QString& argumentName,
+                                     const QString& value,
+                                     const QJsonObject& contextArguments = {});
+    QString setLoggingLevel(const QString& serverId, const QString& level);
     QString callTool(const QString& qualifiedToolName,
                      const QJsonObject& arguments);
     void cancel(const QString& requestId);
@@ -98,6 +109,9 @@ class McpHostRuntime final : public QObject
         const QString& serverId,
         const QList<qtllm::infrastructure::mcp::McpPromptDefinition>& prompts);
     void promptReady(const qtllm::infrastructure::mcp::McpPromptResult& result);
+    void completionReady(
+        const qtllm::infrastructure::mcp::McpCompletionResult& result);
+    void loggingLevelChanged(const QString& serverId, const QString& level);
     void rootsRequested(
         const QString& serverId,
         const QList<qtllm::infrastructure::mcp::McpRoot>& roots);
@@ -132,6 +146,8 @@ class McpHostRuntime final : public QObject
         UnsubscribeResource,
         ListPrompts,
         GetPrompt,
+        Complete,
+        SetLoggingLevel,
         Ping
     };
     struct PendingRequest
@@ -145,6 +161,7 @@ class McpHostRuntime final : public QObject
         QList<McpResourceTemplateDefinition> resourceTemplates;
         QList<McpPromptDefinition> prompts;
         QString subject;
+        QString referenceType;
         qint64 startedAtMs = 0;
     };
     struct ServerConnection
@@ -174,6 +191,9 @@ class McpHostRuntime final : public QObject
                              const QJsonObject& params);
     QString invalidRequest(const QString& serverId, const QString& method,
                            const QString& message);
+    QString complete(const QString& serverId, const QString& referenceType,
+                     const QString& reference, const QString& argumentName,
+                     const QString& value, const QJsonObject& contextArguments);
     void handleResponse(const QString& serverId, const QString& requestId,
                         const QString& method, const QJsonObject& result);
     void handleFailure(const QString& serverId, const QString& requestId,

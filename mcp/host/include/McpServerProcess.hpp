@@ -17,7 +17,9 @@ struct McpServerConfig
     QString workingDirectory;
     QStringList toolAllowlist;
     QStringList authorizedRoots;
+    QString loggingLevel;
     bool enabled = true;
+    bool useInstructions = true;
     int initializeTimeoutMs = 10'000;
     int requestTimeoutMs = 30'000;
     qsizetype maxResultBytes = 65'536;

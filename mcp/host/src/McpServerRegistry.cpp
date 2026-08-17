@@ -198,6 +198,17 @@ bool McpServerRegistry::replaceRoots(const QString& serverId,
     return true;
 }
 
+bool McpServerRegistry::setLoggingLevel(const QString& serverId,
+                                        const QString& level)
+{
+    const auto iterator = servers_.find(serverId);
+    if (iterator == servers_.end()) return false;
+    if (iterator->loggingLevel == level) return true;
+    iterator->loggingLevel = level;
+    ++iterator->capabilityRevision;
+    return true;
+}
+
 bool McpServerRegistry::revokeCapabilities(const QString& serverId)
 {
     const auto iterator = servers_.find(serverId);
@@ -212,6 +223,7 @@ bool McpServerRegistry::revokeCapabilities(const QString& serverId)
     iterator->capabilities = {};
     iterator->serverInfo = {};
     iterator->instructions.clear();
+    iterator->loggingLevel.clear();
     iterator->toolCount = 0;
     iterator->resourceCount = 0;
     iterator->resourceTemplateCount = 0;

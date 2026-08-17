@@ -1,5 +1,7 @@
 #include "McpServerProcess.hpp"
 
+#include "McpProtocol.hpp"
+
 #include <QJsonArray>
 #include <QProcessEnvironment>
 
@@ -22,6 +24,8 @@ QJsonObject serializeServerConfig(const McpServerConfig& config)
              QJsonArray::fromStringList(config.toolAllowlist)},
             {QStringLiteral("authorizedRoots"),
              QJsonArray::fromStringList(config.authorizedRoots)},
+            {QStringLiteral("loggingLevel"), config.loggingLevel},
+            {QStringLiteral("useInstructions"), config.useInstructions},
             {QStringLiteral("initializeTimeoutMs"), config.initializeTimeoutMs},
             {QStringLiteral("requestTimeoutMs"), config.requestTimeoutMs},
             {QStringLiteral("maxResultBytes"), config.maxResultBytes}};
@@ -37,12 +41,17 @@ bool parseServerConfig(const QJsonObject& object, McpServerConfig& config,
     const auto allowlist = object.value(QStringLiteral("toolAllowlist"));
     const auto authorizedRoots =
         object.value(QStringLiteral("authorizedRoots"));
+    const auto loggingLevel = object.value(QStringLiteral("loggingLevel"));
+    const auto useInstructions =
+        object.value(QStringLiteral("useInstructions"));
     if (!serverId.isString() || serverId.toString().trimmed().isEmpty() ||
         !program.isString() || program.toString().trimmed().isEmpty() ||
         (!arguments.isUndefined() && !arguments.isArray()) ||
         (!environment.isUndefined() && !environment.isObject()) ||
         (!allowlist.isUndefined() && !allowlist.isArray()) ||
-        (!authorizedRoots.isUndefined() && !authorizedRoots.isArray()))
+        (!authorizedRoots.isUndefined() && !authorizedRoots.isArray()) ||
+        (!loggingLevel.isUndefined() && !loggingLevel.isString()) ||
+        (!useInstructions.isUndefined() && !useInstructions.isBool()))
     {
         errorMessage = QStringLiteral("Invalid MCP server configuration.");
         return false;
@@ -54,6 +63,8 @@ bool parseServerConfig(const QJsonObject& object, McpServerConfig& config,
     parsed.workingDirectory =
         object.value(QStringLiteral("workingDirectory")).toString();
     parsed.enabled = object.value(QStringLiteral("enabled")).toBool(true);
+    parsed.loggingLevel = loggingLevel.toString();
+    parsed.useInstructions = useInstructions.toBool(true);
     auto readStringArray =
         [&errorMessage](const QJsonValue& value, QStringList& target)
     {
@@ -102,6 +113,12 @@ bool parseServerConfig(const QJsonObject& object, McpServerConfig& config,
     {
         errorMessage =
             QStringLiteral("MCP configuration limit is out of range.");
+        return false;
+    }
+    if (!parsed.loggingLevel.isEmpty() &&
+        !isSupportedLoggingLevel(parsed.loggingLevel))
+    {
+        errorMessage = QStringLiteral("Invalid MCP logging level.");
         return false;
     }
     config = std::move(parsed);

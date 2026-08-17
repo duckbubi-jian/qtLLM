@@ -1,4 +1,5 @@
 #include <QCoreApplication>
+#include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -7,6 +8,28 @@
 
 namespace
 {
+QByteArray outputLineEnding = QByteArrayLiteral("\n");
+bool fragmentOutput = false;
+
+void writeMessage(QFile& output, const QJsonObject& object)
+{
+    const auto data = QJsonDocument(object).toJson(QJsonDocument::Compact);
+    if (fragmentOutput && data.size() > 1)
+    {
+        const auto split = data.size() / 2;
+        output.write(data.first(split));
+        output.flush();
+        QThread::msleep(5);
+        output.write(data.sliced(split));
+    }
+    else
+    {
+        output.write(data);
+    }
+    output.write(outputLineEnding);
+    output.flush();
+}
+
 void writeResponse(QFile& output, const QJsonValue& id,
                    const QJsonObject& result)
 {
@@ -14,8 +37,7 @@ void writeResponse(QFile& output, const QJsonValue& id,
         QJsonObject{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
                     {QStringLiteral("id"), id},
                     {QStringLiteral("result"), result}};
-    output.write(QJsonDocument(response).toJson(QJsonDocument::Compact) + '\n');
-    output.flush();
+    writeMessage(output, response);
 }
 
 void writeError(QFile& output, const QJsonValue& id, int code,
@@ -27,8 +49,7 @@ void writeError(QFile& output, const QJsonValue& id, int code,
                     {QStringLiteral("error"),
                      QJsonObject{{QStringLiteral("code"), code},
                                  {QStringLiteral("message"), message}}}};
-    output.write(QJsonDocument(response).toJson(QJsonDocument::Compact) + '\n');
-    output.flush();
+    writeMessage(output, response);
 }
 
 void writeNotification(QFile& output, const QString& method,
@@ -38,9 +59,7 @@ void writeNotification(QFile& output, const QString& method,
         QJsonObject{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
                     {QStringLiteral("method"), method},
                     {QStringLiteral("params"), params}};
-    output.write(QJsonDocument(notification).toJson(QJsonDocument::Compact) +
-                 '\n');
-    output.flush();
+    writeMessage(output, notification);
 }
 }  // namespace
 
@@ -56,18 +75,65 @@ int main(int argc, char* argv[])
         arguments.contains(QStringLiteral("--request-roots"));
     const auto requestPing =
         arguments.contains(QStringLiteral("--request-ping"));
+    outputLineEnding = arguments.contains(QStringLiteral("--crlf"))
+                           ? QByteArrayLiteral("\r\n")
+                           : QByteArrayLiteral("\n");
+    fragmentOutput = arguments.contains(QStringLiteral("--fragment-output"));
+    auto exitCode = exitImmediately ? 0 : -1;
+    const auto exitCodePrefix = QStringLiteral("--exit-code=");
+    auto stderrLines = 0;
+    const auto stderrPrefix = QStringLiteral("--stderr-lines=");
     QString protocolVersion;
     const auto protocolVersionPrefix = QStringLiteral("--protocol-version=");
     for (const auto& argument : arguments)
+    {
         if (argument.startsWith(protocolVersionPrefix))
             protocolVersion = argument.mid(protocolVersionPrefix.size());
+        else if (argument.startsWith(exitCodePrefix))
+            exitCode = argument.mid(exitCodePrefix.size()).toInt();
+        else if (argument.startsWith(stderrPrefix))
+            stderrLines = argument.mid(stderrPrefix.size()).toInt();
+    }
 
     QFile input;
     QFile output;
+    QFile error;
     if (!input.open(stdin, QIODevice::ReadOnly) ||
-        !output.open(stdout, QIODevice::WriteOnly | QIODevice::Unbuffered))
+        !output.open(stdout, QIODevice::WriteOnly | QIODevice::Unbuffered) ||
+        !error.open(stderr, QIODevice::WriteOnly | QIODevice::Unbuffered))
         return 2;
-    if (exitImmediately) return 0;
+    if (exitCode >= 0) return exitCode;
+    for (const auto& argument : arguments)
+    {
+        if (argument.startsWith(QStringLiteral("--require-cwd=")) &&
+            QDir::cleanPath(argument.mid(14)) !=
+                QDir::cleanPath(QDir::currentPath()))
+            return 4;
+        if (argument.startsWith(QStringLiteral("--require-env=")))
+        {
+            const auto requirement = argument.mid(14);
+            const auto separator = requirement.indexOf(QLatin1Char('='));
+            const auto variableName = requirement.left(separator).toUtf8();
+            if (separator <= 0 ||
+                qEnvironmentVariable(variableName.constData()) !=
+                    requirement.mid(separator + 1))
+                return 5;
+        }
+    }
+    for (auto index = 0; index < stderrLines; ++index)
+        error.write(QByteArrayLiteral("fixture diagnostic line\n"));
+    error.flush();
+    if (arguments.contains(QStringLiteral("--startup-noise")))
+    {
+        output.write(QByteArrayLiteral("starting third-party server") +
+                     outputLineEnding);
+        output.flush();
+    }
+    if (arguments.contains(QStringLiteral("--oversized-stdout")))
+    {
+        output.write(QByteArray(1'048'577, 'x'));
+        output.flush();
+    }
 
     while (!input.atEnd())
     {
@@ -153,7 +219,9 @@ int main(int argc, char* argv[])
                  QJsonObject{{QStringLiteral("subscribe"), true},
                              {QStringLiteral("listChanged"), true}}},
                 {QStringLiteral("prompts"),
-                 QJsonObject{{QStringLiteral("listChanged"), true}}}};
+                 QJsonObject{{QStringLiteral("listChanged"), true}}},
+                {QStringLiteral("logging"), QJsonObject{}},
+                {QStringLiteral("completions"), QJsonObject{}}};
             if (!noToolsCapability)
                 capabilities.insert(QStringLiteral("tools"), QJsonObject{});
             writeResponse(
@@ -336,6 +404,27 @@ int main(int argc, char* argv[])
                            {QStringLiteral("type"), QStringLiteral("text")},
                            {QStringLiteral("text"),
                             QStringLiteral("Summarize %1").arg(topic)}}}}}}});
+        }
+        else if (method == QStringLiteral("completion/complete"))
+        {
+            const auto params =
+                request.value(QStringLiteral("params")).toObject();
+            const auto partial = params.value(QStringLiteral("argument"))
+                                     .toObject()
+                                     .value(QStringLiteral("value"))
+                                     .toString();
+            writeResponse(
+                output, id,
+                {{QStringLiteral("completion"),
+                  QJsonObject{{QStringLiteral("values"),
+                               QJsonArray{partial + QStringLiteral("-one"),
+                                          partial + QStringLiteral("-two")}},
+                              {QStringLiteral("total"), 2},
+                              {QStringLiteral("hasMore"), false}}}});
+        }
+        else if (method == QStringLiteral("logging/setLevel"))
+        {
+            writeResponse(output, id, {});
         }
         else
         {

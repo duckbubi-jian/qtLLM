@@ -42,6 +42,9 @@ class MainWindow final : public QMainWindow
     void addMcpServer();
     void setBuiltInFilesystemMcpEnabled(bool enabled);
     void setExternalMcpServerEnabled(const QString& serverId, bool enabled);
+    void setMcpInstructionsEnabled(const QString& serverId, bool builtIn,
+                                   bool enabled);
+    void setMcpLoggingLevel(const QString& serverId, const QString& level);
     void removeExternalMcpServer(const QString& serverId);
     void showMcpControlPanel();
     void startMcpServer(const QString& serverId);
@@ -54,6 +57,13 @@ class MainWindow final : public QMainWindow
                                   bool subscribe);
     void getMcpPrompt(const QString& serverId, const QString& name,
                       const QJsonObject& arguments);
+    void completeMcpPrompt(const QString& serverId, const QString& name,
+                           const QString& argumentName, const QString& value,
+                           const QJsonObject& contextArguments);
+    void completeMcpResourceTemplate(const QString& serverId,
+                                     const QString& uriTemplate,
+                                     const QString& argumentName,
+                                     const QString& value);
     void loadSelectedModel();
     void finishModelPackageVerification();
     void continueModelLoadAfterUnload();
@@ -132,6 +142,7 @@ class MainWindow final : public QMainWindow
     QList<infrastructure::mcp::McpServerConfig> mcpConfigurations_;
     QHash<QString, QString> mcpServerErrors_;
     QHash<QString, QStringList> mcpDiagnostics_;
+    QHash<QString, QString> pendingMcpLoggingLevels_;
     QSet<QString> pendingMcpRestarts_;
     models::ModelSelection pendingModelSelection_;
     models::ModelSelection activeModelSelection_;

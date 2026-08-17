@@ -8,6 +8,7 @@
 #include <QJsonDocument>
 #include <QRegularExpression>
 
+#include <algorithm>
 #include <utility>
 
 namespace qtllm::infrastructure::mcp
@@ -70,6 +71,12 @@ bool validateServerConfig(const McpServerConfig& config, QString& errorMessage)
     {
         errorMessage =
             QStringLiteral("MCP workingDirectory must be an absolute path.");
+        return false;
+    }
+    if (!config.loggingLevel.isEmpty() &&
+        !isSupportedLoggingLevel(config.loggingLevel))
+    {
+        errorMessage = QStringLiteral("Invalid MCP logging level.");
         return false;
     }
     return true;
@@ -191,6 +198,7 @@ McpHostRuntime::McpHostRuntime(TransportFactory transportFactory,
     qRegisterMetaType<McpResourceReadResult>();
     qRegisterMetaType<McpPromptDefinition>();
     qRegisterMetaType<McpPromptResult>();
+    qRegisterMetaType<McpCompletionResult>();
     qRegisterMetaType<McpRoot>();
     notificationClock_.start();
 }
@@ -332,19 +340,27 @@ bool McpHostRuntime::isResourceSubscribed(const QString& serverId,
 
 QString McpHostRuntime::agentInstructions() const
 {
-    QStringList instructions;
+    QString combined;
     for (const auto& snapshot : serverRegistry_.snapshots())
     {
+        const auto connection = connections_.constFind(snapshot.serverId);
         if ((snapshot.state != McpServerState::Ready &&
              snapshot.state != McpServerState::Degraded) ||
+            connection == connections_.constEnd() ||
+            !connection->config.useInstructions ||
             snapshot.instructions.trimmed().isEmpty())
             continue;
-        instructions.append(QStringLiteral("%1: %2").arg(
-            snapshot.serverId,
-            snapshot.instructions.trimmed().left(maximumServerInstructions)));
+        const auto prefix = snapshot.serverId + QStringLiteral(": ");
+        const auto separatorCharacters = combined.isEmpty() ? 0 : 1;
+        const auto remaining = maximumCombinedInstructions - combined.size() -
+                               separatorCharacters - prefix.size();
+        if (remaining <= 0) break;
+        if (!combined.isEmpty()) combined.append(QLatin1Char('\n'));
+        combined.append(prefix);
+        combined.append(snapshot.instructions.trimmed().left(
+            qMin(maximumServerInstructions, remaining)));
     }
-    return instructions.join(QLatin1Char('\n'))
-        .left(maximumCombinedInstructions);
+    return combined;
 }
 
 const ToolRegistry& McpHostRuntime::registry() const
@@ -361,6 +377,20 @@ std::optional<McpServerSnapshot> McpHostRuntime::serverSnapshot(
 QList<McpServerSnapshot> McpHostRuntime::serverSnapshots() const
 {
     return serverRegistry_.snapshots();
+}
+
+bool McpHostRuntime::setUseInstructions(const QString& serverId, bool enabled,
+                                        QString& errorMessage)
+{
+    const auto iterator = connections_.find(serverId);
+    if (iterator == connections_.end())
+    {
+        errorMessage = QStringLiteral("Unknown MCP server: %1").arg(serverId);
+        return false;
+    }
+    iterator->config.useInstructions = enabled;
+    errorMessage.clear();
+    return true;
 }
 
 void McpHostRuntime::startServer(const QString& serverId)
@@ -763,6 +793,147 @@ QString McpHostRuntime::getPrompt(const QString& serverId, const QString& name,
     return requestId;
 }
 
+QString McpHostRuntime::completePrompt(const QString& serverId,
+                                       const QString& promptName,
+                                       const QString& argumentName,
+                                       const QString& value,
+                                       const QJsonObject& contextArguments)
+{
+    return complete(serverId, QStringLiteral("ref/prompt"), promptName,
+                    argumentName, value, contextArguments);
+}
+
+QString McpHostRuntime::completeResourceTemplate(
+    const QString& serverId, const QString& uriTemplate,
+    const QString& argumentName, const QString& value,
+    const QJsonObject& contextArguments)
+{
+    return complete(serverId, QStringLiteral("ref/resource"), uriTemplate,
+                    argumentName, value, contextArguments);
+}
+
+QString McpHostRuntime::complete(const QString& serverId,
+                                 const QString& referenceType,
+                                 const QString& reference,
+                                 const QString& argumentName,
+                                 const QString& value,
+                                 const QJsonObject& contextArguments)
+{
+    const auto iterator = connections_.find(serverId);
+    if (iterator == connections_.end())
+        return invalidRequest(serverId, QStringLiteral("completion/complete"),
+                              QStringLiteral("Unknown MCP server."));
+    const auto snapshot = serverRegistry_.snapshot(serverId);
+    if (!snapshot || (snapshot->state != McpServerState::Ready &&
+                      snapshot->state != McpServerState::Degraded))
+        return invalidRequest(serverId, QStringLiteral("completion/complete"),
+                              QStringLiteral("MCP server is not ready."));
+    if (!snapshot->capabilities.completions)
+        return invalidRequest(
+            serverId, QStringLiteral("completion/complete"),
+            QStringLiteral("MCP server did not declare Completions."));
+    if (argumentName.trimmed().isEmpty() || argumentName.size() > 256 ||
+        value.size() > 4'096 || contextArguments.size() > 64)
+        return invalidRequest(
+            serverId, QStringLiteral("completion/complete"),
+            QStringLiteral("MCP completion arguments are invalid."));
+    for (auto argument = contextArguments.constBegin();
+         argument != contextArguments.constEnd(); ++argument)
+        if (!argument->isString() || argument.key().trimmed().isEmpty() ||
+            argument.key().size() > 256 || argument->toString().size() > 4'096)
+            return invalidRequest(
+                serverId, QStringLiteral("completion/complete"),
+                QStringLiteral("MCP completion context is invalid."));
+
+    QJsonObject referenceObject{{QStringLiteral("type"), referenceType}};
+    if (referenceType == QLatin1String("ref/prompt"))
+    {
+        const auto* prompt = promptRegistry_.find(serverId, reference);
+        if (prompt == nullptr)
+            return invalidRequest(
+                serverId, QStringLiteral("completion/complete"),
+                QStringLiteral("Prompt is not registered: %1.%2")
+                    .arg(serverId, reference));
+        const auto knownArgument =
+            std::any_of(prompt->arguments.cbegin(), prompt->arguments.cend(),
+                        [&argumentName](const auto& argument)
+                        { return argument.name == argumentName; });
+        if (!knownArgument)
+            return invalidRequest(
+                serverId, QStringLiteral("completion/complete"),
+                QStringLiteral("Prompt argument is not registered: %1")
+                    .arg(argumentName));
+        referenceObject.insert(QStringLiteral("name"), reference);
+    }
+    else if (referenceType == QLatin1String("ref/resource"))
+    {
+        if (resourceRegistry_.findTemplate(serverId, reference) == nullptr)
+            return invalidRequest(
+                serverId, QStringLiteral("completion/complete"),
+                QStringLiteral("Resource template is not registered."));
+        referenceObject.insert(QStringLiteral("uri"), reference);
+    }
+    else
+    {
+        return invalidRequest(serverId, QStringLiteral("completion/complete"),
+                              QStringLiteral("Unknown completion reference."));
+    }
+
+    const auto requestId = iterator->transport->request(
+        QStringLiteral("completion/complete"),
+        {{QStringLiteral("ref"), referenceObject},
+         {QStringLiteral("argument"),
+          QJsonObject{{QStringLiteral("name"), argumentName},
+                      {QStringLiteral("value"), value}}},
+         {QStringLiteral("context"),
+          QJsonObject{{QStringLiteral("arguments"), contextArguments}}}},
+        iterator->config.requestTimeoutMs);
+    if (!requestId.isEmpty())
+    {
+        PendingRequest pending;
+        pending.serverId = serverId;
+        pending.operation = Operation::Complete;
+        pending.subject = reference;
+        pending.toolName = argumentName;
+        pending.referenceType = referenceType;
+        pending_.insert(requestId, std::move(pending));
+    }
+    return requestId;
+}
+
+QString McpHostRuntime::setLoggingLevel(const QString& serverId,
+                                        const QString& level)
+{
+    const auto iterator = connections_.find(serverId);
+    if (iterator == connections_.end())
+        return invalidRequest(serverId, QStringLiteral("logging/setLevel"),
+                              QStringLiteral("Unknown MCP server."));
+    const auto snapshot = serverRegistry_.snapshot(serverId);
+    if (!snapshot || (snapshot->state != McpServerState::Ready &&
+                      snapshot->state != McpServerState::Degraded))
+        return invalidRequest(serverId, QStringLiteral("logging/setLevel"),
+                              QStringLiteral("MCP server is not ready."));
+    if (!snapshot->capabilities.logging)
+        return invalidRequest(
+            serverId, QStringLiteral("logging/setLevel"),
+            QStringLiteral("MCP server did not declare Logging."));
+    if (!isSupportedLoggingLevel(level))
+        return invalidRequest(serverId, QStringLiteral("logging/setLevel"),
+                              QStringLiteral("Invalid MCP logging level."));
+    const auto requestId = iterator->transport->request(
+        QStringLiteral("logging/setLevel"), {{QStringLiteral("level"), level}},
+        iterator->config.requestTimeoutMs);
+    if (!requestId.isEmpty())
+    {
+        PendingRequest pending;
+        pending.serverId = serverId;
+        pending.operation = Operation::SetLoggingLevel;
+        pending.subject = level;
+        pending_.insert(requestId, std::move(pending));
+    }
+    return requestId;
+}
+
 QString McpHostRuntime::callTool(const QString& qualifiedToolName,
                                  const QJsonObject& arguments)
 {
@@ -1062,6 +1233,10 @@ void McpHostRuntime::handleResponse(const QString& serverId,
                 QStringLiteral("notifications/initialized"));
         publishSnapshot(serverId);
         emit serverInitialized(serverId, initialization.serverInfo);
+        const auto connection = connections_.constFind(serverId);
+        if (connection != connections_.constEnd() &&
+            !connection->config.loggingLevel.isEmpty())
+            setLoggingLevel(serverId, connection->config.loggingLevel);
         return;
     }
     if (pending.operation == Operation::Ping)
@@ -1401,6 +1576,37 @@ void McpHostRuntime::handleResponse(const QString& serverId,
             return;
         }
         emit promptReady(promptResult);
+        return;
+    }
+
+    if (pending.operation == Operation::Complete)
+    {
+        const auto connection = connections_.constFind(serverId);
+        if (connection == connections_.constEnd()) return;
+        McpCompletionResult completionResult;
+        QString parseError;
+        if (!parseCompletionResult(requestId, serverId, pending.referenceType,
+                                   pending.subject, pending.toolName, result,
+                                   connection->config.maxResultBytes,
+                                   completionResult, parseError))
+        {
+            handleFailure(serverId, requestId, method,
+                          QStringLiteral("invalid_response"), parseError,
+                          &pending);
+            return;
+        }
+        emit completionReady(completionResult);
+        return;
+    }
+
+    if (pending.operation == Operation::SetLoggingLevel)
+    {
+        const auto connection = connections_.find(serverId);
+        if (connection == connections_.end()) return;
+        connection->config.loggingLevel = pending.subject;
+        serverRegistry_.setLoggingLevel(serverId, pending.subject);
+        publishSnapshot(serverId);
+        emit loggingLevelChanged(serverId, pending.subject);
         return;
     }
 

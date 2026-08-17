@@ -39,6 +39,8 @@ class McpClientManager final : public QObject
     [[nodiscard]] std::optional<McpServerSnapshot> serverSnapshot(
         const QString& serverId) const;
     [[nodiscard]] QList<McpServerSnapshot> serverSnapshots() const;
+    bool setUseInstructions(const QString& serverId, bool enabled,
+                            QString& errorMessage);
 
     void startServer(const QString& serverId);
     void stopServer(const QString& serverId);
@@ -53,6 +55,15 @@ class McpClientManager final : public QObject
     QString listPrompts(const QString& serverId);
     QString getPrompt(const QString& serverId, const QString& name,
                       const QJsonObject& arguments = {});
+    QString completePrompt(const QString& serverId, const QString& promptName,
+                           const QString& argumentName, const QString& value,
+                           const QJsonObject& contextArguments = {});
+    QString completeResourceTemplate(const QString& serverId,
+                                     const QString& uriTemplate,
+                                     const QString& argumentName,
+                                     const QString& value,
+                                     const QJsonObject& contextArguments = {});
+    QString setLoggingLevel(const QString& serverId, const QString& level);
     QString callTool(const QString& qualifiedToolName,
                      const QJsonObject& arguments);
     void cancel(const QString& requestId);
@@ -86,6 +97,9 @@ class McpClientManager final : public QObject
         const QString& serverId,
         const QList<qtllm::infrastructure::mcp::McpPromptDefinition>& prompts);
     void promptReady(const qtllm::infrastructure::mcp::McpPromptResult& result);
+    void completionReady(
+        const qtllm::infrastructure::mcp::McpCompletionResult& result);
+    void loggingLevelChanged(const QString& serverId, const QString& level);
     void rootsRequested(
         const QString& serverId,
         const QList<qtllm::infrastructure::mcp::McpRoot>& roots);

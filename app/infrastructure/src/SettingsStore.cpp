@@ -223,6 +223,23 @@ bool SettingsStore::setBuiltInFilesystemMcpEnabled(bool enabled) const
     return settings.status() == QSettings::NoError;
 }
 
+bool SettingsStore::builtInFilesystemMcpUseInstructions() const
+{
+    const QSettings settings(filePath_, QSettings::IniFormat);
+    return settings
+        .value(QStringLiteral("mcp/builtInFilesystemUseInstructions"), true)
+        .toBool();
+}
+
+bool SettingsStore::setBuiltInFilesystemMcpUseInstructions(bool enabled) const
+{
+    QSettings settings(filePath_, QSettings::IniFormat);
+    settings.setValue(QStringLiteral("mcp/builtInFilesystemUseInstructions"),
+                      enabled);
+    settings.sync();
+    return settings.status() == QSettings::NoError;
+}
+
 QStringList SettingsStore::alwaysAllowedMcpTools() const
 {
     const QSettings settings(filePath_, QSettings::IniFormat);

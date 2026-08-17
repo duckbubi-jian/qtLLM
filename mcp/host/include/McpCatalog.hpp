@@ -79,6 +79,22 @@ struct McpPromptResult
     qsizetype originalBytes = 0;
 };
 
+struct McpCompletionResult
+{
+    QString requestId;
+    QString serverId;
+    QString referenceType;
+    QString reference;
+    QString argumentName;
+    QStringList values;
+    qsizetype total = 0;
+    bool totalProvided = false;
+    bool hasMore = false;
+    bool hasMoreProvided = false;
+    QJsonObject rawCompletion;
+    qsizetype originalBytes = 0;
+};
+
 struct McpRoot
 {
     QString uri;
@@ -107,6 +123,12 @@ bool parsePromptResult(const QString& requestId, const QString& serverId,
                        const QString& promptName, const QJsonObject& result,
                        qsizetype maximumBytes, McpPromptResult& parsed,
                        QString& errorMessage);
+bool parseCompletionResult(const QString& requestId, const QString& serverId,
+                           const QString& referenceType,
+                           const QString& reference,
+                           const QString& argumentName,
+                           const QJsonObject& result, qsizetype maximumBytes,
+                           McpCompletionResult& parsed, QString& errorMessage);
 
 class McpResourceRegistry final
 {
@@ -126,6 +148,8 @@ class McpResourceRegistry final
         const QString& serverId = {}) const;
     [[nodiscard]] const McpResourceDefinition* find(const QString& serverId,
                                                     const QString& uri) const;
+    [[nodiscard]] const McpResourceTemplateDefinition* findTemplate(
+        const QString& serverId, const QString& uriTemplate) const;
 
    private:
     QHash<QString, QHash<QString, McpResourceDefinition>> resources_;
@@ -172,4 +196,5 @@ Q_DECLARE_METATYPE(qtllm::infrastructure::mcp::McpResourceTemplateDefinition)
 Q_DECLARE_METATYPE(qtllm::infrastructure::mcp::McpResourceReadResult)
 Q_DECLARE_METATYPE(qtllm::infrastructure::mcp::McpPromptDefinition)
 Q_DECLARE_METATYPE(qtllm::infrastructure::mcp::McpPromptResult)
+Q_DECLARE_METATYPE(qtllm::infrastructure::mcp::McpCompletionResult)
 Q_DECLARE_METATYPE(qtllm::infrastructure::mcp::McpRoot)

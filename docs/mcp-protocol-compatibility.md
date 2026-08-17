@@ -59,7 +59,9 @@ feature differences have dedicated Fake Server coverage.
 | Resources | `notifications/resources/list_changed` and `notifications/resources/updated` | Supported, subscribed URIs only |
 | Prompts | Discovery and get | Supported |
 | Prompts | `notifications/prompts/list_changed` | Supported |
-| Completion | `completion/complete` | Not implemented |
+| Completion | `completion/complete` for Prompt and Resource template references | Supported, explicit Host control-panel entry |
+| Logging | `logging/setLevel` | Supported, validated per Server and persisted after success |
+| Instructions | Per-Server opt-in boundary and bounded Agent context | Supported, default enabled for backward compatibility |
 | Roots | Per-Server authorized roots | Supported |
 | Server requests | `roots/list` | Supported, explicit configured roots only |
 | Server requests | Unknown or unsupported methods | Rejected with standard JSON-RPC error |
@@ -120,3 +122,42 @@ feature differences have dedicated Fake Server coverage.
 - UI coverage verifies MCP menu routing, Server state and capability
   presentation, lifecycle controls, tool policy details, diagnostics, and
   sensitive-text redaction.
+
+## Completion and Logging Boundaries
+
+- Completion requests are sent only after the negotiated version and the
+  `completions` capability are present. Prompt names, Prompt argument names,
+  Resource template URIs, context arguments, and partial values are checked
+  locally before a request is sent.
+- Completion results preserve `values`, optional `total`, optional `hasMore`,
+  and unknown fields in the bounded result object. They are exposed to the
+  control panel and are not inserted into Agent context automatically.
+- Logging levels are restricted to `debug`, `info`, `notice`, `warning`,
+  `error`, `critical`, `alert`, and `emergency`. A Server without `logging`
+  capability is rejected locally, and the last successfully applied level is
+  tracked independently for each Server.
+- Server `instructions` are capped at 4 KiB per Server and 8 KiB combined.
+  `useInstructions` is persisted per Server and defaults to `true` when absent
+  from older configuration files. Instructions never override local tool
+  policy, authorization roots, or safety checks.
+
+## Offline Stdio Compatibility Matrix
+
+The default fixture suite is offline and does not download or launch external
+software. It exercises the same framing rules used by native, Python-style,
+and Node-style stdio Servers:
+
+| Fixture style | Coverage |
+| --- | --- |
+| Native LF | JSON-RPC request/response and lifecycle |
+| Python-style CRLF | CRLF framing and lifecycle |
+| Node-style fragmented CRLF | JSON split across multiple stdout reads |
+| Windows `.cmd` wrapper | `cmd.exe` wrapper startup, environment inheritance, and shutdown |
+
+The suite also covers absolute program paths, working-directory and explicit
+environment checks, stderr storms, stdout startup noise, a single stdout
+message over 1 MiB, abnormal exit, timeout, cancellation, and process stop.
+stdout startup noise and malformed or oversized messages fail that Server;
+stderr remains diagnostic data and cannot become JSON-RPC input. Supported
+protocol versions have dedicated negotiation coverage and share only the
+implemented stdio/core feature subset.

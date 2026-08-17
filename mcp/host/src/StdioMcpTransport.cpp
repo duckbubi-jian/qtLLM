@@ -175,21 +175,28 @@ bool StdioMcpTransport::writeMessage(const QJsonObject& object)
 void StdioMcpTransport::onReadyReadStandardOutput()
 {
     standardOutputBuffer_ += process_.readStandardOutput();
+    while (true)
+    {
+        const auto newline = standardOutputBuffer_.indexOf('\n');
+        if (newline < 0) break;
+        if (newline > 1'048'576)
+        {
+            emit transportError(
+                QStringLiteral("message_too_large"),
+                QStringLiteral("MCP stdout message exceeds 1 MiB."));
+            standardOutputBuffer_.remove(0, newline + 1);
+            continue;
+        }
+        const auto line = standardOutputBuffer_.left(newline).trimmed();
+        standardOutputBuffer_.remove(0, newline + 1);
+        if (!line.isEmpty()) processLine(line);
+    }
     if (standardOutputBuffer_.size() > 1'048'576)
     {
         emit transportError(
             QStringLiteral("message_too_large"),
             QStringLiteral("MCP stdout message exceeds 1 MiB."));
         standardOutputBuffer_.clear();
-        return;
-    }
-    while (true)
-    {
-        const auto newline = standardOutputBuffer_.indexOf('\n');
-        if (newline < 0) break;
-        const auto line = standardOutputBuffer_.left(newline).trimmed();
-        standardOutputBuffer_.remove(0, newline + 1);
-        if (!line.isEmpty()) processLine(line);
     }
 }
 

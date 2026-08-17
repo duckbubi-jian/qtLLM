@@ -194,7 +194,9 @@ QJsonObject catalogInitializeResult(bool listChanged = true)
                   QJsonObject{{QStringLiteral("subscribe"), true},
                               {QStringLiteral("listChanged"), listChanged}}},
                  {QStringLiteral("prompts"),
-                  QJsonObject{{QStringLiteral("listChanged"), listChanged}}}}},
+                  QJsonObject{{QStringLiteral("listChanged"), listChanged}}},
+                 {QStringLiteral("logging"), QJsonObject{}},
+                 {QStringLiteral("completions"), QJsonObject{}}}},
             {QStringLiteral("serverInfo"),
              QJsonObject{{QStringLiteral("name"), QStringLiteral("fake")},
                          {QStringLiteral("version"), QStringLiteral("1")}}}};
@@ -220,6 +222,12 @@ class StdioMcpTransportTest final : public QObject
     void listsAndCallsTools();
     void parsesInitializeCapabilities();
     void negotiatesSupportedProtocolVersions();
+    void acceptsThirdPartyOutputStyles_data();
+    void acceptsThirdPartyOutputStyles();
+    void honorsProcessConfigurationAndWindowsWrapper();
+    void rejectsInvalidThirdPartyOutput_data();
+    void rejectsInvalidThirdPartyOutput();
+    void keepsStderrDiagnosticsSeparateFromProtocol();
     void rejectsUnsupportedProtocolVersion();
     void rejectsUndeclaredToolsCapability();
     void propagatesRemoteErrors();
@@ -239,11 +247,14 @@ class StdioMcpTransportTest final : public QObject
     void limitsNotificationStorms();
     void sendsProtocolCancellation();
     void discoversReadsAndGetsMcpCatalogs();
+    void completesCatalogArguments();
+    void setsLoggingLevelsAndFiltersInstructions();
     void keepsIndependentCatalogFailuresDegraded();
     void pingsBothDirections();
     void servesOnlyAuthorizedRoots();
     void roundTripsRootsOverStdio();
     void roundTripsPingOverStdio();
+    void roundTripsCompletionAndLoggingOverStdio();
 };
 
 infrastructure::mcp::McpServerConfig testConfig()
@@ -352,6 +363,173 @@ void StdioMcpTransportTest::negotiatesSupportedProtocolVersions()
         QCOMPARE(snapshot->state, infrastructure::mcp::McpServerState::Ready);
         manager.stopServer(config.serverId);
     }
+}
+
+void StdioMcpTransportTest::acceptsThirdPartyOutputStyles_data()
+{
+    QTest::addColumn<QStringList>("arguments");
+    QTest::newRow("native-lf") << QStringList{};
+    QTest::newRow("python-crlf") << QStringList{QStringLiteral("--crlf")};
+    QTest::newRow("node-fragmented-crlf") << QStringList{
+        QStringLiteral("--crlf"), QStringLiteral("--fragment-output")};
+}
+
+void StdioMcpTransportTest::acceptsThirdPartyOutputStyles()
+{
+    QFETCH(QStringList, arguments);
+    auto config = testConfig();
+    config.arguments = arguments;
+    infrastructure::mcp::McpClientManager manager;
+    QString errorMessage;
+    QVERIFY2(manager.addServer(config, errorMessage), qPrintable(errorMessage));
+    QSignalSpy initializedSpy(
+        &manager, &infrastructure::mcp::McpClientManager::serverInitialized);
+    QSignalSpy pingSpy(&manager,
+                       &infrastructure::mcp::McpClientManager::pingCompleted);
+    manager.startServer(config.serverId);
+    QTRY_VERIFY_WITH_TIMEOUT(manager.transport(config.serverId)->isRunning(),
+                             2'000);
+    QVERIFY(!manager.initialize(config.serverId).isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(initializedSpy.count(), 1, 2'000);
+    QVERIFY(!manager.ping(config.serverId).isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(pingSpy.count(), 1, 2'000);
+}
+
+void StdioMcpTransportTest::honorsProcessConfigurationAndWindowsWrapper()
+{
+    QTemporaryDir workingDirectory;
+    QVERIFY(workingDirectory.isValid());
+    auto config = testConfig();
+    config.workingDirectory = workingDirectory.path();
+    config.environment.insert(QStringLiteral("QTLLM_MCP_FIXTURE"),
+                              QStringLiteral("configured"));
+    config.arguments = {
+        QStringLiteral("--require-cwd=%1").arg(workingDirectory.path()),
+        QStringLiteral("--require-env=QTLLM_MCP_FIXTURE=configured")};
+
+    infrastructure::mcp::McpClientManager manager;
+    QString errorMessage;
+    QVERIFY2(manager.addServer(config, errorMessage), qPrintable(errorMessage));
+    QSignalSpy initializedSpy(
+        &manager, &infrastructure::mcp::McpClientManager::serverInitialized);
+    manager.startServer(config.serverId);
+    QTRY_VERIFY_WITH_TIMEOUT(manager.transport(config.serverId)->isRunning(),
+                             2'000);
+    QVERIFY(!manager.initialize(config.serverId).isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(initializedSpy.count(), 1, 2'000);
+
+#ifdef Q_OS_WIN
+    QTemporaryDir wrapperDirectory;
+    QVERIFY(wrapperDirectory.isValid());
+    const auto wrapperPath =
+        QDir(wrapperDirectory.path()).filePath(QStringLiteral("fixture.cmd"));
+    QFile wrapper(wrapperPath);
+    QVERIFY(wrapper.open(QIODevice::WriteOnly | QIODevice::Text));
+    const auto script = QByteArrayLiteral(
+        "@echo off\r\n\"%QTLLM_TEST_MCP_SERVER%\" --crlf "
+        "--fragment-output\r\n");
+    QCOMPARE(wrapper.write(script), script.size());
+    wrapper.close();
+
+    auto wrapperConfig = testConfig();
+    wrapperConfig.serverId = QStringLiteral("cmd-wrapper");
+    wrapperConfig.program = qEnvironmentVariable("ComSpec");
+    if (wrapperConfig.program.isEmpty())
+        wrapperConfig.program = QDir::toNativeSeparators(
+            QStringLiteral("C:/Windows/System32/cmd.exe"));
+    wrapperConfig.arguments = {QStringLiteral("/d"), QStringLiteral("/s"),
+                               QStringLiteral("/c"), QStringLiteral("call"),
+                               QDir::toNativeSeparators(wrapperPath)};
+    infrastructure::mcp::McpClientManager wrapperManager;
+    QVERIFY2(wrapperManager.addServer(wrapperConfig, errorMessage),
+             qPrintable(errorMessage));
+    QSignalSpy wrapperInitialized(
+        &wrapperManager,
+        &infrastructure::mcp::McpClientManager::serverInitialized);
+    wrapperManager.startServer(wrapperConfig.serverId);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        wrapperManager.transport(wrapperConfig.serverId)->isRunning(), 2'000);
+    QVERIFY(!wrapperManager.initialize(wrapperConfig.serverId).isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(wrapperInitialized.count(), 1, 2'000);
+    wrapperManager.stopServer(wrapperConfig.serverId);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        !wrapperManager.transport(wrapperConfig.serverId)->isRunning(), 3'000);
+#endif
+}
+
+void StdioMcpTransportTest::rejectsInvalidThirdPartyOutput_data()
+{
+    QTest::addColumn<QStringList>("arguments");
+    QTest::addColumn<QString>("expectedCode");
+    QTest::newRow("stdout-startup-noise")
+        << QStringList{QStringLiteral("--startup-noise")}
+        << QStringLiteral("invalid_message");
+    QTest::newRow("oversized-stdout")
+        << QStringList{QStringLiteral("--oversized-stdout")}
+        << QStringLiteral("message_too_large");
+    QTest::newRow("abnormal-exit")
+        << QStringList{QStringLiteral("--exit-code=7")}
+        << QStringLiteral("process_exited");
+}
+
+void StdioMcpTransportTest::rejectsInvalidThirdPartyOutput()
+{
+    QFETCH(QStringList, arguments);
+    QFETCH(QString, expectedCode);
+    auto config = testConfig();
+    config.arguments = arguments;
+    infrastructure::mcp::McpClientManager manager;
+    QString errorMessage;
+    QVERIFY2(manager.addServer(config, errorMessage), qPrintable(errorMessage));
+    QSignalSpy errorSpy(&manager,
+                        &infrastructure::mcp::McpClientManager::serverError);
+    manager.startServer(config.serverId);
+    QTRY_VERIFY_WITH_TIMEOUT(errorSpy.count() >= 1, 3'000);
+    auto found = false;
+    for (const auto& values : errorSpy)
+        if (values.at(1).toString() == expectedCode) found = true;
+    QVERIFY2(found, qPrintable(expectedCode));
+    const auto snapshot = manager.serverSnapshot(config.serverId);
+    QVERIFY(snapshot.has_value());
+    QCOMPARE(snapshot->state, infrastructure::mcp::McpServerState::Failed);
+
+    auto healthy = testConfig();
+    healthy.serverId = QStringLiteral("healthy");
+    infrastructure::mcp::McpClientManager healthyManager;
+    QVERIFY2(healthyManager.addServer(healthy, errorMessage),
+             qPrintable(errorMessage));
+    QSignalSpy initializedSpy(
+        &healthyManager,
+        &infrastructure::mcp::McpClientManager::serverInitialized);
+    healthyManager.startServer(healthy.serverId);
+    QTRY_VERIFY_WITH_TIMEOUT(
+        healthyManager.transport(healthy.serverId)->isRunning(), 2'000);
+    QVERIFY(!healthyManager.initialize(healthy.serverId).isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(initializedSpy.count(), 1, 2'000);
+}
+
+void StdioMcpTransportTest::keepsStderrDiagnosticsSeparateFromProtocol()
+{
+    auto config = testConfig();
+    config.arguments = {QStringLiteral("--stderr-lines=5000")};
+    infrastructure::mcp::McpClientManager manager;
+    QString errorMessage;
+    QVERIFY2(manager.addServer(config, errorMessage), qPrintable(errorMessage));
+    QSignalSpy initializedSpy(
+        &manager, &infrastructure::mcp::McpClientManager::serverInitialized);
+    QSignalSpy diagnosticSpy(
+        &manager, &infrastructure::mcp::McpClientManager::diagnosticReceived);
+    QSignalSpy errorSpy(&manager,
+                        &infrastructure::mcp::McpClientManager::serverError);
+    manager.startServer(config.serverId);
+    QTRY_VERIFY_WITH_TIMEOUT(manager.transport(config.serverId)->isRunning(),
+                             2'000);
+    QVERIFY(!manager.initialize(config.serverId).isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(initializedSpy.count(), 1, 2'000);
+    QTRY_VERIFY_WITH_TIMEOUT(diagnosticSpy.count() >= 1, 2'000);
+    QCOMPARE(errorSpy.count(), 0);
+    QVERIFY(diagnosticSpy.constFirst().at(1).toString().contains(
+        QStringLiteral("fixture diagnostic")));
 }
 
 void StdioMcpTransportTest::rejectsUnsupportedProtocolVersion()
@@ -592,6 +770,8 @@ void StdioMcpTransportTest::roundTripsServerConfiguration()
     config.toolAllowlist = {QStringLiteral("echo")};
     config.authorizedRoots = {QDir::rootPath()};
     config.maxResultBytes = 8'192;
+    config.loggingLevel = QStringLiteral("warning");
+    config.useInstructions = false;
 
     infrastructure::mcp::McpServerConfig parsed;
     QString errorMessage;
@@ -606,6 +786,17 @@ void StdioMcpTransportTest::roundTripsServerConfiguration()
     QCOMPARE(parsed.toolAllowlist, config.toolAllowlist);
     QCOMPARE(parsed.authorizedRoots, config.authorizedRoots);
     QCOMPARE(parsed.maxResultBytes, config.maxResultBytes);
+    QCOMPARE(parsed.loggingLevel, config.loggingLevel);
+    QCOMPARE(parsed.useInstructions, config.useInstructions);
+
+    auto legacy = infrastructure::mcp::serializeServerConfig(config);
+    legacy.remove(QStringLiteral("loggingLevel"));
+    legacy.remove(QStringLiteral("useInstructions"));
+    QVERIFY2(
+        infrastructure::mcp::parseServerConfig(legacy, parsed, errorMessage),
+        qPrintable(errorMessage));
+    QVERIFY(parsed.loggingLevel.isEmpty());
+    QVERIFY(parsed.useInstructions);
 }
 
 void StdioMcpTransportTest::rejectsInvalidServerIds()
@@ -1290,6 +1481,231 @@ void StdioMcpTransportTest::discoversReadsAndGetsMcpCatalogs()
     QVERIFY(runtime.prompts().isEmpty());
 }
 
+void StdioMcpTransportTest::completesCatalogArguments()
+{
+    using infrastructure::mcp::McpCompletionResult;
+    using infrastructure::mcp::McpHostRuntime;
+
+    QSharedPointer<FakeMcpTransport> transport;
+    McpHostRuntime runtime(
+        [&transport](const infrastructure::mcp::McpServerConfig&)
+            -> QSharedPointer<infrastructure::mcp::McpTransport>
+        {
+            transport = QSharedPointer<FakeMcpTransport>::create();
+            return transport;
+        });
+    QString errorMessage;
+    QVERIFY2(runtime.addServer(runtimeTestConfig(QStringLiteral("alpha")),
+                               errorMessage),
+             qPrintable(errorMessage));
+    runtime.startServer(QStringLiteral("alpha"));
+    const auto initializeRequest = runtime.initialize(QStringLiteral("alpha"));
+    transport->respond(initializeRequest, catalogInitializeResult());
+
+    auto requestId = runtime.listPrompts(QStringLiteral("alpha"));
+    transport->respond(
+        requestId,
+        {{QStringLiteral("prompts"),
+          QJsonArray{QJsonObject{
+              {QStringLiteral("name"), QStringLiteral("summarize")},
+              {QStringLiteral("arguments"),
+               QJsonArray{QJsonObject{
+                   {QStringLiteral("name"), QStringLiteral("topic")}}}}}}}});
+    requestId = runtime.listResourceTemplates(QStringLiteral("alpha"));
+    transport->respond(
+        requestId, {{QStringLiteral("resourceTemplates"),
+                     QJsonArray{QJsonObject{
+                         {QStringLiteral("uriTemplate"),
+                          QStringLiteral("test://resource/{name}")},
+                         {QStringLiteral("name"), QStringLiteral("Named")}}}}});
+
+    QSignalSpy completionSpy(&runtime, &McpHostRuntime::completionReady);
+    requestId = runtime.completePrompt(
+        QStringLiteral("alpha"), QStringLiteral("summarize"),
+        QStringLiteral("topic"), QStringLiteral("mc"),
+        {{QStringLiteral("language"), QStringLiteral("en")}});
+    QVERIFY(!requestId.isEmpty());
+    const auto promptParams = transport->requestParams(requestId);
+    QCOMPARE(promptParams.value(QStringLiteral("ref"))
+                 .toObject()
+                 .value(QStringLiteral("type"))
+                 .toString(),
+             QStringLiteral("ref/prompt"));
+    QCOMPARE(promptParams.value(QStringLiteral("ref"))
+                 .toObject()
+                 .value(QStringLiteral("name"))
+                 .toString(),
+             QStringLiteral("summarize"));
+    QCOMPARE(promptParams.value(QStringLiteral("context"))
+                 .toObject()
+                 .value(QStringLiteral("arguments"))
+                 .toObject()
+                 .value(QStringLiteral("language"))
+                 .toString(),
+             QStringLiteral("en"));
+    transport->respond(
+        requestId,
+        {{QStringLiteral("completion"),
+          QJsonObject{
+              {QStringLiteral("values"),
+               QJsonArray{QStringLiteral("mcp"), QStringLiteral("mcp host")}},
+              {QStringLiteral("total"), 3},
+              {QStringLiteral("hasMore"), true},
+              {QStringLiteral("vendorField"), QStringLiteral("preserved")}}}});
+    QCOMPARE(completionSpy.count(), 1);
+    const auto promptResult = qvariant_cast<McpCompletionResult>(
+        completionSpy.constFirst().constFirst());
+    QCOMPARE(promptResult.values,
+             QStringList({QStringLiteral("mcp"), QStringLiteral("mcp host")}));
+    QCOMPARE(promptResult.total, 3);
+    QVERIFY(promptResult.totalProvided);
+    QVERIFY(promptResult.hasMoreProvided);
+    QVERIFY(promptResult.hasMore);
+    QCOMPARE(promptResult.rawCompletion.value(QStringLiteral("vendorField"))
+                 .toString(),
+             QStringLiteral("preserved"));
+
+    requestId = runtime.completeResourceTemplate(
+        QStringLiteral("alpha"), QStringLiteral("test://resource/{name}"),
+        QStringLiteral("name"), QStringLiteral("read"));
+    QVERIFY(!requestId.isEmpty());
+    QCOMPARE(transport->requestParams(requestId)
+                 .value(QStringLiteral("ref"))
+                 .toObject()
+                 .value(QStringLiteral("uri"))
+                 .toString(),
+             QStringLiteral("test://resource/{name}"));
+    transport->respond(requestId,
+                       {{QStringLiteral("completion"),
+                         QJsonObject{{QStringLiteral("values"),
+                                      QJsonArray{QStringLiteral("readme")}}}}});
+    QCOMPARE(completionSpy.count(), 2);
+
+    QSignalSpy failureSpy(&runtime, &McpHostRuntime::requestFailed);
+    requestId = runtime.completePrompt(
+        QStringLiteral("alpha"), QStringLiteral("summarize"),
+        QStringLiteral("topic"), QStringLiteral("cancel"));
+    QVERIFY(!requestId.isEmpty());
+    runtime.cancel(requestId);
+    QCOMPARE(failureSpy.count(), 1);
+    QCOMPARE(failureSpy.constFirst().at(3).toString(),
+             QStringLiteral("cancelled"));
+    transport->respond(
+        requestId, {{QStringLiteral("completion"),
+                     QJsonObject{{QStringLiteral("values"), QJsonArray{}}}}});
+    QCOMPARE(completionSpy.count(), 2);
+
+    requestId = runtime.completePrompt(
+        QStringLiteral("alpha"), QStringLiteral("summarize"),
+        QStringLiteral("topic"), QStringLiteral("large"));
+    QVERIFY(!requestId.isEmpty());
+    transport->respond(
+        requestId,
+        {{QStringLiteral("completion"),
+          QJsonObject{{QStringLiteral("values"),
+                       QJsonArray{QString(70'000, QLatin1Char('x'))}}}}});
+    QCOMPARE(failureSpy.count(), 2);
+    QCOMPARE(failureSpy.constLast().at(3).toString(),
+             QStringLiteral("invalid_response"));
+    QCOMPARE(completionSpy.count(), 2);
+
+    QVERIFY(runtime
+                .completePrompt(QStringLiteral("alpha"),
+                                QStringLiteral("summarize"),
+                                QStringLiteral("unknown"), QString{})
+                .isEmpty());
+    QCOMPARE(failureSpy.count(), 3);
+}
+
+void StdioMcpTransportTest::setsLoggingLevelsAndFiltersInstructions()
+{
+    using infrastructure::mcp::McpHostRuntime;
+
+    QHash<QString, QSharedPointer<FakeMcpTransport>> transports;
+    McpHostRuntime runtime(
+        [&transports](const infrastructure::mcp::McpServerConfig& config)
+            -> QSharedPointer<infrastructure::mcp::McpTransport>
+        {
+            auto transport = QSharedPointer<FakeMcpTransport>::create();
+            transports.insert(config.serverId, transport);
+            return transport;
+        });
+    auto alpha = runtimeTestConfig(QStringLiteral("alpha"));
+    alpha.loggingLevel = QStringLiteral("notice");
+    auto beta = runtimeTestConfig(QStringLiteral("beta"));
+    beta.useInstructions = false;
+    QString errorMessage;
+    QVERIFY2(runtime.addServer(alpha, errorMessage), qPrintable(errorMessage));
+    QVERIFY2(runtime.addServer(beta, errorMessage), qPrintable(errorMessage));
+
+    QSignalSpy levelSpy(&runtime, &McpHostRuntime::loggingLevelChanged);
+    for (const auto& serverId :
+         {QStringLiteral("alpha"), QStringLiteral("beta")})
+    {
+        runtime.startServer(serverId);
+        const auto requestId = runtime.initialize(serverId);
+        auto initialized = catalogInitializeResult();
+        initialized.insert(
+            QStringLiteral("instructions"),
+            QStringLiteral("Instructions from %1").arg(serverId));
+        transports.value(serverId)->respond(requestId, initialized);
+    }
+    const auto replayRequest =
+        transports.value(QStringLiteral("alpha"))
+            ->requestForMethod(QStringLiteral("logging/setLevel"));
+    QVERIFY(!replayRequest.isEmpty());
+    QCOMPARE(transports.value(QStringLiteral("alpha"))
+                 ->requestParams(replayRequest)
+                 .value(QStringLiteral("level"))
+                 .toString(),
+             QStringLiteral("notice"));
+    transports.value(QStringLiteral("alpha"))->respond(replayRequest, {});
+    QCOMPARE(levelSpy.count(), 1);
+
+    QVERIFY(runtime.agentInstructions().contains(QStringLiteral("alpha:")));
+    QVERIFY(!runtime.agentInstructions().contains(QStringLiteral("beta:")));
+    QVERIFY(
+        runtime.setUseInstructions(QStringLiteral("beta"), true, errorMessage));
+    QVERIFY(runtime.agentInstructions().contains(QStringLiteral("beta:")));
+    QVERIFY(runtime.setUseInstructions(QStringLiteral("alpha"), false,
+                                       errorMessage));
+    QVERIFY(!runtime.agentInstructions().contains(QStringLiteral("alpha:")));
+
+    auto requestId = runtime.setLoggingLevel(QStringLiteral("beta"),
+                                             QStringLiteral("warning"));
+    QVERIFY(!requestId.isEmpty());
+    QCOMPARE(transports.value(QStringLiteral("beta"))
+                 ->requestParams(requestId)
+                 .value(QStringLiteral("level"))
+                 .toString(),
+             QStringLiteral("warning"));
+    transports.value(QStringLiteral("beta"))->respond(requestId, {});
+    QCOMPARE(levelSpy.count(), 2);
+    QCOMPARE(levelSpy.constLast().at(0).toString(), QStringLiteral("beta"));
+    QCOMPARE(levelSpy.constLast().at(1).toString(), QStringLiteral("warning"));
+
+    QSignalSpy failureSpy(&runtime, &McpHostRuntime::requestFailed);
+    QVERIFY(
+        runtime
+            .setLoggingLevel(QStringLiteral("beta"), QStringLiteral("verbose"))
+            .isEmpty());
+    QCOMPARE(failureSpy.count(), 1);
+
+    auto gamma = runtimeTestConfig(QStringLiteral("gamma"));
+    QVERIFY2(runtime.addServer(gamma, errorMessage), qPrintable(errorMessage));
+    runtime.startServer(QStringLiteral("gamma"));
+    requestId = runtime.initialize(QStringLiteral("gamma"));
+    transports.value(QStringLiteral("gamma"))
+        ->respond(requestId, initializeResult());
+    QVERIFY(
+        runtime.setLoggingLevel(QStringLiteral("gamma"), QStringLiteral("info"))
+            .isEmpty());
+    QCOMPARE(failureSpy.count(), 2);
+    QVERIFY(transports.value(QStringLiteral("gamma"))
+                ->requestForMethod(QStringLiteral("logging/setLevel"))
+                .isEmpty());
+}
+
 void StdioMcpTransportTest::keepsIndependentCatalogFailuresDegraded()
 {
     using infrastructure::mcp::McpHostRuntime;
@@ -1494,6 +1910,53 @@ void StdioMcpTransportTest::roundTripsPingOverStdio()
     QTRY_COMPARE_WITH_TIMEOUT(completedSpy.count(), 1, 2'000);
     QCOMPARE(completedSpy.constFirst().at(0).toString(), config.serverId);
     QCOMPARE(completedSpy.constFirst().at(1).toString(), requestId);
+}
+
+void StdioMcpTransportTest::roundTripsCompletionAndLoggingOverStdio()
+{
+    auto config = testConfig();
+    infrastructure::mcp::McpClientManager manager;
+    QString errorMessage;
+    QVERIFY2(manager.addServer(config, errorMessage), qPrintable(errorMessage));
+    QSignalSpy initializedSpy(
+        &manager, &infrastructure::mcp::McpClientManager::serverInitialized);
+    QSignalSpy promptsSpy(
+        &manager, &infrastructure::mcp::McpClientManager::promptsChanged);
+    QSignalSpy templatesSpy(
+        &manager,
+        &infrastructure::mcp::McpClientManager::resourceTemplatesChanged);
+    QSignalSpy completionSpy(
+        &manager, &infrastructure::mcp::McpClientManager::completionReady);
+    QSignalSpy levelSpy(
+        &manager, &infrastructure::mcp::McpClientManager::loggingLevelChanged);
+
+    manager.startServer(config.serverId);
+    QVERIFY(!manager.initialize(config.serverId).isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(initializedSpy.count(), 1, 2'000);
+    QVERIFY(!manager.listPrompts(config.serverId).isEmpty());
+    QVERIFY(!manager.listResourceTemplates(config.serverId).isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(promptsSpy.count(), 1, 2'000);
+    QTRY_COMPARE_WITH_TIMEOUT(templatesSpy.count(), 1, 2'000);
+
+    const auto levelRequest =
+        manager.setLoggingLevel(config.serverId, QStringLiteral("warning"));
+    QVERIFY(!levelRequest.isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(levelSpy.count(), 1, 2'000);
+    QCOMPARE(levelSpy.constFirst().at(1).toString(), QStringLiteral("warning"));
+
+    const auto completionRequest =
+        manager.completePrompt(config.serverId, QStringLiteral("summarize"),
+                               QStringLiteral("topic"), QStringLiteral("mcp"));
+    QVERIFY(!completionRequest.isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(completionSpy.count(), 1, 2'000);
+    const auto result = qvariant_cast<infrastructure::mcp::McpCompletionResult>(
+        completionSpy.constFirst().constFirst());
+    QCOMPARE(result.requestId, completionRequest);
+    QCOMPARE(result.values, QStringList({QStringLiteral("mcp-one"),
+                                         QStringLiteral("mcp-two")}));
+    QVERIFY(result.totalProvided);
+    QVERIFY(result.hasMoreProvided);
+    QVERIFY(!result.hasMore);
 }
 
 void StdioMcpTransportTest::builtInFilesystemWritesCppFile()

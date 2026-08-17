@@ -21,6 +21,7 @@ constexpr qsizetype maximumMimeTypeCharacters = 256;
 constexpr qsizetype maximumResourceContents = 64;
 constexpr qsizetype maximumPromptArguments = 64;
 constexpr qsizetype maximumPromptMessages = 128;
+constexpr qsizetype maximumCompletionValues = 2'048;
 
 bool validOptionalString(const QJsonValue& value, qsizetype maximum)
 {
@@ -440,6 +441,80 @@ bool parsePromptResult(const QString& requestId, const QString& serverId,
     return true;
 }
 
+bool parseCompletionResult(const QString& requestId, const QString& serverId,
+                           const QString& referenceType,
+                           const QString& reference,
+                           const QString& argumentName,
+                           const QJsonObject& result, qsizetype maximumBytes,
+                           McpCompletionResult& parsed, QString& errorMessage)
+{
+    const auto serialized =
+        QJsonDocument(result).toJson(QJsonDocument::Compact);
+    if (serialized.size() > maximumBytes)
+    {
+        errorMessage = QStringLiteral("MCP completion result exceeds %1 bytes.")
+                           .arg(maximumBytes);
+        return false;
+    }
+    const auto completionValue = result.value(QStringLiteral("completion"));
+    if (!completionValue.isObject())
+    {
+        errorMessage = QStringLiteral(
+            "completion/complete result has no completion object.");
+        return false;
+    }
+    const auto completion = completionValue.toObject();
+    const auto valuesValue = completion.value(QStringLiteral("values"));
+    const auto totalValue = completion.value(QStringLiteral("total"));
+    const auto hasMoreValue = completion.value(QStringLiteral("hasMore"));
+    if (!valuesValue.isArray() ||
+        valuesValue.toArray().size() > maximumCompletionValues ||
+        (!totalValue.isUndefined() && !totalValue.isDouble()) ||
+        (!hasMoreValue.isUndefined() && !hasMoreValue.isBool()))
+    {
+        errorMessage = QStringLiteral("completion/complete result is invalid.");
+        return false;
+    }
+
+    McpCompletionResult output;
+    output.requestId = requestId;
+    output.serverId = serverId;
+    output.referenceType = referenceType;
+    output.reference = reference;
+    output.argumentName = argumentName;
+    output.rawCompletion = completion;
+    output.originalBytes = serialized.size();
+    for (const auto& value : valuesValue.toArray())
+    {
+        if (!value.isString() || value.toString().size() > maximumUriCharacters)
+        {
+            errorMessage = QStringLiteral(
+                "completion/complete contains an invalid value.");
+            return false;
+        }
+        output.values.append(value.toString());
+    }
+    if (!totalValue.isUndefined())
+    {
+        const auto total = totalValue.toInteger(-1);
+        if (total < 0)
+        {
+            errorMessage =
+                QStringLiteral("completion/complete total is invalid.");
+            return false;
+        }
+        output.total = total;
+        output.totalProvided = true;
+    }
+    if (!hasMoreValue.isUndefined())
+    {
+        output.hasMore = hasMoreValue.toBool();
+        output.hasMoreProvided = true;
+    }
+    parsed = std::move(output);
+    return true;
+}
+
 bool McpResourceRegistry::replaceServerResources(
     const QString& serverId, const QList<McpResourceDefinition>& definitions,
     QString& errorMessage)
@@ -537,6 +612,16 @@ const McpResourceDefinition* McpResourceRegistry::find(const QString& serverId,
     if (server == resources_.constEnd()) return nullptr;
     const auto resource = server->constFind(uri);
     return resource == server->constEnd() ? nullptr : &resource.value();
+}
+
+const McpResourceTemplateDefinition* McpResourceRegistry::findTemplate(
+    const QString& serverId, const QString& uriTemplate) const
+{
+    const auto server = templates_.constFind(serverId);
+    if (server == templates_.constEnd()) return nullptr;
+    const auto resourceTemplate = server->constFind(uriTemplate);
+    return resourceTemplate == server->constEnd() ? nullptr
+                                                  : &resourceTemplate.value();
 }
 
 bool McpPromptRegistry::replaceServerPrompts(

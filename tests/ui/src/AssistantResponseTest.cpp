@@ -744,6 +744,8 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
     server.snapshot.capabilities.resourcesSubscribe = true;
     server.snapshot.capabilities.prompts = true;
     server.snapshot.capabilities.logging = true;
+    server.snapshot.capabilities.completions = true;
+    server.snapshot.loggingLevel = QStringLiteral("warning");
     server.snapshot.instructions = QStringLiteral("Use bounded results.");
     server.snapshot.lastErrorCode = QStringLiteral("last_failure");
     server.snapshot.lastErrorMessage = QStringLiteral("Recovered safely.");
@@ -754,6 +756,10 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
     server.configurationSummary = QStringLiteral("stdio; 2 arguments");
     server.allowlist = QStringLiteral("read_data");
     server.authorizedRoots = QStringLiteral("D:/workspace");
+    server.loggingLevel = QStringLiteral("warning");
+    server.appliedLoggingLevel = QStringLiteral("warning");
+    server.useInstructions = true;
+    server.instructionsSource = QStringLiteral("external (included)");
     server.tools.append({QStringLiteral("read_data"),
                          QStringLiteral("Allowed, read only"),
                          QStringLiteral("read only, idempotent")});
@@ -781,6 +787,14 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
         panel.findChild<QCheckBox*>(QStringLiteral("mcpServerEnabled"));
     auto* instructions =
         panel.findChild<QPlainTextEdit*>(QStringLiteral("mcpInstructions"));
+    auto* useInstructions =
+        panel.findChild<QCheckBox*>(QStringLiteral("mcpUseInstructions"));
+    auto* instructionsSource =
+        panel.findChild<QLabel*>(QStringLiteral("mcpInstructionsSource"));
+    auto* loggingLevel =
+        panel.findChild<QComboBox*>(QStringLiteral("mcpLoggingLevel"));
+    auto* loggingStatus =
+        panel.findChild<QLabel*>(QStringLiteral("mcpLoggingStatus"));
     auto* lastError = panel.findChild<QLabel*>(QStringLiteral("mcpLastError"));
     auto* toolList =
         panel.findChild<QTreeWidget*>(QStringLiteral("mcpToolList"));
@@ -794,6 +808,14 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
         panel.findChild<QToolButton*>(QStringLiteral("readMcpResourceButton"));
     auto* subscribeResource = panel.findChild<QToolButton*>(
         QStringLiteral("subscribeMcpResourceButton"));
+    auto* resourceCompletionArgument = panel.findChild<QComboBox*>(
+        QStringLiteral("mcpResourceCompletionArgument"));
+    auto* resourceCompletionValue = panel.findChild<QLineEdit*>(
+        QStringLiteral("mcpResourceCompletionValue"));
+    auto* completeResource = panel.findChild<QToolButton*>(
+        QStringLiteral("completeMcpResourceButton"));
+    auto* resourceCompletionResult = panel.findChild<QPlainTextEdit*>(
+        QStringLiteral("mcpResourceCompletionResult"));
     auto* promptList =
         panel.findChild<QTreeWidget*>(QStringLiteral("mcpPromptList"));
     auto* promptArguments =
@@ -802,6 +824,14 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
         panel.findChild<QPlainTextEdit*>(QStringLiteral("mcpPromptResult"));
     auto* getPrompt =
         panel.findChild<QToolButton*>(QStringLiteral("getMcpPromptButton"));
+    auto* promptCompletionArgument = panel.findChild<QComboBox*>(
+        QStringLiteral("mcpPromptCompletionArgument"));
+    auto* promptCompletionValue =
+        panel.findChild<QLineEdit*>(QStringLiteral("mcpPromptCompletionValue"));
+    auto* completePrompt = panel.findChild<QToolButton*>(
+        QStringLiteral("completeMcpPromptButton"));
+    auto* promptCompletionResult = panel.findChild<QPlainTextEdit*>(
+        QStringLiteral("mcpPromptCompletionResult"));
     auto* start =
         panel.findChild<QToolButton*>(QStringLiteral("startMcpServerButton"));
     auto* stop =
@@ -820,6 +850,10 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
     QVERIFY(stateLabel != nullptr);
     QVERIFY(enabled != nullptr);
     QVERIFY(instructions != nullptr);
+    QVERIFY(useInstructions != nullptr);
+    QVERIFY(instructionsSource != nullptr);
+    QVERIFY(loggingLevel != nullptr);
+    QVERIFY(loggingStatus != nullptr);
     QVERIFY(lastError != nullptr);
     QVERIFY(toolList != nullptr);
     QVERIFY(diagnostics != nullptr);
@@ -827,10 +861,18 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
     QVERIFY(resourceResult != nullptr);
     QVERIFY(readResource != nullptr);
     QVERIFY(subscribeResource != nullptr);
+    QVERIFY(resourceCompletionArgument != nullptr);
+    QVERIFY(resourceCompletionValue != nullptr);
+    QVERIFY(completeResource != nullptr);
+    QVERIFY(resourceCompletionResult != nullptr);
     QVERIFY(promptList != nullptr);
     QVERIFY(promptArguments != nullptr);
     QVERIFY(promptResult != nullptr);
     QVERIFY(getPrompt != nullptr);
+    QVERIFY(promptCompletionArgument != nullptr);
+    QVERIFY(promptCompletionValue != nullptr);
+    QVERIFY(completePrompt != nullptr);
+    QVERIFY(promptCompletionResult != nullptr);
     QVERIFY(start != nullptr);
     QVERIFY(stop != nullptr);
     QVERIFY(restart != nullptr);
@@ -850,6 +892,10 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
     QVERIFY(enabled->isChecked());
     QCOMPARE(instructions->toPlainText(),
              QStringLiteral("Use bounded results."));
+    QVERIFY(useInstructions->isChecked());
+    QCOMPARE(instructionsSource->text(), QStringLiteral("external (included)"));
+    QCOMPARE(loggingLevel->currentData().toString(), QStringLiteral("warning"));
+    QCOMPARE(loggingStatus->text(), QStringLiteral("Applied: warning"));
     QCOMPARE(lastError->text(),
              QStringLiteral("last_failure: Recovered safely."));
     QCOMPARE(toolList->topLevelItemCount(), 1);
@@ -863,6 +909,8 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
     QCOMPARE(promptList->topLevelItem(0)->text(0), QStringLiteral("summarize"));
     QVERIFY(promptArguments->text().contains(QStringLiteral("topic")));
     QVERIFY(getPrompt->isEnabled());
+    QCOMPARE(promptCompletionArgument->currentText(), QStringLiteral("topic"));
+    QVERIFY(completePrompt->isEnabled());
     QVERIFY(!start->isEnabled());
     QVERIFY(stop->isEnabled());
     QVERIFY(restart->isEnabled());
@@ -873,6 +921,9 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
     QSignalSpy addSpy(&panel, &ui::McpControlPanel::addServerRequested);
     QSignalSpy removeSpy(&panel, &ui::McpControlPanel::removeServerRequested);
     QSignalSpy enabledSpy(&panel, &ui::McpControlPanel::serverEnabledChanged);
+    QSignalSpy instructionsSpy(
+        &panel, &ui::McpControlPanel::instructionsEnabledChanged);
+    QSignalSpy loggingSpy(&panel, &ui::McpControlPanel::loggingLevelRequested);
     QSignalSpy startSpy(&panel, &ui::McpControlPanel::startServerRequested);
     QSignalSpy stopSpy(&panel, &ui::McpControlPanel::stopServerRequested);
     QSignalSpy restartSpy(&panel, &ui::McpControlPanel::restartServerRequested);
@@ -883,6 +934,10 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
     QSignalSpy subscriptionSpy(
         &panel, &ui::McpControlPanel::resourceSubscriptionRequested);
     QSignalSpy getPromptSpy(&panel, &ui::McpControlPanel::getPromptRequested);
+    QSignalSpy completePromptSpy(&panel,
+                                 &ui::McpControlPanel::completePromptRequested);
+    QSignalSpy completeResourceSpy(
+        &panel, &ui::McpControlPanel::completeResourceTemplateRequested);
     add->click();
     remove->click();
     stop->click();
@@ -891,8 +946,21 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
     refresh->click();
     readResource->click();
     subscribeResource->click();
+    resourceList->setCurrentItem(resourceList->topLevelItem(1));
+    QCOMPARE(resourceCompletionArgument->currentText(), QStringLiteral("name"));
+    resourceCompletionValue->setText(QStringLiteral("read"));
+    QVERIFY(completeResource->isEnabled());
+    completeResource->click();
     promptArguments->setText(QStringLiteral(R"({"topic":"MCP"})"));
     getPrompt->click();
+    promptCompletionValue->setText(QStringLiteral("mc"));
+    completePrompt->click();
+    useInstructions->click();
+    const auto infoIndex = loggingLevel->findData(QStringLiteral("info"));
+    QVERIFY(infoIndex >= 0);
+    loggingLevel->setCurrentIndex(infoIndex);
+    QVERIFY(QMetaObject::invokeMethod(loggingLevel, "activated",
+                                      Q_ARG(int, infoIndex)));
     enabled->click();
     QCOMPARE(addSpy.count(), 1);
     QCOMPARE(removeSpy.count(), 1);
@@ -908,6 +976,13 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
              QStringLiteral("test://resource/readme"));
     QCOMPARE(subscriptionSpy.count(), 1);
     QCOMPARE(subscriptionSpy.constFirst().at(2).toBool(), true);
+    QCOMPARE(completeResourceSpy.count(), 1);
+    QCOMPARE(completeResourceSpy.constFirst().at(1).toString(),
+             QStringLiteral("test://resource/{name}"));
+    QCOMPARE(completeResourceSpy.constFirst().at(2).toString(),
+             QStringLiteral("name"));
+    QCOMPARE(completeResourceSpy.constFirst().at(3).toString(),
+             QStringLiteral("read"));
     QCOMPARE(getPromptSpy.count(), 1);
     QCOMPARE(getPromptSpy.constFirst().at(1).toString(),
              QStringLiteral("summarize"));
@@ -917,6 +992,26 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
                  .value(QStringLiteral("topic"))
                  .toString(),
              QStringLiteral("MCP"));
+    QCOMPARE(completePromptSpy.count(), 1);
+    QCOMPARE(completePromptSpy.constFirst().at(1).toString(),
+             QStringLiteral("summarize"));
+    QCOMPARE(completePromptSpy.constFirst().at(2).toString(),
+             QStringLiteral("topic"));
+    QCOMPARE(completePromptSpy.constFirst().at(3).toString(),
+             QStringLiteral("mc"));
+    QCOMPARE(completePromptSpy.constFirst()
+                 .at(4)
+                 .toJsonObject()
+                 .value(QStringLiteral("topic"))
+                 .toString(),
+             QStringLiteral("MCP"));
+    QCOMPARE(instructionsSpy.count(), 1);
+    QCOMPARE(instructionsSpy.constFirst().at(0).toString(), server.serverId);
+    QCOMPARE(instructionsSpy.constFirst().at(1).toBool(), false);
+    QCOMPARE(instructionsSpy.constFirst().at(2).toBool(), false);
+    QCOMPARE(loggingSpy.count(), 1);
+    QCOMPARE(loggingSpy.constFirst().at(0).toString(), server.serverId);
+    QCOMPARE(loggingSpy.constFirst().at(1).toString(), QStringLiteral("info"));
     QCOMPARE(enabledSpy.count(), 1);
     QCOMPARE(enabledSpy.constFirst().at(0).toString(), server.serverId);
     QCOMPARE(enabledSpy.constFirst().at(1).toBool(), false);
@@ -945,6 +1040,25 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
     panel.showPromptResult(displayedPrompt);
     QVERIFY(
         promptResult->toPlainText().contains(QStringLiteral("Summarize MCP")));
+
+    infrastructure::mcp::McpCompletionResult displayedCompletion;
+    displayedCompletion.serverId = server.serverId;
+    displayedCompletion.referenceType = QStringLiteral("ref/prompt");
+    displayedCompletion.values = {QStringLiteral("mcp"),
+                                  QStringLiteral("mcp host")};
+    displayedCompletion.total = 3;
+    displayedCompletion.totalProvided = true;
+    displayedCompletion.hasMore = true;
+    displayedCompletion.hasMoreProvided = true;
+    panel.showCompletionResult(displayedCompletion);
+    QVERIFY(promptCompletionResult->toPlainText().contains(
+        QStringLiteral("mcp host")));
+    QVERIFY(promptCompletionResult->toPlainText().contains(
+        QStringLiteral("more available")));
+    displayedCompletion.referenceType = QStringLiteral("ref/resource");
+    panel.showCompletionResult(displayedCompletion);
+    QVERIFY(resourceCompletionResult->toPlainText().contains(
+        QStringLiteral("mcp host")));
 
     server.snapshot.state = McpServerState::Stopped;
     panel.setServers({server});

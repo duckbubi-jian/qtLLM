@@ -33,6 +33,7 @@ struct McpServerSnapshot
     McpServerCapabilities capabilities;
     QJsonObject serverInfo;
     QString instructions;
+    QString loggingLevel;
     qsizetype toolCount = 0;
     qsizetype resourceCount = 0;
     qsizetype resourceTemplateCount = 0;
@@ -62,6 +63,7 @@ class McpServerRegistry final
                           qsizetype resourceTemplateCount);
     bool replacePrompts(const QString& serverId, qsizetype promptCount);
     bool replaceRoots(const QString& serverId, qsizetype rootCount);
+    bool setLoggingLevel(const QString& serverId, const QString& level);
     bool revokeCapabilities(const QString& serverId);
     bool setError(const QString& serverId, const QString& code,
                   const QString& message);

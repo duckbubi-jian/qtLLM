@@ -156,6 +156,8 @@ void WorkerClientTest::storesMcpServerConfiguration()
     config.arguments = {QStringLiteral("--stdio")};
     config.environment.insert(QStringLiteral("TOKEN"), QStringLiteral("value"));
     config.toolAllowlist = {QStringLiteral("echo")};
+    config.loggingLevel = QStringLiteral("notice");
+    config.useInstructions = false;
 
     infrastructure::SettingsStore settings(settingsPath);
     QVERIFY(settings.setMcpServerConfigs({config}));
@@ -166,6 +168,12 @@ void WorkerClientTest::storesMcpServerConfiguration()
     QCOMPARE(loaded.constFirst().arguments, config.arguments);
     QCOMPARE(loaded.constFirst().environment, config.environment);
     QCOMPARE(loaded.constFirst().toolAllowlist, config.toolAllowlist);
+    QCOMPARE(loaded.constFirst().loggingLevel, config.loggingLevel);
+    QCOMPARE(loaded.constFirst().useInstructions, config.useInstructions);
+
+    QVERIFY(settings.builtInFilesystemMcpUseInstructions());
+    QVERIFY(settings.setBuiltInFilesystemMcpUseInstructions(false));
+    QVERIFY(!settings.builtInFilesystemMcpUseInstructions());
 
     const QStringList alwaysAllowed{
         QStringLiteral("filesystem.write_file"),

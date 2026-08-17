@@ -30,6 +30,10 @@ McpClientManager::McpClientManager(QObject* parent) : QObject(parent)
             &McpClientManager::promptsChanged);
     connect(&runtime_, &McpHostRuntime::promptReady, this,
             &McpClientManager::promptReady);
+    connect(&runtime_, &McpHostRuntime::completionReady, this,
+            &McpClientManager::completionReady);
+    connect(&runtime_, &McpHostRuntime::loggingLevelChanged, this,
+            &McpClientManager::loggingLevelChanged);
     connect(&runtime_, &McpHostRuntime::rootsRequested, this,
             &McpClientManager::rootsRequested);
     connect(&runtime_, &McpHostRuntime::pingCompleted, this,
@@ -130,6 +134,12 @@ QList<McpServerSnapshot> McpClientManager::serverSnapshots() const
     return runtime_.serverSnapshots();
 }
 
+bool McpClientManager::setUseInstructions(const QString& serverId, bool enabled,
+                                          QString& errorMessage)
+{
+    return runtime_.setUseInstructions(serverId, enabled, errorMessage);
+}
+
 void McpClientManager::startServer(const QString& serverId)
 {
     runtime_.startServer(serverId);
@@ -193,6 +203,31 @@ QString McpClientManager::getPrompt(const QString& serverId,
                                     const QJsonObject& arguments)
 {
     return runtime_.getPrompt(serverId, name, arguments);
+}
+
+QString McpClientManager::completePrompt(const QString& serverId,
+                                         const QString& promptName,
+                                         const QString& argumentName,
+                                         const QString& value,
+                                         const QJsonObject& contextArguments)
+{
+    return runtime_.completePrompt(serverId, promptName, argumentName, value,
+                                   contextArguments);
+}
+
+QString McpClientManager::completeResourceTemplate(
+    const QString& serverId, const QString& uriTemplate,
+    const QString& argumentName, const QString& value,
+    const QJsonObject& contextArguments)
+{
+    return runtime_.completeResourceTemplate(
+        serverId, uriTemplate, argumentName, value, contextArguments);
+}
+
+QString McpClientManager::setLoggingLevel(const QString& serverId,
+                                          const QString& level)
+{
+    return runtime_.setLoggingLevel(serverId, level);
 }
 
 QString McpClientManager::callTool(const QString& qualifiedToolName,

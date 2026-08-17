@@ -417,6 +417,38 @@ MainWindow::MainWindow(const QString& settingsFilePath, QWidget* parent)
                     mcpControlPanel_->showPromptResult(result);
             });
     connect(&mcpManager_,
+            &infrastructure::mcp::McpClientManager::completionReady, this,
+            [this](const infrastructure::mcp::McpCompletionResult& result)
+            {
+                appendMcpDiagnostic(
+                    result.serverId, tr("Completion"),
+                    tr("Returned %n values", nullptr, result.values.size()));
+                if (mcpControlPanel_ != nullptr)
+                    mcpControlPanel_->showCompletionResult(result);
+            });
+    connect(
+        &mcpManager_,
+        &infrastructure::mcp::McpClientManager::loggingLevelChanged, this,
+        [this](const QString& serverId, const QString& level)
+        {
+            pendingMcpLoggingLevels_.remove(serverId);
+            const auto iterator = std::find_if(
+                mcpConfigurations_.begin(), mcpConfigurations_.end(),
+                [&serverId](const infrastructure::mcp::McpServerConfig& config)
+                { return config.serverId == serverId; });
+            if (iterator != mcpConfigurations_.end() &&
+                iterator->loggingLevel != level)
+            {
+                iterator->loggingLevel = level;
+                if (!settingsStore_.setMcpServerConfigs(mcpConfigurations_))
+                    showError(QStringLiteral("mcp_config_not_saved"),
+                              tr("The MCP logging level could not be saved."));
+            }
+            appendMcpDiagnostic(serverId, tr("Logging"),
+                                tr("Applied level %1").arg(level));
+            refreshMcpServerMenu();
+        });
+    connect(&mcpManager_,
             &infrastructure::mcp::McpClientManager::resourceUpdated, this,
             [this](const QString& serverId, const QString& uri)
             {
@@ -475,6 +507,8 @@ MainWindow::MainWindow(const QString& settingsFilePath, QWidget* parent)
                const QString& code, const QString& message)
         {
             if (method == QLatin1String("tools/call")) return;
+            if (method == QLatin1String("logging/setLevel"))
+                pendingMcpLoggingLevels_.remove(serverId);
             const auto safeMessage = redactSensitiveText(message);
             mcpServerErrors_.insert(serverId, safeMessage);
             appendMcpDiagnostic(serverId,
@@ -768,6 +802,77 @@ void MainWindow::setExternalMcpServerEnabled(const QString& serverId,
     refreshMcpServerMenu();
 }
 
+void MainWindow::setMcpInstructionsEnabled(const QString& serverId,
+                                           bool builtIn, bool enabled)
+{
+    if (agentRunActive_ || chatController_.isGenerating())
+    {
+        refreshMcpServerMenu();
+        return;
+    }
+
+    QString errorMessage;
+    if (builtIn)
+    {
+        const auto previous =
+            settingsStore_.builtInFilesystemMcpUseInstructions();
+        if (previous == enabled) return;
+        if (!settingsStore_.setBuiltInFilesystemMcpUseInstructions(enabled))
+        {
+            showError(QStringLiteral("mcp_config_not_saved"),
+                      tr("The MCP instructions setting could not be saved."));
+            refreshMcpServerMenu();
+            return;
+        }
+        if (mcpManager_.serverIds().contains(serverId) &&
+            !mcpManager_.setUseInstructions(serverId, enabled, errorMessage))
+        {
+            settingsStore_.setBuiltInFilesystemMcpUseInstructions(previous);
+            showError(QStringLiteral("mcp_config_rejected"), errorMessage);
+        }
+        refreshMcpServerMenu();
+        return;
+    }
+
+    const auto iterator = std::find_if(
+        mcpConfigurations_.begin(), mcpConfigurations_.end(),
+        [&serverId](const infrastructure::mcp::McpServerConfig& config)
+        { return config.serverId == serverId; });
+    if (iterator == mcpConfigurations_.end() ||
+        iterator->useInstructions == enabled)
+        return;
+    const auto previous = iterator->useInstructions;
+    iterator->useInstructions = enabled;
+    if (!settingsStore_.setMcpServerConfigs(mcpConfigurations_))
+    {
+        iterator->useInstructions = previous;
+        showError(QStringLiteral("mcp_config_not_saved"),
+                  tr("The MCP instructions setting could not be saved."));
+        refreshMcpServerMenu();
+        return;
+    }
+    if (mcpManager_.serverIds().contains(serverId) &&
+        !mcpManager_.setUseInstructions(serverId, enabled, errorMessage))
+    {
+        iterator->useInstructions = previous;
+        settingsStore_.setMcpServerConfigs(mcpConfigurations_);
+        showError(QStringLiteral("mcp_config_rejected"), errorMessage);
+    }
+    refreshMcpServerMenu();
+}
+
+void MainWindow::setMcpLoggingLevel(const QString& serverId,
+                                    const QString& level)
+{
+    if (agentRunActive_ || chatController_.isGenerating()) return;
+    const auto requestId = mcpManager_.setLoggingLevel(serverId, level);
+    if (requestId.isEmpty()) return;
+    pendingMcpLoggingLevels_.insert(serverId, level);
+    appendMcpDiagnostic(serverId, tr("Logging"),
+                        tr("Applying level %1").arg(level));
+    refreshMcpServerMenu();
+}
+
 void MainWindow::removeExternalMcpServer(const QString& serverId)
 {
     if (agentRunActive_ || chatController_.isGenerating()) return;
@@ -857,6 +962,10 @@ void MainWindow::showMcpControlPanel()
                 else
                     setExternalMcpServerEnabled(serverId, enabled);
             });
+    connect(mcpControlPanel_, &McpControlPanel::instructionsEnabledChanged,
+            this, &MainWindow::setMcpInstructionsEnabled);
+    connect(mcpControlPanel_, &McpControlPanel::loggingLevelRequested, this,
+            &MainWindow::setMcpLoggingLevel);
     connect(mcpControlPanel_, &McpControlPanel::startServerRequested, this,
             &MainWindow::startMcpServer);
     connect(mcpControlPanel_, &McpControlPanel::stopServerRequested, this,
@@ -873,6 +982,11 @@ void MainWindow::showMcpControlPanel()
             this, &MainWindow::setMcpResourceSubscribed);
     connect(mcpControlPanel_, &McpControlPanel::getPromptRequested, this,
             &MainWindow::getMcpPrompt);
+    connect(mcpControlPanel_, &McpControlPanel::completePromptRequested, this,
+            &MainWindow::completeMcpPrompt);
+    connect(mcpControlPanel_,
+            &McpControlPanel::completeResourceTemplateRequested, this,
+            &MainWindow::completeMcpResourceTemplate);
     refreshMcpControlPanel();
     mcpControlPanel_->show();
 }
@@ -965,6 +1079,26 @@ void MainWindow::getMcpPrompt(const QString& serverId, const QString& name,
 {
     if (agentRunActive_ || chatController_.isGenerating()) return;
     mcpManager_.getPrompt(serverId, name, arguments);
+}
+
+void MainWindow::completeMcpPrompt(const QString& serverId, const QString& name,
+                                   const QString& argumentName,
+                                   const QString& value,
+                                   const QJsonObject& contextArguments)
+{
+    if (agentRunActive_ || chatController_.isGenerating()) return;
+    mcpManager_.completePrompt(serverId, name, argumentName, value,
+                               contextArguments);
+}
+
+void MainWindow::completeMcpResourceTemplate(const QString& serverId,
+                                             const QString& uriTemplate,
+                                             const QString& argumentName,
+                                             const QString& value)
+{
+    if (agentRunActive_ || chatController_.isGenerating()) return;
+    mcpManager_.completeResourceTemplate(serverId, uriTemplate, argumentName,
+                                         value);
 }
 
 void MainWindow::loadSelectedModel()
@@ -1700,6 +1834,7 @@ void MainWindow::refreshMcpControlPanel()
     const auto allResources = mcpManager_.resources();
     const auto allTemplates = mcpManager_.resourceTemplates();
     const auto allPrompts = mcpManager_.prompts();
+    const auto effectiveInstructions = mcpManager_.agentInstructions();
     const auto riskText = [this](infrastructure::mcp::ToolRisk risk)
     {
         switch (risk)
@@ -1749,7 +1884,7 @@ void MainWindow::refreshMcpControlPanel()
 
     const auto makePresentation =
         [this, controlsEnabled, &allTools, &allResources, &allTemplates,
-         &allPrompts, &policyText,
+         &allPrompts, &effectiveInstructions, &policyText,
          &hintsText](const infrastructure::mcp::McpServerConfig& config,
                      const QString& displayName, bool builtIn, bool available,
                      bool enabled)
@@ -1809,6 +1944,27 @@ void MainWindow::refreshMcpControlPanel()
         presentation.authorizedRoots = roots.isEmpty()
                                            ? tr("None configured by the Host")
                                            : roots.join(QLatin1Char('\n'));
+        presentation.loggingLevel = pendingMcpLoggingLevels_.value(
+            config.serverId, config.loggingLevel);
+        presentation.appliedLoggingLevel = presentation.snapshot.loggingLevel;
+        presentation.useInstructions = config.useInstructions;
+        const auto instructionsPrefix = config.serverId + QStringLiteral(": ");
+        QString effectiveServerInstructions;
+        for (const auto& line : effectiveInstructions.split(QLatin1Char('\n')))
+            if (line.startsWith(instructionsPrefix))
+            {
+                effectiveServerInstructions =
+                    line.mid(instructionsPrefix.size());
+                break;
+            }
+        const auto instructionsIncluded = !effectiveServerInstructions.isNull();
+        if (instructionsIncluded)
+            presentation.snapshot.instructions = effectiveServerInstructions;
+        presentation.instructionsSource =
+            presentation.snapshot.instructions.trimmed().isEmpty()
+                ? tr("%1 (none advertised)").arg(config.serverId)
+            : instructionsIncluded ? tr("%1 (included)").arg(config.serverId)
+                                   : tr("%1 (excluded)").arg(config.serverId);
         for (const auto& tool : allTools)
         {
             if (tool.serverId != config.serverId) continue;
@@ -1844,6 +2000,8 @@ void MainWindow::refreshMcpControlPanel()
         config.workingDirectory = workspacePath_;
         config.arguments = {QStringLiteral("--write-root"), workspacePath_};
         config.authorizedRoots = {workspacePath_};
+        config.useInstructions =
+            settingsStore_.builtInFilesystemMcpUseInstructions();
         presentations.append(
             makePresentation(config, tr("Built-in filesystem"), true, true,
                              settingsStore_.builtInFilesystemMcpEnabled()));
@@ -1905,6 +2063,8 @@ bool MainWindow::startBuiltInFilesystem(const QString& workspacePath,
             QCoreApplication::applicationVersion(), workspacePath, config,
             errorMessage))
         return false;
+    config.useInstructions =
+        settingsStore_.builtInFilesystemMcpUseInstructions();
 
     if (builtInFilesystemRunning_)
     {

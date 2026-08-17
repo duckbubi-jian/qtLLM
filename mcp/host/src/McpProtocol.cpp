@@ -9,6 +9,11 @@ namespace
 const QStringList supportedVersions{QStringLiteral("2025-06-18"),
                                     QStringLiteral("2025-03-26"),
                                     QStringLiteral("2024-11-05")};
+const QStringList loggingLevels{
+    QStringLiteral("debug"),  QStringLiteral("info"),
+    QStringLiteral("notice"), QStringLiteral("warning"),
+    QStringLiteral("error"),  QStringLiteral("critical"),
+    QStringLiteral("alert"),  QStringLiteral("emergency")};
 
 bool readCapabilityObject(const QJsonObject& capabilities, const QString& name,
                           QJsonObject& value, QString& errorMessage)
@@ -40,6 +45,16 @@ QStringList supportedProtocolVersions()
 bool isSupportedProtocolVersion(const QString& version)
 {
     return supportedProtocolVersions().contains(version);
+}
+
+QStringList supportedLoggingLevels()
+{
+    return loggingLevels;
+}
+
+bool isSupportedLoggingLevel(const QString& level)
+{
+    return loggingLevels.contains(level);
 }
 
 bool parseInitializeResult(const QJsonObject& object,

@@ -44,6 +44,7 @@ class MainWindow final : public QMainWindow
     void startMcpServer(const QString& serverId);
     void stopMcpServer(const QString& serverId);
     void restartMcpServer(const QString& serverId);
+    void pingMcpServer(const QString& serverId);
     void refreshMcpTools(const QString& serverId);
     void readMcpResource(const QString& serverId, const QString& uri);
     void setMcpResourceSubscribed(const QString& serverId, const QString& uri,

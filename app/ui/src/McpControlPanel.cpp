@@ -307,6 +307,9 @@ McpControlPanel::McpControlPanel(QWidget* parent) : QDialog(parent)
     restartButton_ =
         actionButton(detailPane, QStringLiteral("restartMcpServerButton"),
                      tr("Restart"), QStyle::SP_BrowserReload);
+    pingButton_ =
+        actionButton(detailPane, QStringLiteral("pingMcpServerButton"),
+                     tr("Ping"), QStyle::SP_ComputerIcon);
     refreshButton_ =
         actionButton(detailPane, QStringLiteral("refreshMcpToolsButton"),
                      tr("Refresh catalogs"), QStyle::SP_DialogApplyButton);
@@ -314,6 +317,7 @@ McpControlPanel::McpControlPanel(QWidget* parent) : QDialog(parent)
     runtimeActions->addWidget(stopButton_);
     runtimeActions->addWidget(restartButton_);
     runtimeActions->addStretch(1);
+    runtimeActions->addWidget(pingButton_);
     runtimeActions->addWidget(refreshButton_);
     detailLayout->addLayout(runtimeActions);
 
@@ -360,6 +364,12 @@ McpControlPanel::McpControlPanel(QWidget* parent) : QDialog(parent)
             {
                 if (const auto* server = selectedServer())
                     emit restartServerRequested(server->serverId);
+            });
+    connect(pingButton_, &QToolButton::clicked, this,
+            [this]
+            {
+                if (const auto* server = selectedServer())
+                    emit pingServerRequested(server->serverId);
             });
     connect(refreshButton_, &QToolButton::clicked, this,
             [this]
@@ -641,6 +651,8 @@ void McpControlPanel::updateDetails()
     stopButton_->setEnabled(controls && state != McpServerState::Stopped &&
                             state != McpServerState::Stopping);
     restartButton_->setEnabled(controls && !busy);
+    pingButton_->setEnabled(controls && (state == McpServerState::Ready ||
+                                         state == McpServerState::Degraded));
     refreshButton_->setEnabled(
         controls &&
         (server->snapshot.capabilities.tools ||

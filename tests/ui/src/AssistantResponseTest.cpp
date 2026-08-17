@@ -737,6 +737,8 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
         panel.findChild<QToolButton*>(QStringLiteral("stopMcpServerButton"));
     auto* restart =
         panel.findChild<QToolButton*>(QStringLiteral("restartMcpServerButton"));
+    auto* ping =
+        panel.findChild<QToolButton*>(QStringLiteral("pingMcpServerButton"));
     auto* refresh =
         panel.findChild<QToolButton*>(QStringLiteral("refreshMcpToolsButton"));
     auto* add =
@@ -761,6 +763,7 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
     QVERIFY(start != nullptr);
     QVERIFY(stop != nullptr);
     QVERIFY(restart != nullptr);
+    QVERIFY(ping != nullptr);
     QVERIFY(refresh != nullptr);
     QVERIFY(add != nullptr);
     QVERIFY(remove != nullptr);
@@ -792,6 +795,7 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
     QVERIFY(!start->isEnabled());
     QVERIFY(stop->isEnabled());
     QVERIFY(restart->isEnabled());
+    QVERIFY(ping->isEnabled());
     QVERIFY(refresh->isEnabled());
     QVERIFY(remove->isEnabled());
 
@@ -801,6 +805,7 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
     QSignalSpy startSpy(&panel, &ui::McpControlPanel::startServerRequested);
     QSignalSpy stopSpy(&panel, &ui::McpControlPanel::stopServerRequested);
     QSignalSpy restartSpy(&panel, &ui::McpControlPanel::restartServerRequested);
+    QSignalSpy pingSpy(&panel, &ui::McpControlPanel::pingServerRequested);
     QSignalSpy refreshSpy(&panel, &ui::McpControlPanel::refreshToolsRequested);
     QSignalSpy readResourceSpy(&panel,
                                &ui::McpControlPanel::readResourceRequested);
@@ -811,6 +816,7 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
     remove->click();
     stop->click();
     restart->click();
+    ping->click();
     refresh->click();
     readResource->click();
     subscribeResource->click();
@@ -822,6 +828,8 @@ void AssistantResponseTest::presentsMcpServerControlAndSignals()
     QCOMPARE(removeSpy.constFirst().constFirst().toString(), server.serverId);
     QCOMPARE(stopSpy.count(), 1);
     QCOMPARE(restartSpy.count(), 1);
+    QCOMPARE(pingSpy.count(), 1);
+    QCOMPARE(pingSpy.constFirst().constFirst().toString(), server.serverId);
     QCOMPARE(refreshSpy.count(), 1);
     QCOMPARE(readResourceSpy.count(), 1);
     QCOMPARE(readResourceSpy.constFirst().at(0).toString(), server.serverId);

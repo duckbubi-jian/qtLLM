@@ -32,6 +32,10 @@ McpClientManager::McpClientManager(QObject* parent) : QObject(parent)
             &McpClientManager::promptReady);
     connect(&runtime_, &McpHostRuntime::rootsRequested, this,
             &McpClientManager::rootsRequested);
+    connect(&runtime_, &McpHostRuntime::pingCompleted, this,
+            &McpClientManager::pingCompleted);
+    connect(&runtime_, &McpHostRuntime::pingRequested, this,
+            &McpClientManager::pingRequested);
     connect(&runtime_, &McpHostRuntime::toolResultReady, this,
             &McpClientManager::toolResultReady);
     connect(&runtime_, &McpHostRuntime::requestFailed, this,
@@ -139,6 +143,11 @@ void McpClientManager::stopServer(const QString& serverId)
 QString McpClientManager::initialize(const QString& serverId)
 {
     return runtime_.initialize(serverId);
+}
+
+QString McpClientManager::ping(const QString& serverId)
+{
+    return runtime_.ping(serverId);
 }
 
 QString McpClientManager::listTools(const QString& serverId)

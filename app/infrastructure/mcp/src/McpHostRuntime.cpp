@@ -471,6 +471,33 @@ QString McpHostRuntime::initialize(const QString& serverId)
     return requestId;
 }
 
+QString McpHostRuntime::ping(const QString& serverId)
+{
+    const auto iterator = connections_.find(serverId);
+    if (iterator == connections_.end())
+        return invalidRequest(serverId, QStringLiteral("ping"),
+                              QStringLiteral("Unknown MCP server."));
+    const auto snapshot = serverRegistry_.snapshot(serverId);
+    if (!snapshot || (snapshot->state != McpServerState::Ready &&
+                      snapshot->state != McpServerState::Degraded))
+        return invalidRequest(serverId, QStringLiteral("ping"),
+                              QStringLiteral("MCP server is not ready."));
+    if (hasPendingOperation(serverId, Operation::Ping))
+        return invalidRequest(serverId, QStringLiteral("ping"),
+                              QStringLiteral("MCP ping is already pending."));
+    const auto requestId = iterator->transport->request(
+        QStringLiteral("ping"), {}, iterator->config.requestTimeoutMs);
+    if (!requestId.isEmpty())
+    {
+        PendingRequest pending;
+        pending.serverId = serverId;
+        pending.operation = Operation::Ping;
+        pending.startedAtMs = notificationClock_.elapsed();
+        pending_.insert(requestId, std::move(pending));
+    }
+    return requestId;
+}
+
 QString McpHostRuntime::listTools(const QString& serverId)
 {
     const auto iterator = connections_.find(serverId);
@@ -974,6 +1001,12 @@ void McpHostRuntime::handleServerRequest(const QString& serverId,
             QStringLiteral("MCP Host is not ready for Server requests."));
         return;
     }
+    if (method == QLatin1String("ping"))
+    {
+        serverTransport->respond(requestId, {});
+        emit pingRequested(serverId);
+        return;
+    }
     if (method != QLatin1String("roots/list"))
     {
         serverTransport->respondError(requestId, -32601,
@@ -1029,6 +1062,13 @@ void McpHostRuntime::handleResponse(const QString& serverId,
                 QStringLiteral("notifications/initialized"));
         publishSnapshot(serverId);
         emit serverInitialized(serverId, initialization.serverInfo);
+        return;
+    }
+    if (pending.operation == Operation::Ping)
+    {
+        emit pingCompleted(serverId, requestId,
+                           qMax<qint64>(0, notificationClock_.elapsed() -
+                                               pending.startedAtMs));
         return;
     }
     if (pending.operation == Operation::ListTools)

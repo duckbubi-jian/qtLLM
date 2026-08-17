@@ -19,6 +19,8 @@ current code, not planned support. Planned work is tracked in
 
 | Version | Status | Transport | Conformance coverage |
 | --- | --- | --- | --- |
+| `2025-06-18` | Supported | stdio | lifecycle, bidirectional ping, Tools, Resources, Prompts, Roots, rich results |
+| `2025-03-26` | Supported | stdio | initialize parsing and shared stdio/core-message compatibility |
 | `2024-11-05` | Supported | stdio | lifecycle, paginated and dynamic Tools, rich results, errors, timeout, protocol cancellation |
 | Any other version | Rejected | none | unsupported-version integration test |
 
@@ -35,7 +37,8 @@ feature differences have dedicated Fake Server coverage.
 | Lifecycle | Multi-state Server health model | Supported |
 | Lifecycle | Start, stop, restart, enable, and disable per Server | Supported |
 | Transport | stdio JSON-RPC | Supported |
-| Transport | Streamable HTTP | Not implemented |
+| Transport | Streamable HTTP | Intentionally out of scope |
+| Utilities | Host-to-Server and Server-to-Host `ping` | Supported |
 | Tools | `tools/list` | Supported |
 | Tools | Cursor pagination and atomic snapshots | Supported |
 | Tools | `tools/call` | Supported |
@@ -56,6 +59,7 @@ feature differences have dedicated Fake Server coverage.
 | Resources | `notifications/resources/list_changed` and `notifications/resources/updated` | Supported, subscribed URIs only |
 | Prompts | Discovery and get | Supported |
 | Prompts | `notifications/prompts/list_changed` | Supported |
+| Completion | `completion/complete` | Not implemented |
 | Roots | Per-Server authorized roots | Supported |
 | Server requests | `roots/list` | Supported, explicit configured roots only |
 | Server requests | Unknown or unsupported methods | Rejected with standard JSON-RPC error |
@@ -65,6 +69,8 @@ feature differences have dedicated Fake Server coverage.
 
 - MCP Servers run outside the model worker. stdio Servers are child processes
   of the Qt application.
+- The Host does not implement HTTP transport or HTTP authentication. Networked
+  MCP Servers and web-search integration are currently deferred.
 - stdout is JSON-RPC only; stderr is diagnostic output.
 - The Host UI retains at most 200 diagnostic entries per Server. Credential
   fields, common secret assignments, and Bearer tokens are redacted before
@@ -92,6 +98,9 @@ feature differences have dedicated Fake Server coverage.
 - A `Failed` Server whose transport process is still running is stopped before
   restart, so the runtime cannot remain stuck in `Starting` after a transport
   start no-op.
+- The Host advertises `2025-06-18`, accepts the three explicitly listed
+  protocol versions, and rejects untested versions.
+- Ping has fake-transport and real-stdio coverage in both directions.
 - Multi-page tool discovery remains invisible until every page succeeds. A
   later-page failure or repeated cursor retains the previous snapshot.
 - Resource, resource-template, and Prompt catalogs use the same atomic

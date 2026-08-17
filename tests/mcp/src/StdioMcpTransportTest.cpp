@@ -219,6 +219,7 @@ class StdioMcpTransportTest final : public QObject
    private slots:
     void listsAndCallsTools();
     void parsesInitializeCapabilities();
+    void negotiatesSupportedProtocolVersions();
     void rejectsUnsupportedProtocolVersion();
     void rejectsUndeclaredToolsCapability();
     void propagatesRemoteErrors();
@@ -239,8 +240,10 @@ class StdioMcpTransportTest final : public QObject
     void sendsProtocolCancellation();
     void discoversReadsAndGetsMcpCatalogs();
     void keepsIndependentCatalogFailuresDegraded();
+    void pingsBothDirections();
     void servesOnlyAuthorizedRoots();
     void roundTripsRootsOverStdio();
+    void roundTripsPingOverStdio();
 };
 
 infrastructure::mcp::McpServerConfig testConfig()
@@ -256,9 +259,14 @@ infrastructure::mcp::McpServerConfig testConfig()
 void StdioMcpTransportTest::parsesInitializeCapabilities()
 {
     QCOMPARE(infrastructure::mcp::latestSupportedProtocolVersion(),
-             QStringLiteral("2024-11-05"));
-    QVERIFY(infrastructure::mcp::isSupportedProtocolVersion(
-        QStringLiteral("2024-11-05")));
+             QStringLiteral("2025-06-18"));
+    const QStringList supportedVersions{QStringLiteral("2025-06-18"),
+                                        QStringLiteral("2025-03-26"),
+                                        QStringLiteral("2024-11-05")};
+    QCOMPARE(infrastructure::mcp::supportedProtocolVersions(),
+             supportedVersions);
+    for (const auto& version : supportedVersions)
+        QVERIFY(infrastructure::mcp::isSupportedProtocolVersion(version));
     QVERIFY(!infrastructure::mcp::isSupportedProtocolVersion(
         QStringLiteral("2099-01-01")));
     QVERIFY(!infrastructure::mcp::isSupportedProtocolVersion(
@@ -275,7 +283,8 @@ void StdioMcpTransportTest::parsesInitializeCapabilities()
         {QStringLiteral("logging"), QJsonObject{}},
         {QStringLiteral("completions"), QJsonObject{}}};
     const QJsonObject initialize{
-        {QStringLiteral("protocolVersion"), QStringLiteral("2024-11-05")},
+        {QStringLiteral("protocolVersion"),
+         infrastructure::mcp::latestSupportedProtocolVersion()},
         {QStringLiteral("capabilities"), capabilities},
         {QStringLiteral("serverInfo"),
          QJsonObject{{QStringLiteral("name"), QStringLiteral("test")},
@@ -287,7 +296,7 @@ void StdioMcpTransportTest::parsesInitializeCapabilities()
     QVERIFY2(infrastructure::mcp::parseInitializeResult(initialize, result,
                                                         errorMessage),
              qPrintable(errorMessage));
-    QCOMPARE(result.protocolVersion, QStringLiteral("2024-11-05"));
+    QCOMPARE(result.protocolVersion, QStringLiteral("2025-06-18"));
     QVERIFY(result.capabilities.tools);
     QVERIFY(result.capabilities.toolsListChanged);
     QVERIFY(result.capabilities.resources);
@@ -300,12 +309,49 @@ void StdioMcpTransportTest::parsesInitializeCapabilities()
     QCOMPARE(result.capabilities.raw, capabilities);
     QCOMPARE(result.instructions, QStringLiteral("Test guidance"));
 
+    for (const auto& version : supportedVersions)
+    {
+        auto versioned = initialize;
+        versioned.insert(QStringLiteral("protocolVersion"), version);
+        QVERIFY2(infrastructure::mcp::parseInitializeResult(versioned, result,
+                                                            errorMessage),
+                 qPrintable(errorMessage));
+        QCOMPARE(result.protocolVersion, version);
+    }
+
     auto invalid = initialize;
     invalid.insert(QStringLiteral("capabilities"),
                    QJsonObject{{QStringLiteral("tools"), true}});
     QVERIFY(!infrastructure::mcp::parseInitializeResult(invalid, result,
                                                         errorMessage));
     QVERIFY(errorMessage.contains(QStringLiteral("tools")));
+}
+
+void StdioMcpTransportTest::negotiatesSupportedProtocolVersions()
+{
+    for (const auto& version : infrastructure::mcp::supportedProtocolVersions())
+    {
+        auto config = testConfig();
+        config.serverId = QStringLiteral("fake-%1").arg(version);
+        config.arguments.append(
+            QStringLiteral("--protocol-version=%1").arg(version));
+        infrastructure::mcp::McpClientManager manager;
+        QString errorMessage;
+        QVERIFY2(manager.addServer(config, errorMessage),
+                 qPrintable(errorMessage));
+        QSignalSpy initializedSpy(
+            &manager,
+            &infrastructure::mcp::McpClientManager::serverInitialized);
+
+        manager.startServer(config.serverId);
+        QVERIFY(!manager.initialize(config.serverId).isEmpty());
+        QTRY_COMPARE_WITH_TIMEOUT(initializedSpy.count(), 1, 2'000);
+        const auto snapshot = manager.serverSnapshot(config.serverId);
+        QVERIFY(snapshot.has_value());
+        QCOMPARE(snapshot->protocolVersion, version);
+        QCOMPARE(snapshot->state, infrastructure::mcp::McpServerState::Ready);
+        manager.stopServer(config.serverId);
+    }
 }
 
 void StdioMcpTransportTest::rejectsUnsupportedProtocolVersion()
@@ -1293,6 +1339,44 @@ void StdioMcpTransportTest::keepsIndependentCatalogFailuresDegraded()
     QVERIFY(snapshot->lastErrorMessage.isEmpty());
 }
 
+void StdioMcpTransportTest::pingsBothDirections()
+{
+    using infrastructure::mcp::McpHostRuntime;
+
+    QSharedPointer<FakeMcpTransport> transport;
+    McpHostRuntime runtime(
+        [&transport](const infrastructure::mcp::McpServerConfig&)
+            -> QSharedPointer<infrastructure::mcp::McpTransport>
+        {
+            transport = QSharedPointer<FakeMcpTransport>::create();
+            return transport;
+        });
+    QString errorMessage;
+    QVERIFY2(runtime.addServer(runtimeTestConfig(QStringLiteral("alpha")),
+                               errorMessage),
+             qPrintable(errorMessage));
+    runtime.startServer(QStringLiteral("alpha"));
+    const auto initializeRequest = runtime.initialize(QStringLiteral("alpha"));
+    transport->respond(initializeRequest, initializeResult());
+
+    QSignalSpy completedSpy(&runtime, &McpHostRuntime::pingCompleted);
+    const auto pingRequest = runtime.ping(QStringLiteral("alpha"));
+    QVERIFY(!pingRequest.isEmpty());
+    QCOMPARE(transport->requestForMethod(QStringLiteral("ping")), pingRequest);
+    transport->respond(pingRequest, {});
+    QCOMPARE(completedSpy.count(), 1);
+    QCOMPARE(completedSpy.constFirst().at(0).toString(),
+             QStringLiteral("alpha"));
+    QCOMPARE(completedSpy.constFirst().at(1).toString(), pingRequest);
+    QVERIFY(completedSpy.constFirst().at(2).toLongLong() >= 0);
+
+    QSignalSpy requestedSpy(&runtime, &McpHostRuntime::pingRequested);
+    transport->sendRequest(QStringLiteral("server-ping"),
+                           QStringLiteral("ping"));
+    QCOMPARE(requestedSpy.count(), 1);
+    QCOMPARE(transport->response(QStringLiteral("server-ping")), QJsonObject{});
+}
+
 void StdioMcpTransportTest::servesOnlyAuthorizedRoots()
 {
     using infrastructure::mcp::McpHostRuntime;
@@ -1374,6 +1458,42 @@ void StdioMcpTransportTest::roundTripsRootsOverStdio()
         foundRoots = true;
     }
     QVERIFY(foundRoots);
+}
+
+void StdioMcpTransportTest::roundTripsPingOverStdio()
+{
+    auto config = testConfig();
+    config.arguments.append(QStringLiteral("--request-ping"));
+
+    infrastructure::mcp::McpClientManager manager;
+    QString errorMessage;
+    QVERIFY2(manager.addServer(config, errorMessage), qPrintable(errorMessage));
+    QSignalSpy initializedSpy(
+        &manager, &infrastructure::mcp::McpClientManager::serverInitialized);
+    QSignalSpy requestedSpy(
+        &manager, &infrastructure::mcp::McpClientManager::pingRequested);
+    QSignalSpy notificationSpy(
+        &manager, &infrastructure::mcp::McpClientManager::notificationReceived);
+    QSignalSpy completedSpy(
+        &manager, &infrastructure::mcp::McpClientManager::pingCompleted);
+
+    manager.startServer(config.serverId);
+    QVERIFY(!manager.initialize(config.serverId).isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(initializedSpy.count(), 1, 2'000);
+    QTRY_COMPARE_WITH_TIMEOUT(requestedSpy.count(), 1, 2'000);
+    QTRY_VERIFY_WITH_TIMEOUT(notificationSpy.count() >= 1, 2'000);
+
+    auto serverReceivedPing = false;
+    for (const auto& arguments : notificationSpy)
+        if (arguments.at(1).toString() == QLatin1String("test/ping_received"))
+            serverReceivedPing = true;
+    QVERIFY(serverReceivedPing);
+
+    const auto requestId = manager.ping(config.serverId);
+    QVERIFY(!requestId.isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(completedSpy.count(), 1, 2'000);
+    QCOMPARE(completedSpy.constFirst().at(0).toString(), config.serverId);
+    QCOMPARE(completedSpy.constFirst().at(1).toString(), requestId);
 }
 
 void StdioMcpTransportTest::builtInFilesystemWritesCppFile()

@@ -6,7 +6,9 @@ namespace qtllm::infrastructure::mcp
 {
 namespace
 {
-const QString currentProtocolVersion = QStringLiteral("2024-11-05");
+const QStringList supportedVersions{QStringLiteral("2025-06-18"),
+                                    QStringLiteral("2025-03-26"),
+                                    QStringLiteral("2024-11-05")};
 
 bool readCapabilityObject(const QJsonObject& capabilities, const QString& name,
                           QJsonObject& value, QString& errorMessage)
@@ -27,12 +29,12 @@ bool readCapabilityObject(const QJsonObject& capabilities, const QString& name,
 
 QString latestSupportedProtocolVersion()
 {
-    return currentProtocolVersion;
+    return supportedVersions.constFirst();
 }
 
 QStringList supportedProtocolVersions()
 {
-    return {currentProtocolVersion};
+    return supportedVersions;
 }
 
 bool isSupportedProtocolVersion(const QString& version)

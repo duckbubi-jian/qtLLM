@@ -432,6 +432,20 @@ MainWindow::MainWindow(QWidget* parent)
                     serverId, tr("Roots"),
                     tr("Returned %n authorized roots", nullptr, roots.size()));
             });
+    connect(&mcpManager_, &infrastructure::mcp::McpClientManager::pingCompleted,
+            this,
+            [this](const QString& serverId, const QString&, qint64 elapsedMs)
+            {
+                appendMcpDiagnostic(serverId, tr("Ping"),
+                                    tr("Completed in %1 ms").arg(elapsedMs));
+            });
+    connect(&mcpManager_, &infrastructure::mcp::McpClientManager::pingRequested,
+            this,
+            [this](const QString& serverId)
+            {
+                appendMcpDiagnostic(serverId, tr("Ping"),
+                                    tr("Server request answered"));
+            });
     connect(&mcpManager_, &infrastructure::mcp::McpClientManager::serverError,
             this,
             [this](const QString& serverId, const QString& code,
@@ -813,6 +827,8 @@ void MainWindow::showMcpControlPanel()
             &MainWindow::stopMcpServer);
     connect(mcpControlPanel_, &McpControlPanel::restartServerRequested, this,
             &MainWindow::restartMcpServer);
+    connect(mcpControlPanel_, &McpControlPanel::pingServerRequested, this,
+            &MainWindow::pingMcpServer);
     connect(mcpControlPanel_, &McpControlPanel::refreshToolsRequested, this,
             &MainWindow::refreshMcpTools);
     connect(mcpControlPanel_, &McpControlPanel::readResourceRequested, this,
@@ -865,6 +881,14 @@ void MainWindow::restartMcpServer(const QString& serverId)
     pendingMcpRestarts_.insert(serverId);
     mcpManager_.stopServer(serverId);
     refreshMcpServerMenu();
+}
+
+void MainWindow::pingMcpServer(const QString& serverId)
+{
+    if (agentRunActive_ || chatController_.isGenerating()) return;
+    const auto requestId = mcpManager_.ping(serverId);
+    if (!requestId.isEmpty())
+        appendMcpDiagnostic(serverId, tr("Ping"), tr("Request sent"));
 }
 
 void MainWindow::refreshMcpTools(const QString& serverId)

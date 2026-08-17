@@ -43,6 +43,7 @@ class McpClientManager final : public QObject
     void startServer(const QString& serverId);
     void stopServer(const QString& serverId);
     QString initialize(const QString& serverId);
+    QString ping(const QString& serverId);
     QString listTools(const QString& serverId);
     QString listResources(const QString& serverId);
     QString listResourceTemplates(const QString& serverId);
@@ -88,6 +89,9 @@ class McpClientManager final : public QObject
     void rootsRequested(
         const QString& serverId,
         const QList<qtllm::infrastructure::mcp::McpRoot>& roots);
+    void pingCompleted(const QString& serverId, const QString& requestId,
+                       qint64 elapsedMs);
+    void pingRequested(const QString& serverId);
     void toolResultReady(const qtllm::agent::ToolResult& result);
     void requestFailed(const QString& serverId, const QString& requestId,
                        const QString& method, const QString& code,

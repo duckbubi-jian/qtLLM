@@ -84,6 +84,7 @@ class McpControlPanel final : public QDialog
     void startServerRequested(const QString& serverId);
     void stopServerRequested(const QString& serverId);
     void restartServerRequested(const QString& serverId);
+    void pingServerRequested(const QString& serverId);
     void refreshToolsRequested(const QString& serverId);
     void readResourceRequested(const QString& serverId, const QString& uri);
     void resourceSubscriptionRequested(const QString& serverId,
@@ -128,6 +129,7 @@ class McpControlPanel final : public QDialog
     QToolButton* startButton_ = nullptr;
     QToolButton* stopButton_ = nullptr;
     QToolButton* restartButton_ = nullptr;
+    QToolButton* pingButton_ = nullptr;
     QToolButton* refreshButton_ = nullptr;
 };
 }  // namespace qtllm::ui

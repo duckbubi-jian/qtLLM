@@ -54,7 +54,9 @@ int main(int argc, char* argv[])
         arguments.contains(QStringLiteral("--no-tools-capability"));
     const auto requestRoots =
         arguments.contains(QStringLiteral("--request-roots"));
-    auto protocolVersion = QStringLiteral("2024-11-05");
+    const auto requestPing =
+        arguments.contains(QStringLiteral("--request-ping"));
+    QString protocolVersion;
     const auto protocolVersionPrefix = QStringLiteral("--protocol-version=");
     for (const auto& argument : arguments)
         if (argument.startsWith(protocolVersionPrefix))
@@ -94,6 +96,13 @@ int main(int argc, char* argv[])
                 request.value(QStringLiteral("result")).toObject());
             continue;
         }
+        if (method.isEmpty() && id.toString() == QLatin1String("server-ping-1"))
+        {
+            writeNotification(
+                output, QStringLiteral("test/ping_received"),
+                request.value(QStringLiteral("result")).toObject());
+            continue;
+        }
         if (method == QStringLiteral("notifications/cancelled"))
         {
             writeNotification(
@@ -115,11 +124,30 @@ int main(int argc, char* argv[])
                     '\n');
                 output.flush();
             }
+            if (requestPing)
+            {
+                const auto pingRequest = QJsonObject{
+                    {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+                    {QStringLiteral("id"), QStringLiteral("server-ping-1")},
+                    {QStringLiteral("method"), QStringLiteral("ping")},
+                    {QStringLiteral("params"), QJsonObject{}}};
+                output.write(
+                    QJsonDocument(pingRequest).toJson(QJsonDocument::Compact) +
+                    '\n');
+                output.flush();
+            }
             continue;
         }
         if (method.startsWith(QStringLiteral("notifications/"))) continue;
         if (method == QStringLiteral("initialize"))
         {
+            const auto requestedVersion =
+                request.value(QStringLiteral("params"))
+                    .toObject()
+                    .value(QStringLiteral("protocolVersion"))
+                    .toString();
+            const auto negotiatedVersion =
+                protocolVersion.isEmpty() ? requestedVersion : protocolVersion;
             QJsonObject capabilities{
                 {QStringLiteral("resources"),
                  QJsonObject{{QStringLiteral("subscribe"), true},
@@ -130,7 +158,7 @@ int main(int argc, char* argv[])
                 capabilities.insert(QStringLiteral("tools"), QJsonObject{});
             writeResponse(
                 output, id,
-                {{QStringLiteral("protocolVersion"), protocolVersion},
+                {{QStringLiteral("protocolVersion"), negotiatedVersion},
                  {QStringLiteral("capabilities"), capabilities},
                  {QStringLiteral("serverInfo"),
                   QJsonObject{
@@ -138,6 +166,10 @@ int main(int argc, char* argv[])
                       {QStringLiteral("version"), QStringLiteral("1")}}},
                  {QStringLiteral("instructions"),
                   QStringLiteral("Use fake tools carefully.")}});
+        }
+        else if (method == QStringLiteral("ping"))
+        {
+            writeResponse(output, id, {});
         }
         else if (method == QStringLiteral("tools/list"))
         {

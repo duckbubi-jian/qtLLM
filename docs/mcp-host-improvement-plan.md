@@ -78,8 +78,8 @@ Agent 的实际上限仍同时受本地模型的工具选择能力、上下文�
    请求仍保持默认拒绝，尚未实现授权与预算控制。
 1. Server instructions 会进入 Agent 上下文，但缺少独立的来源标记、启用策略和
    prompt injection 边界。
-1. MCP 配置主要面向 stdio；尚无 Streamable HTTP、认证、凭据引用和网络域名
-   策略。
+1. 第三方 stdio Server 的协议版本、completion、ping、日志级别和发布包兼容矩阵
+   仍需扩展。
 1. 测试集中在单个基础 Fake Server，尚未形成按协议能力和故障类型组织的
    conformance matrix。
 
@@ -97,7 +97,7 @@ Agent 的实际上限仍同时受本地模型的工具选择能力、上下文�
 ### 4.2 分里程碑完成
 
 - Resources、Prompts 和 Roots（已完成）。
-- Streamable HTTP、认证和凭据管理。
+- 第三方 stdio Server 兼容与离线 conformance。
 - Server 发起的 sampling、用户输入请求及其他需要反向请求的能力。
 
 ### 4.3 不属于 MCP Host 主线
@@ -106,6 +106,7 @@ Agent 的实际上限仍同时受本地模型的工具选择能力、上下文�
 - 复制 Pi 的 TypeScript 工具、扩展运行时或 coding-agent 产品功能。
 - 多 Agent、子 Agent、分支会话、skills 或代码生成专用工作流。
 - SQLite 对话持久化、会话 UI 重构和模型推理算法升级。
+- Streamable HTTP、HTTP 认证、OAuth 和 Host 级网络凭据管理。
 
 这些功能可以独立规划，但不能阻塞 MCP Host 的协议兼容性。根据当前产品决策，
 记忆功能、SQLite 对话持久化和会话恢复均暂停，不纳入本计划后续版本。
@@ -127,13 +128,12 @@ MainWindow / AgentController / future workflow consumers
          |                                |
          +---------> McpHostRuntime <-----+
                          |
-          +--------------+---------------+
-          |              |               |
-          v              v               v
-  StdioTransport  StreamableHttp   future transport
-          |              |
-          v              v
-      MCP Server      MCP Server
+                         |
+                         v
+                  StdioTransport
+                         |
+                         v
+                     MCP Server
 
 McpHostRuntime ---> ContentNormalizer ---> bounded Host events / diagnostics
 ```
@@ -180,8 +180,9 @@ transportStateChanged
 cancelLocalWait
 ```
 
-`McpHostRuntime` 只依赖抽象 transport。stdio 实现继续保持 stdout 仅 JSON-RPC、
-stderr 仅诊断；Streamable HTTP 后续复用相同消息路由和状态机。
+`McpHostRuntime` 只依赖抽象 transport。产品实现保持 stdio，stdout 仅 JSON-RPC、
+stderr 仅诊断。联网 MCP Server 和网页搜索暂不纳入产品范围；Host 不实现 HTTP
+transport、HTTP 认证或 OAuth。
 
 ## 6. MCP 能力路线
 
@@ -218,13 +219,15 @@ stderr 仅诊断；Streamable HTTP 后续复用相同消息路由和状态机。
   Server 也不能通过路径别名扩大范围。
 - completion 等关联能力在 Resources/Prompts 基础模型稳定后按协议矩阵增加。
 
-### 6.3 P2：Streamable HTTP 和认证
+### 6.3 P2：stdio 第三方兼容与离线 conformance
 
-- 增加 Streamable HTTP transport，不在 Manager 中复制一套 Tools/Resources 逻辑。
-- 对连接、会话、断线恢复、重定向、代理和证书错误定义明确状态。
-- 凭据配置使用安全存储引用，不把 token 明文写入普通 MCP 配置或日志。
-- 网络 Server 使用域名 allowlist、TLS 要求、重定向限制和每 Server 带宽上限。
-- OAuth 或其他认证流程必须在 UI 中显示目标 Server、权限范围和凭据归属。
+- Host 只实现 stdio transport，不引入 Qt HTTP client、Streamable HTTP、OAuth 或
+  Host 级 HTTP 凭据管理。
+- 联网 MCP Server 和网页搜索暂缓；未来若重新启用，仍应通过独立 stdio MCP Server
+  接入，不在 Host 中增加 HTTP client 或认证层。
+- Host 继续把第三方 Server、工具描述和工具结果视为不可信输入。
+- 增加常见第三方 stdio Server 的启动、协议版本、ping、completion、日志级别和
+  丰富结果 conformance，不依赖真实公网或凭据。
 
 ### 6.4 P3：Server 发起请求
 
@@ -379,13 +382,22 @@ Server 崩溃不影响另一个 Server 或普通聊天。
 - Fake Server 和 UI 测试覆盖分页原子性、参数/内容校验、结果大小限制、订阅更新、
   roots 往返、默认拒绝以及旧配置兼容。
 
-### 阶段 5：Streamable HTTP 与认证（5 至 8 个工作日）
+### 阶段 5：stdio 第三方兼容与离线 conformance（实施中）
 
-- 实现 transport、连接状态、认证和安全凭据引用；会话恢复按当前产品决策暂停。
-- 增加 TLS、域名、重定向、代理、离线和限流故障矩阵。
+- 扩展常用 MCP 协议版本和 stdio Server 兼容矩阵。
+- 补充 ping、completion、日志级别及丰富结果的确定性 Fake Server 测试。
+- 编写第三方 stdio Server 配置、进程环境、风险审批和故障排查说明；联网 Server
+  和网页搜索不在本版验收范围。
 
-验收：同一套 Host conformance 用例可运行于 stdio 和 HTTP；网络凭据不进入普通
-配置、日志或 Agent 上下文。
+验收：Host 本身不发起 HTTP 请求；默认测试不依赖公网、真实凭据或模型。
+
+当前完成记录：
+
+- 协议版本矩阵扩展到 `2025-06-18`、`2025-03-26` 和 `2024-11-05`；Host 默认
+  广告最新已测试版本，未知版本继续拒绝。
+- 支持 Host 到 Server 与 Server 到 Host 的双向 `ping`，控制面可显式发起并记录
+  往返耗时；Fake transport 和真实 stdio 均有回归覆盖。
+- completion、日志级别设置和第三方发布包矩阵留在本阶段后续版本。
 
 ### 阶段 6：Server 发起请求（4 至 6 个工作日）
 
@@ -397,15 +409,15 @@ Server 权限；递归调用有确定性上限。
 
 ### 阶段 7：发布级 conformance（2 至 4 个工作日）
 
-- 建立多 Server、多版本、多 transport 和故障组合矩阵。
-- 对 CPU/CUDA 包执行无网络 stdio 验收，并对 HTTP 使用本地 Fake Server 验收。
+- 建立多 Server、多版本和 stdio 故障组合矩阵。
+- 对 CPU/CUDA 包执行无网络 stdio 验收。
 - 更新配置迁移、隐私、故障排查和第三方 Server 兼容说明。
 
 验收：默认 CTest 不依赖真实模型或公网；安装升级保留 MCP 配置和权限；MCP、
 worker 任一单点故障不导致主窗口崩溃。
 
-核心交付阶段 0 至 4 已完成。完整完成阶段 0 至 7 原预计 26 至 42 个工作日；
-后续从阶段 5 的 Streamable HTTP、认证和网络安全边界继续实施。
+核心交付阶段 0 至 4 已完成。HTTP transport、认证和网页搜索 MCP 已按产品决策暂缓；
+后续从阶段 5 的通用 stdio 第三方兼容与离线 conformance 继续实施。
 
 ## 9. 测试矩阵
 
@@ -434,7 +446,6 @@ worker 任一单点故障不导致主窗口崩溃。
 ### 9.4 Transport 与安全
 
 - stdio stdout 污染、stderr 风暴、半行、超长行和进程树退出。
-- HTTP 断线、重连、TLS、重定向、认证失败、限流和离线。
 - 日志脱敏、凭据不落普通配置、payload 上限和每 Server 故障隔离。
 - filesystem Server 授权根、allowlist、越界拒绝和修改操作审批回归。
 
@@ -464,7 +475,7 @@ worker 任一单点故障不导致主窗口崩溃。
 | notification 风暴拖慢 UI | 每 Server 限速、事件合并和有界诊断队列 |
 | 图片或资源占用过多内存 | content 类型检查、字节上限和显式截断 |
 | 一个 Server 故障扩散 | pending/state/queue 按 Server 隔离，transport 不共享可变状态 |
-| 网络 MCP 扩大攻击面 | TLS、域名策略、凭据安全存储、重定向和带宽限制 |
+| 未来重新启用联网 MCP Server 扩大攻击面 | 保持独立 stdio 进程并单独评审网络策略；当前版本不启用 |
 | sampling 形成越权或无限递归 | 默认关闭、显式授权、独立预算和递归深度上限 |
 | 协议版本持续演进 | 明确兼容矩阵、版本化 codec 和 Fake Server conformance |
 
@@ -483,5 +494,6 @@ worker 任一单点故障不导致主窗口崩溃。
 - 一个 Server 的崩溃、超时、非法消息或通知风暴不影响其他 Server 和 Qt UI。
 - 默认测试不加载真实模型、不依赖公网，并覆盖协议兼容矩阵。
 
-完整 MCP 支撑还要求 Resources、Prompts、Roots 和 Streamable HTTP 里程碑通过各自
-验收。sampling 和用户输入请求只有在单独安全评审通过后才作为默认可用能力。
+完整 MCP 支撑还要求 stdio 第三方兼容、离线 conformance 和 Server 发起请求里程碑
+通过各自验收。sampling 和用户输入请求只有在单独安全评审通过后才作为默认可用
+能力。

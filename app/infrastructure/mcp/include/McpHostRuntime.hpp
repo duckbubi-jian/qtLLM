@@ -97,6 +97,7 @@ class McpHostRuntime final : public QObject
         McpServerConfig config;
         QSharedPointer<McpTransport> transport;
         bool stopRequested = false;
+        bool restartRequested = false;
     };
     struct NotificationWindow
     {

@@ -133,6 +133,9 @@ ChatView::ChatView(QWidget* parent)
     mcpMenu_ = new QMenu(ui_->mcpMenuButton);
     mcpMenu_->setObjectName(QStringLiteral("mcpServerMenu"));
     ui_->mcpMenuButton->setMenu(mcpMenu_);
+    ui_->mcpMenuButton->setText({});
+    ui_->mcpMenuButton->setIcon(style()->standardIcon(QStyle::SP_DriveNetIcon));
+    ui_->mcpMenuButton->setIconSize(QSize(16, 16));
 
     connect(ui_->modelReloadAction, &QAction::triggered, this,
             &ChatView::modelFolderRequested);
@@ -309,6 +312,13 @@ void ChatView::rebuildMcpMenu()
     mcpMenu_->clear();
     auto* heading = mcpMenu_->addAction(tr("MCP servers"));
     heading->setEnabled(false);
+
+    auto* manageAction = mcpMenu_->addAction(tr("Manage MCP servers..."));
+    manageAction->setObjectName(QStringLiteral("manageMcpServersAction"));
+    manageAction->setIcon(style()->standardIcon(QStyle::SP_ComputerIcon));
+    connect(manageAction, &QAction::triggered, this,
+            &ChatView::manageMcpServersRequested);
+    mcpMenu_->addSeparator();
 
     for (const auto& server : mcpServers_)
     {

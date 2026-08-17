@@ -137,6 +137,93 @@ QToolButton#mcpMenuButton:disabled {
     background: #f1f5f9;
     border-color: #e2e8f0;
 }
+QDialog#mcpControlPanel {
+    background: #ffffff;
+}
+QDialog#mcpControlPanel QTreeWidget,
+QDialog#mcpControlPanel QPlainTextEdit,
+QDialog#mcpControlPanel QLineEdit {
+    color: #202124;
+    background: #ffffff;
+    border: 1px solid #d7dbe0;
+    border-radius: 4px;
+    selection-color: #172033;
+    selection-background-color: #dbeafe;
+}
+QDialog#mcpControlPanel QTreeWidget::item {
+    min-height: 28px;
+}
+QDialog#mcpControlPanel QHeaderView::section {
+    min-height: 28px;
+    padding: 0 7px;
+    color: #475569;
+    background: #f5f6f8;
+    border: none;
+    border-right: 1px solid #e2e5e9;
+    border-bottom: 1px solid #d7dbe0;
+}
+QDialog#mcpControlPanel QTabWidget::pane {
+    border: 1px solid #d7dbe0;
+}
+QLabel#mcpServerName {
+    color: #202124;
+    font-size: 13pt;
+    font-weight: 600;
+}
+QLabel#mcpServerState {
+    min-height: 24px;
+    padding: 0 8px;
+    color: #475569;
+    background: #f1f5f9;
+    border: 1px solid #d7dbe0;
+    border-radius: 4px;
+}
+QLabel#mcpServerState[serverState="ready"] {
+    color: #166534;
+    background: #ecfdf3;
+    border-color: #86d7a5;
+}
+QLabel#mcpServerState[serverState="degraded"] {
+    color: #854d0e;
+    background: #fffbeb;
+    border-color: #e5b94f;
+}
+QLabel#mcpServerState[serverState="failed"] {
+    color: #991b1b;
+    background: #fff1f2;
+    border-color: #e69a9a;
+}
+QLabel#mcpServerState[serverState="starting"],
+QLabel#mcpServerState[serverState="initializing"],
+QLabel#mcpServerState[serverState="stopping"] {
+    color: #1d4ed8;
+    background: #eff6ff;
+    border-color: #93c5fd;
+}
+QDialog#mcpControlPanel QToolButton {
+    min-height: 30px;
+    padding: 0 9px;
+    color: #334155;
+    background: #ffffff;
+    border: 1px solid #d7dbe0;
+    border-radius: 5px;
+}
+QDialog#mcpControlPanel QToolButton:hover {
+    background: #eef1f4;
+}
+QDialog#mcpControlPanel QToolButton:disabled {
+    color: #9aa0a6;
+    background: #f5f6f8;
+    border-color: #e2e5e9;
+}
+QPlainTextEdit#mcpDiagnostics,
+QPlainTextEdit#mcpInstructions {
+    padding: 6px 8px;
+    font-family: "Cascadia Mono", "Consolas", monospace;
+}
+QLabel#mcpLastError {
+    color: #991b1b;
+}
 QLabel#workspacePathLink {
     min-height: 24px;
     max-height: 24px;

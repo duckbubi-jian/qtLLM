@@ -78,6 +78,7 @@ class ChatView final : public QWidget
     void clearConversationRequested();
     void promptSubmitted();
     void modeChanged(bool agentMode);
+    void manageMcpServersRequested();
     void addMcpServerRequested();
     void builtInFilesystemMcpToggled(bool enabled);
     void externalMcpServerToggled(const QString& serverId, bool enabled);

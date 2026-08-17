@@ -33,6 +33,7 @@ feature differences have dedicated Fake Server coverage.
 | Lifecycle | Validate negotiated protocol version | Supported |
 | Lifecycle | Preserve Server capabilities, info, and instructions | Supported |
 | Lifecycle | Multi-state Server health model | Supported |
+| Lifecycle | Start, stop, restart, enable, and disable per Server | Supported |
 | Transport | stdio JSON-RPC | Supported |
 | Transport | Streamable HTTP | Not implemented |
 | Tools | `tools/list` | Supported |
@@ -49,6 +50,8 @@ feature differences have dedicated Fake Server coverage.
 | Cancellation | Send protocol cancellation notification | Supported |
 | Notifications | Parse transport notifications | Supported at transport boundary |
 | Notifications | Typed progress and logging routing | Supported, rate limited per Server |
+| Diagnostics | Per-Server state, stderr, logging, and error history | Supported, bounded and redacted |
+| Host UI | Server overview, Tools policy, and lifecycle controls | Supported |
 | Resources | Discovery, read, templates, subscriptions | Not implemented |
 | Prompts | Discovery and get | Not implemented |
 | Roots | Per-Server authorized roots | Not implemented |
@@ -59,6 +62,9 @@ feature differences have dedicated Fake Server coverage.
 - MCP Servers run outside the model worker. stdio Servers are child processes
   of the Qt application.
 - stdout is JSON-RPC only; stderr is diagnostic output.
+- The Host UI retains at most 200 diagnostic entries per Server. Credential
+  fields, common secret assignments, and Bearer tokens are redacted before
+  display or logging, and individual entries are length limited.
 - Tool names are qualified as `serverId.toolName`.
 - Tools must pass the configured allowlist, local JSON schema validation, and
   `ToolPolicy` before execution.
@@ -79,6 +85,9 @@ feature differences have dedicated Fake Server coverage.
 - Tests run with the Fake MCP Server and do not require a model or network.
 - Two Servers can expose same-named tools independently; failure or restart of
   one Server does not revoke the other Server's capabilities.
+- A `Failed` Server whose transport process is still running is stopped before
+  restart, so the runtime cannot remain stuck in `Starting` after a transport
+  start no-op.
 - Multi-page tool discovery remains invisible until every page succeeds. A
   later-page failure or repeated cursor retains the previous snapshot.
 - List-changed storms are coalesced, while progress and logging storms are
@@ -86,3 +95,6 @@ feature differences have dedicated Fake Server coverage.
 - Output schema, annotations, structured arrays, unknown content blocks, and
   protocol cancellation have deterministic Fake Server or fake transport
   coverage.
+- UI coverage verifies MCP menu routing, Server state and capability
+  presentation, lifecycle controls, tool policy details, diagnostics, and
+  sensitive-text redaction.

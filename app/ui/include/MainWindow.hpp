@@ -12,6 +12,7 @@
 #include <QHash>
 #include <QList>
 #include <QMainWindow>
+#include <QSet>
 #include <QString>
 
 class QTimer;
@@ -20,6 +21,7 @@ namespace qtllm::ui
 {
 class ChatView;
 class MessageWidget;
+class McpControlPanel;
 class ToolApprovalWidget;
 
 class MainWindow final : public QMainWindow
@@ -38,6 +40,11 @@ class MainWindow final : public QMainWindow
     void setBuiltInFilesystemMcpEnabled(bool enabled);
     void setExternalMcpServerEnabled(const QString& serverId, bool enabled);
     void removeExternalMcpServer(const QString& serverId);
+    void showMcpControlPanel();
+    void startMcpServer(const QString& serverId);
+    void stopMcpServer(const QString& serverId);
+    void restartMcpServer(const QString& serverId);
+    void refreshMcpTools(const QString& serverId);
     void loadSelectedModel();
     void finishModelPackageVerification();
     void continueModelLoadAfterUnload();
@@ -84,6 +91,9 @@ class MainWindow final : public QMainWindow
     void updateAgentState(application::AgentRun::State state);
     void loadMcpServers();
     void refreshMcpServerMenu();
+    void refreshMcpControlPanel();
+    void appendMcpDiagnostic(const QString& serverId, const QString& category,
+                             const QString& text);
     void setModelPath(const QString& modelPath);
     void updatePrimaryAction(bool stopMode);
     bool startBuiltInFilesystem(const QString& workspacePath,
@@ -102,6 +112,7 @@ class MainWindow final : public QMainWindow
     MessageWidget* currentAssistant_ = nullptr;
     MessageWidget* agentActivityMessage_ = nullptr;
     ToolApprovalWidget* pendingToolApproval_ = nullptr;
+    McpControlPanel* mcpControlPanel_ = nullptr;
     QString currentAssistantText_;
     QString modelPath_;
     QString modelInfoText_;
@@ -110,6 +121,8 @@ class MainWindow final : public QMainWindow
     QList<chat::Message> conversationMessages_;
     QList<infrastructure::mcp::McpServerConfig> mcpConfigurations_;
     QHash<QString, QString> mcpServerErrors_;
+    QHash<QString, QStringList> mcpDiagnostics_;
+    QSet<QString> pendingMcpRestarts_;
     models::ModelSelection pendingModelSelection_;
     models::ModelSelection activeModelSelection_;
     bool verifyingModelPackage_ = false;

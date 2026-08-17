@@ -2,12 +2,14 @@
 
 #include "BuiltInMcpServer.hpp"
 #include "ChatView.hpp"
+#include "McpControlPanel.hpp"
 #include "McpServerDialog.hpp"
 #include "MessageWidget.hpp"
 #include "SensitiveData.hpp"
 #include "ToolApprovalWidget.hpp"
 
 #include <QCoreApplication>
+#include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileDialog>
@@ -277,20 +279,45 @@ MainWindow::MainWindow(QWidget* parent)
                 }
                 updateState(workerClient_.state());
             });
+    connect(&mcpManager_,
+            &infrastructure::mcp::McpClientManager::serverStateChanged, this,
+            [this](const QString& serverId,
+                   infrastructure::mcp::McpServerState state)
+            {
+                appendMcpDiagnostic(
+                    serverId, tr("State"),
+                    infrastructure::mcp::mcpServerStateName(state));
+                refreshMcpServerMenu();
+            });
+    connect(&mcpManager_,
+            &infrastructure::mcp::McpClientManager::capabilitySnapshotChanged,
+            this, [this](const infrastructure::mcp::McpServerSnapshot&)
+            { refreshMcpServerMenu(); });
     connect(&mcpManager_, &infrastructure::mcp::McpClientManager::serverStarted,
             this,
             [this](const QString& serverId)
             {
                 mcpServerErrors_.remove(serverId);
+                appendMcpDiagnostic(serverId, tr("Transport"), tr("Started"));
                 refreshMcpServerMenu();
                 mcpManager_.initialize(serverId);
             });
     connect(&mcpManager_, &infrastructure::mcp::McpClientManager::serverStopped,
-            this, [this](const QString&) { refreshMcpServerMenu(); });
+            this,
+            [this](const QString& serverId)
+            {
+                appendMcpDiagnostic(serverId, tr("Transport"), tr("Stopped"));
+                if (pendingMcpRestarts_.remove(serverId))
+                    QTimer::singleShot(0, this, [this, serverId]
+                                       { startMcpServer(serverId); });
+                refreshMcpServerMenu();
+            });
     connect(&mcpManager_,
             &infrastructure::mcp::McpClientManager::serverInitialized, this,
             [this](const QString& serverId, const QJsonObject&)
             {
+                appendMcpDiagnostic(serverId, tr("Protocol"),
+                                    tr("Initialized"));
                 refreshMcpServerMenu();
                 mcpManager_.listTools(serverId);
             });
@@ -300,6 +327,9 @@ MainWindow::MainWindow(QWidget* parent)
                    const QList<agent::ToolDefinition>& tools)
             {
                 mcpServerErrors_.remove(serverId);
+                appendMcpDiagnostic(
+                    serverId, tr("Tools"),
+                    tr("Catalog updated: %n tools", nullptr, tools.size()));
                 const auto alwaysAllowed =
                     settingsStore_.alwaysAllowedMcpTools();
                 for (const auto& tool : tools)
@@ -317,9 +347,11 @@ MainWindow::MainWindow(QWidget* parent)
             [this](const QString& serverId, const QString& code,
                    const QString& message)
             {
-                mcpServerErrors_.insert(serverId, message);
+                const auto safeMessage = redactSensitiveText(message);
+                mcpServerErrors_.insert(serverId, safeMessage);
+                appendMcpDiagnostic(serverId, code, safeMessage);
                 refreshMcpServerMenu();
-                qWarning().noquote() << serverId << code << message;
+                qWarning().noquote() << serverId << code << safeMessage;
             });
     connect(
         &mcpManager_, &infrastructure::mcp::McpClientManager::requestFailed,
@@ -328,9 +360,33 @@ MainWindow::MainWindow(QWidget* parent)
                const QString& code, const QString& message)
         {
             if (method == QLatin1String("tools/call")) return;
-            mcpServerErrors_.insert(serverId, message);
+            const auto safeMessage = redactSensitiveText(message);
+            mcpServerErrors_.insert(serverId, safeMessage);
+            appendMcpDiagnostic(serverId,
+                                QStringLiteral("%1/%2").arg(method, code),
+                                safeMessage);
             refreshMcpServerMenu();
-            qWarning().noquote() << serverId << method << code << message;
+            qWarning().noquote() << serverId << method << code << safeMessage;
+        });
+    connect(&mcpManager_,
+            &infrastructure::mcp::McpClientManager::diagnosticReceived, this,
+            [this](const QString& serverId, const QString& text)
+            { appendMcpDiagnostic(serverId, tr("stderr"), text); });
+    connect(
+        &mcpManager_,
+        &infrastructure::mcp::McpClientManager::loggingMessageReceived, this,
+        [this](const QString& serverId, const QString& level,
+               const QString& logger, const QJsonValue& data)
+        {
+            const auto safe = redactSensitiveValues(data);
+            const auto serialized = QString::fromUtf8(
+                QJsonDocument(QJsonObject{{QStringLiteral("data"), safe}})
+                    .toJson(QJsonDocument::Compact));
+            appendMcpDiagnostic(
+                serverId,
+                logger.isEmpty() ? level
+                                 : QStringLiteral("%1/%2").arg(level, logger),
+                serialized);
         });
     connect(
         &mcpManager_, &infrastructure::mcp::McpClientManager::toolResultReady,
@@ -614,6 +670,7 @@ void MainWindow::removeExternalMcpServer(const QString& serverId)
 
     mcpConfigurations_ = std::move(updatedConfigurations);
     mcpServerErrors_.remove(serverId);
+    mcpDiagnostics_.remove(serverId);
     filesystemConfiguredExternally_ = std::any_of(
         mcpConfigurations_.cbegin(), mcpConfigurations_.cend(),
         [](const infrastructure::mcp::McpServerConfig& config)
@@ -624,13 +681,105 @@ void MainWindow::removeExternalMcpServer(const QString& serverId)
     {
         if (!startBuiltInFilesystem(workspacePath_, errorMessage))
         {
-            mcpServerErrors_.insert(QStringLiteral("filesystem"), errorMessage);
+            const auto safeMessage = redactSensitiveText(errorMessage);
+            mcpServerErrors_.insert(QStringLiteral("filesystem"), safeMessage);
             showError(QStringLiteral("filesystem_mcp_unavailable"),
-                      errorMessage);
+                      safeMessage);
         }
     }
     updateState(workerClient_.state());
     refreshMcpServerMenu();
+}
+
+void MainWindow::showMcpControlPanel()
+{
+    if (mcpControlPanel_ != nullptr)
+    {
+        mcpControlPanel_->show();
+        mcpControlPanel_->raise();
+        mcpControlPanel_->activateWindow();
+        return;
+    }
+
+    mcpControlPanel_ = new McpControlPanel(this);
+    mcpControlPanel_->setAttribute(Qt::WA_DeleteOnClose);
+    connect(mcpControlPanel_, &QObject::destroyed, this,
+            [this] { mcpControlPanel_ = nullptr; });
+    connect(mcpControlPanel_, &McpControlPanel::addServerRequested, this,
+            &MainWindow::addMcpServer);
+    connect(mcpControlPanel_, &McpControlPanel::removeServerRequested, this,
+            &MainWindow::removeExternalMcpServer);
+    connect(mcpControlPanel_, &McpControlPanel::serverEnabledChanged, this,
+            [this](const QString& serverId, bool builtIn, bool enabled)
+            {
+                if (builtIn)
+                    setBuiltInFilesystemMcpEnabled(enabled);
+                else
+                    setExternalMcpServerEnabled(serverId, enabled);
+            });
+    connect(mcpControlPanel_, &McpControlPanel::startServerRequested, this,
+            &MainWindow::startMcpServer);
+    connect(mcpControlPanel_, &McpControlPanel::stopServerRequested, this,
+            &MainWindow::stopMcpServer);
+    connect(mcpControlPanel_, &McpControlPanel::restartServerRequested, this,
+            &MainWindow::restartMcpServer);
+    connect(mcpControlPanel_, &McpControlPanel::refreshToolsRequested, this,
+            &MainWindow::refreshMcpTools);
+    refreshMcpControlPanel();
+    mcpControlPanel_->show();
+}
+
+void MainWindow::startMcpServer(const QString& serverId)
+{
+    if (agentRunActive_ || chatController_.isGenerating()) return;
+    const auto snapshot = mcpManager_.serverSnapshot(serverId);
+    if (!snapshot ||
+        (snapshot->state != infrastructure::mcp::McpServerState::Stopped &&
+         snapshot->state != infrastructure::mcp::McpServerState::Failed))
+        return;
+    mcpServerErrors_.remove(serverId);
+    mcpManager_.startServer(serverId);
+    refreshMcpServerMenu();
+}
+
+void MainWindow::stopMcpServer(const QString& serverId)
+{
+    if (agentRunActive_ || chatController_.isGenerating()) return;
+    pendingMcpRestarts_.remove(serverId);
+    if (mcpManager_.serverIds().contains(serverId))
+        mcpManager_.stopServer(serverId);
+    refreshMcpServerMenu();
+}
+
+void MainWindow::restartMcpServer(const QString& serverId)
+{
+    if (agentRunActive_ || chatController_.isGenerating()) return;
+    const auto snapshot = mcpManager_.serverSnapshot(serverId);
+    if (!snapshot) return;
+    if (snapshot->state == infrastructure::mcp::McpServerState::Stopped ||
+        snapshot->state == infrastructure::mcp::McpServerState::Failed)
+    {
+        startMcpServer(serverId);
+        return;
+    }
+    if (snapshot->state == infrastructure::mcp::McpServerState::Starting ||
+        snapshot->state == infrastructure::mcp::McpServerState::Initializing ||
+        snapshot->state == infrastructure::mcp::McpServerState::Stopping)
+        return;
+    pendingMcpRestarts_.insert(serverId);
+    mcpManager_.stopServer(serverId);
+    refreshMcpServerMenu();
+}
+
+void MainWindow::refreshMcpTools(const QString& serverId)
+{
+    if (agentRunActive_ || chatController_.isGenerating()) return;
+    const auto snapshot = mcpManager_.serverSnapshot(serverId);
+    if (!snapshot || !snapshot->capabilities.tools ||
+        (snapshot->state != infrastructure::mcp::McpServerState::Ready &&
+         snapshot->state != infrastructure::mcp::McpServerState::Degraded))
+        return;
+    mcpManager_.listTools(serverId);
 }
 
 void MainWindow::loadSelectedModel()
@@ -804,13 +953,14 @@ void MainWindow::updateState(infrastructure::WorkerClient::State state)
                                            !filesystemConfiguredExternally_);
     chatView_->setPromptEnabled(modelReady && !conversationBusy);
     chatView_->setModeSelectionEnabled(modelReady && !conversationBusy);
-    chatView_->setMcpSelectionEnabled(modelReady && !conversationBusy);
+    chatView_->setMcpSelectionEnabled(!conversationBusy);
     const auto stopMode = generating || conversationBusy;
     updatePrimaryAction(stopMode);
     chatView_->setPrimaryAction(stopMode, stopMode || modelReady);
     chatView_->setConversationVisible(modelReady || generating ||
                                       conversationBusy);
     updateClearButton();
+    refreshMcpControlPanel();
 
     if (verifyingModelPackage_)
     {
@@ -935,6 +1085,8 @@ void MainWindow::buildUi()
             &MainWindow::openWorkspaceDirectory);
     connect(chatView_, &ChatView::addMcpServerRequested, this,
             &MainWindow::addMcpServer);
+    connect(chatView_, &ChatView::manageMcpServersRequested, this,
+            &MainWindow::showMcpControlPanel);
     connect(chatView_, &ChatView::builtInFilesystemMcpToggled, this,
             &MainWindow::setBuiltInFilesystemMcpEnabled);
     connect(chatView_, &ChatView::externalMcpServerToggled, this,
@@ -1245,8 +1397,9 @@ void MainWindow::loadMcpServers()
         QString errorMessage;
         if (!mcpManager_.addServer(config, errorMessage))
         {
-            mcpServerErrors_.insert(config.serverId, errorMessage);
-            qWarning().noquote() << "MCP config rejected:" << errorMessage;
+            const auto safeMessage = redactSensitiveText(errorMessage);
+            mcpServerErrors_.insert(config.serverId, safeMessage);
+            qWarning().noquote() << "MCP config rejected:" << safeMessage;
             continue;
         }
         mcpManager_.startServer(config.serverId);
@@ -1258,9 +1411,10 @@ void MainWindow::loadMcpServers()
         QString errorMessage;
         if (!startBuiltInFilesystem(workspacePath_, errorMessage))
         {
-            mcpServerErrors_.insert(QStringLiteral("filesystem"), errorMessage);
+            const auto safeMessage = redactSensitiveText(errorMessage);
+            mcpServerErrors_.insert(QStringLiteral("filesystem"), safeMessage);
             qWarning().noquote()
-                << "Built-in filesystem MCP unavailable:" << errorMessage;
+                << "Built-in filesystem MCP unavailable:" << safeMessage;
         }
     }
     refreshMcpServerMenu();
@@ -1268,21 +1422,32 @@ void MainWindow::loadMcpServers()
 
 void MainWindow::refreshMcpServerMenu()
 {
-    QHash<QString, int> toolCounts;
-    for (const auto& tool : mcpManager_.tools())
-        ++toolCounts[tool.serverId];
-
-    const auto detailFor =
-        [this, &toolCounts](const QString& serverId, bool enabled)
+    const auto detailFor = [this](const QString& serverId, bool enabled)
     {
         if (!enabled) return tr("Off");
-        if (mcpServerErrors_.contains(serverId)) return tr("Unavailable");
-        const auto* serverTransport = mcpManager_.transport(serverId);
-        if (serverTransport == nullptr || !serverTransport->isRunning())
-            return tr("Unavailable");
-        const auto toolCount = toolCounts.value(serverId);
-        if (toolCount > 0) return tr("%n tools", nullptr, toolCount);
-        return tr("Starting");
+        const auto snapshot = mcpManager_.serverSnapshot(serverId);
+        if (!snapshot) return tr("Unavailable");
+        using infrastructure::mcp::McpServerState;
+        switch (snapshot->state)
+        {
+            case McpServerState::Stopped:
+                return tr("Stopped");
+            case McpServerState::Starting:
+                return tr("Starting");
+            case McpServerState::Initializing:
+                return tr("Initializing");
+            case McpServerState::Ready:
+                return tr("%n tools", nullptr,
+                          static_cast<int>(snapshot->toolCount));
+            case McpServerState::Degraded:
+                return tr("Degraded - %n tools", nullptr,
+                          static_cast<int>(snapshot->toolCount));
+            case McpServerState::Failed:
+                return tr("Failed");
+            case McpServerState::Stopping:
+                return tr("Stopping");
+        }
+        return tr("Unavailable");
     };
 
     QList<McpServerPresentation> presentations;
@@ -1303,6 +1468,187 @@ void MainWindow::refreshMcpServerMenu()
                               config.enabled, false, true});
     }
     chatView_->setMcpServers(presentations);
+    refreshMcpControlPanel();
+}
+
+void MainWindow::refreshMcpControlPanel()
+{
+    if (mcpControlPanel_ == nullptr) return;
+
+    const auto controlsEnabled =
+        !agentRunActive_ && !chatController_.isGenerating();
+    const auto allTools = mcpManager_.tools();
+    const auto rootSummary =
+        [](const infrastructure::mcp::McpServerConfig& config)
+    {
+        QStringList roots;
+        for (auto index = 0; index < config.arguments.size(); ++index)
+        {
+            const auto argument = config.arguments.at(index);
+            if ((argument == QLatin1String("--write-root") ||
+                 argument == QLatin1String("--read-root")) &&
+                index + 1 < config.arguments.size())
+            {
+                roots.append(
+                    QDir::toNativeSeparators(config.arguments.at(++index)));
+                continue;
+            }
+            for (const auto& prefix : {QStringLiteral("--write-root="),
+                                       QStringLiteral("--read-root=")})
+                if (argument.startsWith(prefix))
+                    roots.append(
+                        QDir::toNativeSeparators(argument.mid(prefix.size())));
+        }
+        roots.removeDuplicates();
+        return roots;
+    };
+    const auto riskText = [this](infrastructure::mcp::ToolRisk risk)
+    {
+        switch (risk)
+        {
+            case infrastructure::mcp::ToolRisk::ReadOnly:
+                return tr("read only");
+            case infrastructure::mcp::ToolRisk::CreatesData:
+                return tr("creates data");
+            case infrastructure::mcp::ToolRisk::ModifiesData:
+                return tr("modifies data");
+            case infrastructure::mcp::ToolRisk::Destructive:
+                return tr("destructive");
+        }
+        return tr("unknown risk");
+    };
+    const auto policyText = [this, &riskText](const QString& qualifiedName)
+    {
+        QString decision;
+        switch (toolPolicy_.evaluate(qualifiedName))
+        {
+            case infrastructure::mcp::ToolDecision::Allow:
+                decision = tr("Allowed");
+                break;
+            case infrastructure::mcp::ToolDecision::RequireApproval:
+                decision = tr("Approval required");
+                break;
+            case infrastructure::mcp::ToolDecision::Deny:
+                decision = tr("Blocked");
+                break;
+        }
+        return QStringLiteral("%1, %2").arg(
+            decision, riskText(toolPolicy_.risk(qualifiedName)));
+    };
+    const auto hintsText = [this](const QJsonObject& annotations)
+    {
+        QStringList hints;
+        if (annotations.value(QStringLiteral("readOnlyHint")).toBool())
+            hints.append(tr("read only"));
+        if (annotations.value(QStringLiteral("destructiveHint")).toBool())
+            hints.append(tr("destructive"));
+        if (annotations.value(QStringLiteral("idempotentHint")).toBool())
+            hints.append(tr("idempotent"));
+        if (annotations.value(QStringLiteral("openWorldHint")).toBool())
+            hints.append(tr("open world"));
+        return hints.isEmpty() ? tr("None") : hints.join(QStringLiteral(", "));
+    };
+
+    const auto makePresentation =
+        [this, controlsEnabled, &allTools, &rootSummary, &policyText,
+         &hintsText](const infrastructure::mcp::McpServerConfig& config,
+                     const QString& displayName, bool builtIn, bool available,
+                     bool enabled)
+    {
+        McpServerControlPresentation presentation;
+        presentation.serverId = config.serverId;
+        presentation.displayName = displayName;
+        presentation.enabled = enabled;
+        presentation.builtIn = builtIn;
+        presentation.available = available;
+        presentation.controlsEnabled = controlsEnabled;
+        const auto snapshot = mcpManager_.serverSnapshot(config.serverId);
+        presentation.registered = snapshot.has_value();
+        if (snapshot) presentation.snapshot = *snapshot;
+        presentation.snapshot.serverId = config.serverId;
+        if (mcpServerErrors_.contains(config.serverId))
+        {
+            if (presentation.snapshot.lastErrorCode.isEmpty())
+                presentation.snapshot.lastErrorCode =
+                    QStringLiteral("host_error");
+            presentation.snapshot.lastErrorMessage =
+                mcpServerErrors_.value(config.serverId);
+        }
+        presentation.transport = QStringLiteral("stdio");
+        const auto serverName =
+            presentation.snapshot.serverInfo.value(QStringLiteral("name"))
+                .toString();
+        const auto serverVersion =
+            presentation.snapshot.serverInfo.value(QStringLiteral("version"))
+                .toString();
+        presentation.serverInformation =
+            serverName.isEmpty() ? tr("Not available")
+                                 : QStringLiteral("%1 %2")
+                                       .arg(serverName, serverVersion)
+                                       .trimmed();
+        presentation.program = QDir::toNativeSeparators(config.program);
+        presentation.workingDirectory =
+            config.workingDirectory.isEmpty()
+                ? tr("Process default")
+                : QDir::toNativeSeparators(config.workingDirectory);
+        presentation.configurationSummary =
+            tr("stdio; %n arguments", nullptr, config.arguments.size()) +
+            tr("; %n environment variables", nullptr,
+               config.environment.size());
+        presentation.allowlist =
+            config.toolAllowlist.isEmpty()
+                ? tr("All advertised tools")
+                : config.toolAllowlist.join(QStringLiteral(", "));
+        const auto roots = rootSummary(config);
+        presentation.authorizedRoots = roots.isEmpty()
+                                           ? tr("None configured by the Host")
+                                           : roots.join(QLatin1Char('\n'));
+        for (const auto& tool : allTools)
+        {
+            if (tool.serverId != config.serverId) continue;
+            presentation.tools.append({tool.name,
+                                       policyText(tool.qualifiedName),
+                                       hintsText(tool.annotations)});
+        }
+        presentation.diagnostics = mcpDiagnostics_.value(config.serverId);
+        return presentation;
+    };
+
+    QList<McpServerControlPresentation> presentations;
+    if (!filesystemConfiguredExternally_)
+    {
+        infrastructure::mcp::McpServerConfig config;
+        config.serverId = QStringLiteral("filesystem");
+        config.program = tr("Built-in executable");
+        config.workingDirectory = workspacePath_;
+        config.arguments = {QStringLiteral("--write-root"), workspacePath_};
+        presentations.append(
+            makePresentation(config, tr("Built-in filesystem"), true, true,
+                             settingsStore_.builtInFilesystemMcpEnabled()));
+    }
+    for (const auto& config : mcpConfigurations_)
+        presentations.append(makePresentation(config, config.serverId, false,
+                                              true, config.enabled));
+    mcpControlPanel_->setServers(presentations);
+}
+
+void MainWindow::appendMcpDiagnostic(const QString& serverId,
+                                     const QString& category,
+                                     const QString& text)
+{
+    if (serverId.trimmed().isEmpty()) return;
+    const auto safeText = redactSensitiveText(text);
+    if (safeText.isEmpty()) return;
+    auto& diagnostics = mcpDiagnostics_[serverId];
+    diagnostics.append(QStringLiteral("[%1] %2: %3")
+                           .arg(QDateTime::currentDateTime().toString(
+                                    QStringLiteral("HH:mm:ss")),
+                                category.isEmpty() ? tr("Event") : category,
+                                safeText));
+    constexpr auto maximumDiagnostics = 200;
+    while (diagnostics.size() > maximumDiagnostics)
+        diagnostics.removeFirst();
+    refreshMcpControlPanel();
 }
 
 void MainWindow::setModelPath(const QString& modelPath)

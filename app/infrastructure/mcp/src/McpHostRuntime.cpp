@@ -224,8 +224,8 @@ bool McpHostRuntime::addServer(McpServerConfig config, QString& errorMessage)
 
     const auto serverId = config.serverId;
     auto* transportPointer = transport.get();
-    connections_.insert(serverId,
-                        {std::move(config), std::move(transport), false});
+    connections_.insert(
+        serverId, {std::move(config), std::move(transport), false, false});
     connectTransport(serverId, transportPointer);
     emit serverStateChanged(serverId, McpServerState::Stopped);
     return true;
@@ -335,9 +335,26 @@ void McpHostRuntime::startServer(const QString& serverId)
         return;
     }
 
+    if (snapshot->state == McpServerState::Failed &&
+        iterator->transport->isRunning())
+    {
+        iterator->restartRequested = true;
+        iterator->stopRequested = true;
+        if (!changeState(serverId, McpServerState::Stopping))
+        {
+            iterator->restartRequested = false;
+            iterator->stopRequested = false;
+            return;
+        }
+        iterator->transport->cancelAll();
+        iterator->transport->stop();
+        return;
+    }
+
     revokeCapabilities(serverId);
     serverRegistry_.clearError(serverId);
     iterator->stopRequested = false;
+    iterator->restartRequested = false;
     if (!changeState(serverId, McpServerState::Starting)) return;
     iterator->transport->start();
 }
@@ -355,6 +372,7 @@ void McpHostRuntime::stopServer(const QString& serverId)
     if (snapshot && snapshot->state == McpServerState::Stopped) return;
 
     iterator->stopRequested = true;
+    iterator->restartRequested = false;
     if (!iterator->transport->isRunning())
     {
         if (!changeState(serverId, McpServerState::Stopping)) return;
@@ -502,12 +520,18 @@ void McpHostRuntime::connectTransport(const QString& serverId,
                 const auto iterator = connections_.find(serverId);
                 if (iterator == connections_.end()) return;
                 const auto requested = iterator->stopRequested;
+                const auto restart = iterator->restartRequested;
                 discardPendingRequests(serverId);
                 revokeCapabilities(serverId);
                 changeState(serverId, requested ? McpServerState::Stopped
                                                 : McpServerState::Failed);
                 iterator->stopRequested = false;
+                iterator->restartRequested = false;
                 emit serverStopped(serverId);
+                if (restart)
+                    QMetaObject::invokeMethod(
+                        this, [this, serverId] { startServer(serverId); },
+                        Qt::QueuedConnection);
             });
     connect(transportPointer, &McpTransport::responseReceived, this,
             [this, serverId](const QString& requestId, const QString& method,

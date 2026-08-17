@@ -3,14 +3,17 @@
 #include "ChatController.hpp"
 #include "ChatView.hpp"
 #include "MainWindow.hpp"
+#include "McpControlPanel.hpp"
 #include "McpServerDialog.hpp"
 #include "MessageWidget.hpp"
 #include "ModeSwitch.hpp"
+#include "SensitiveData.hpp"
 #include "Theme.hpp"
 #include "ToolApprovalWidget.hpp"
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QColor>
 #include <QDir>
 #include <QEnterEvent>
@@ -31,6 +34,7 @@
 #include <QTextFormat>
 #include <QTimer>
 #include <QToolButton>
+#include <QTreeWidget>
 #include <QVBoxLayout>
 #include <QtTest>
 
@@ -58,6 +62,8 @@ class AssistantResponseTest final : public QObject
     void clearsVisibleAndInMemoryConversation();
     void showsWorkspaceAsComposerLink();
     void managesMcpServersFromAgentMenu();
+    void presentsMcpServerControlAndSignals();
+    void redactsSensitiveMcpDiagnostics();
     void validatesNewMcpServerConfiguration();
     void separatesModelLocationAndReloadActions();
     void placesModelControlsInComposerAndMergesPrimaryAction();
@@ -601,6 +607,8 @@ void AssistantResponseTest::managesMcpServersFromAgentMenu()
         menu->findChild<QAction*>(QStringLiteral("mcpServerAction_external"));
     auto* addAction =
         menu->findChild<QAction*>(QStringLiteral("addMcpServerAction"));
+    auto* manageAction =
+        menu->findChild<QAction*>(QStringLiteral("manageMcpServersAction"));
     auto* removeMenu =
         menu->findChild<QMenu*>(QStringLiteral("removeMcpServerMenu"));
     auto* removeExternalAction = menu->findChild<QAction*>(
@@ -610,6 +618,7 @@ void AssistantResponseTest::managesMcpServersFromAgentMenu()
     QVERIFY(builtInAction != nullptr);
     QVERIFY(externalAction != nullptr);
     QVERIFY(addAction != nullptr);
+    QVERIFY(manageAction != nullptr);
     QVERIFY(removeMenu != nullptr);
     QVERIFY(removeExternalAction != nullptr);
     QVERIFY(removeBuiltInAction == nullptr);
@@ -620,6 +629,7 @@ void AssistantResponseTest::managesMcpServersFromAgentMenu()
     QSignalSpy builtInSpy(&view, &ui::ChatView::builtInFilesystemMcpToggled);
     QSignalSpy externalSpy(&view, &ui::ChatView::externalMcpServerToggled);
     QSignalSpy addSpy(&view, &ui::ChatView::addMcpServerRequested);
+    QSignalSpy manageSpy(&view, &ui::ChatView::manageMcpServersRequested);
     QSignalSpy removeSpy(&view,
                          &ui::ChatView::removeExternalMcpServerRequested);
     builtInAction->trigger();
@@ -632,6 +642,8 @@ void AssistantResponseTest::managesMcpServersFromAgentMenu()
     QCOMPARE(externalSpy.constFirst().at(1).toBool(), true);
     addAction->trigger();
     QCOMPARE(addSpy.count(), 1);
+    manageAction->trigger();
+    QCOMPARE(manageSpy.count(), 1);
     removeExternalAction->trigger();
     QCOMPARE(removeSpy.count(), 1);
     QCOMPARE(removeSpy.constFirst().constFirst().toString(),
@@ -639,6 +651,161 @@ void AssistantResponseTest::managesMcpServersFromAgentMenu()
 
     view.setAgentModeSelected(false);
     QVERIFY(button->isHidden());
+}
+
+void AssistantResponseTest::presentsMcpServerControlAndSignals()
+{
+    using infrastructure::mcp::McpServerState;
+
+    ui::McpServerControlPresentation server;
+    server.serverId = QStringLiteral("external");
+    server.displayName = QStringLiteral("Example MCP");
+    server.enabled = true;
+    server.available = true;
+    server.registered = true;
+    server.controlsEnabled = true;
+    server.snapshot.serverId = server.serverId;
+    server.snapshot.state = McpServerState::Ready;
+    server.snapshot.toolCount = 1;
+    server.snapshot.protocolVersion = QStringLiteral("2025-06-18");
+    server.snapshot.capabilities.tools = true;
+    server.snapshot.capabilities.logging = true;
+    server.snapshot.instructions = QStringLiteral("Use bounded results.");
+    server.snapshot.lastErrorCode = QStringLiteral("last_failure");
+    server.snapshot.lastErrorMessage = QStringLiteral("Recovered safely.");
+    server.transport = QStringLiteral("stdio");
+    server.serverInformation = QStringLiteral("example 1.0");
+    server.program = QStringLiteral("D:/tools/example-mcp.exe");
+    server.workingDirectory = QStringLiteral("D:/workspace");
+    server.configurationSummary = QStringLiteral("stdio; 2 arguments");
+    server.allowlist = QStringLiteral("read_data");
+    server.authorizedRoots = QStringLiteral("D:/workspace");
+    server.tools.append({QStringLiteral("read_data"),
+                         QStringLiteral("Allowed, read only"),
+                         QStringLiteral("read only, idempotent")});
+    server.diagnostics.append(
+        QStringLiteral("[12:00:00] Protocol: Initialized"));
+
+    ui::McpControlPanel panel;
+    panel.setServers({server});
+    panel.show();
+    QTest::qWait(20);
+
+    auto* serverList =
+        panel.findChild<QTreeWidget*>(QStringLiteral("mcpServerList"));
+    auto* stateLabel =
+        panel.findChild<QLabel*>(QStringLiteral("mcpServerState"));
+    auto* enabled =
+        panel.findChild<QCheckBox*>(QStringLiteral("mcpServerEnabled"));
+    auto* instructions =
+        panel.findChild<QPlainTextEdit*>(QStringLiteral("mcpInstructions"));
+    auto* lastError = panel.findChild<QLabel*>(QStringLiteral("mcpLastError"));
+    auto* toolList =
+        panel.findChild<QTreeWidget*>(QStringLiteral("mcpToolList"));
+    auto* diagnostics =
+        panel.findChild<QPlainTextEdit*>(QStringLiteral("mcpDiagnostics"));
+    auto* start =
+        panel.findChild<QToolButton*>(QStringLiteral("startMcpServerButton"));
+    auto* stop =
+        panel.findChild<QToolButton*>(QStringLiteral("stopMcpServerButton"));
+    auto* restart =
+        panel.findChild<QToolButton*>(QStringLiteral("restartMcpServerButton"));
+    auto* refresh =
+        panel.findChild<QToolButton*>(QStringLiteral("refreshMcpToolsButton"));
+    auto* add =
+        panel.findChild<QToolButton*>(QStringLiteral("addMcpServerButton"));
+    auto* remove =
+        panel.findChild<QToolButton*>(QStringLiteral("removeMcpServerButton"));
+    QVERIFY(serverList != nullptr);
+    QVERIFY(stateLabel != nullptr);
+    QVERIFY(enabled != nullptr);
+    QVERIFY(instructions != nullptr);
+    QVERIFY(lastError != nullptr);
+    QVERIFY(toolList != nullptr);
+    QVERIFY(diagnostics != nullptr);
+    QVERIFY(start != nullptr);
+    QVERIFY(stop != nullptr);
+    QVERIFY(restart != nullptr);
+    QVERIFY(refresh != nullptr);
+    QVERIFY(add != nullptr);
+    QVERIFY(remove != nullptr);
+
+    QCOMPARE(serverList->topLevelItemCount(), 1);
+    QCOMPARE(serverList->topLevelItem(0)->text(0),
+             QStringLiteral("Example MCP"));
+    QCOMPARE(serverList->topLevelItem(0)->text(1), QStringLiteral("Ready"));
+    QCOMPARE(serverList->topLevelItem(0)->text(2), QStringLiteral("1"));
+    QCOMPARE(stateLabel->text(), QStringLiteral("Ready"));
+    QCOMPARE(stateLabel->property("serverState").toString(),
+             QStringLiteral("ready"));
+    QVERIFY(enabled->isChecked());
+    QCOMPARE(instructions->toPlainText(),
+             QStringLiteral("Use bounded results."));
+    QCOMPARE(lastError->text(),
+             QStringLiteral("last_failure: Recovered safely."));
+    QCOMPARE(toolList->topLevelItemCount(), 1);
+    QCOMPARE(toolList->topLevelItem(0)->text(0), QStringLiteral("read_data"));
+    QVERIFY(diagnostics->toPlainText().contains(QStringLiteral("Initialized")));
+    QVERIFY(!start->isEnabled());
+    QVERIFY(stop->isEnabled());
+    QVERIFY(restart->isEnabled());
+    QVERIFY(refresh->isEnabled());
+    QVERIFY(remove->isEnabled());
+
+    QSignalSpy addSpy(&panel, &ui::McpControlPanel::addServerRequested);
+    QSignalSpy removeSpy(&panel, &ui::McpControlPanel::removeServerRequested);
+    QSignalSpy enabledSpy(&panel, &ui::McpControlPanel::serverEnabledChanged);
+    QSignalSpy startSpy(&panel, &ui::McpControlPanel::startServerRequested);
+    QSignalSpy stopSpy(&panel, &ui::McpControlPanel::stopServerRequested);
+    QSignalSpy restartSpy(&panel, &ui::McpControlPanel::restartServerRequested);
+    QSignalSpy refreshSpy(&panel, &ui::McpControlPanel::refreshToolsRequested);
+    add->click();
+    remove->click();
+    stop->click();
+    restart->click();
+    refresh->click();
+    enabled->click();
+    QCOMPARE(addSpy.count(), 1);
+    QCOMPARE(removeSpy.count(), 1);
+    QCOMPARE(removeSpy.constFirst().constFirst().toString(), server.serverId);
+    QCOMPARE(stopSpy.count(), 1);
+    QCOMPARE(restartSpy.count(), 1);
+    QCOMPARE(refreshSpy.count(), 1);
+    QCOMPARE(enabledSpy.count(), 1);
+    QCOMPARE(enabledSpy.constFirst().at(0).toString(), server.serverId);
+    QCOMPARE(enabledSpy.constFirst().at(1).toBool(), false);
+    QCOMPARE(enabledSpy.constFirst().at(2).toBool(), false);
+
+    server.snapshot.state = McpServerState::Stopped;
+    panel.setServers({server});
+    QVERIFY(start->isEnabled());
+    start->click();
+    QCOMPARE(startSpy.count(), 1);
+    QCOMPARE(startSpy.constFirst().constFirst().toString(), server.serverId);
+}
+
+void AssistantResponseTest::redactsSensitiveMcpDiagnostics()
+{
+    const auto redacted = ui::redactSensitiveText(
+        QStringLiteral("password=hunter2; token: abc123; "
+                       "Authorization=Bearer top.secret; "
+                       "Cookie='session-value'"));
+    QVERIFY(!redacted.contains(QStringLiteral("hunter2")));
+    QVERIFY(!redacted.contains(QStringLiteral("abc123")));
+    QVERIFY(!redacted.contains(QStringLiteral("top.secret")));
+    QVERIFY(!redacted.contains(QStringLiteral("session-value")));
+    QVERIFY(redacted.count(QStringLiteral("[redacted]")) >= 4);
+
+    const auto json = ui::redactSensitiveText(QStringLiteral(
+        R"({"api_key":"live-key","nested":{"authorization":"Bearer hidden"},"safe":"visible"})"));
+    QVERIFY(!json.contains(QStringLiteral("live-key")));
+    QVERIFY(!json.contains(QStringLiteral("hidden")));
+    QVERIFY(json.contains(QStringLiteral("visible")));
+
+    const auto truncated =
+        ui::redactSensitiveText(QString(200, QLatin1Char('x')), 64);
+    QCOMPARE(truncated.size(), 67);
+    QVERIFY(truncated.endsWith(QStringLiteral("...")));
 }
 
 void AssistantResponseTest::validatesNewMcpServerConfiguration()

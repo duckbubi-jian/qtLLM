@@ -330,7 +330,7 @@ Server 崩溃不影响另一个 Server 或普通聊天。
 - progress/logging notification 通过类型化信号发布，并按 Server 限制为每秒 100
   条；本地取消同时发送 `notifications/cancelled`，迟到响应继续丢弃。
 
-### 阶段 3：MCP 控制面与诊断（3 至 5 个工作日）
+### 阶段 3：MCP 控制面与诊断（已完成，2026-08-17）
 
 - UI 展示每个 Server 的状态、transport、协议版本、能力、工具数量和最近错误。
 - 支持启用、禁用、重启、刷新能力及按 Server 查看脱敏日志。
@@ -339,6 +339,20 @@ Server 崩溃不影响另一个 Server 或普通聊天。
 
 验收：用户不看原始 JSON 也能判断 Server 是否就绪、具备什么能力、为什么失败；
 状态变化不阻塞 UI。
+
+完成记录：
+
+- 新增独立非模态控制面，按 Server 展示状态、工具数、transport、协议版本、
+  capabilities、Server 信息、instructions、最近错误和 stdio 配置摘要。
+- 支持启用、禁用、添加、移除、启动、停止、重启和刷新工具目录；操作在聊天或
+  Agent 运行期间禁用，生命周期变化通过 runtime 信号异步更新。
+- Tools 页展示本地授权决策、风险等级和 Server annotations；Overview 页展示
+  allowlist 与 Host 配置的授权根，不把 Server 自报提示提升为本地权限。
+- Diagnostics 页按 Server 保留最多 200 条事件，覆盖状态、transport、协议、
+  工具目录、stderr 和 logging notification，并对凭据字段、Bearer token 和常见
+  文本赋值执行脱敏与长度限制。
+- runtime 可从进程仍存活的 `Failed` 状态执行受控重启，避免 transport no-op 后
+  状态停留在 `Starting`；fake transport 回归覆盖该路径。
 
 ### 阶段 4：Resources、Prompts 与 Roots（4 至 6 个工作日）
 
@@ -374,8 +388,8 @@ Server 权限；递归调用有确定性上限。
 验收：默认 CTest 不依赖真实模型或公网；安装升级保留 MCP 配置和权限；MCP、
 worker 任一单点故障不导致主窗口崩溃。
 
-核心交付为阶段 0 至 3，单人全职预计 11 至 18 个工作日。完整完成阶段 0 至 7
-预计 26 至 42 个工作日。阶段 4、5 可在 Host Facade 稳定后并行开发。
+核心交付阶段 0 至 3 已完成。完整完成阶段 0 至 7 原预计 26 至 42 个工作日；
+阶段 4、5 可在 Host Facade 稳定后并行开发。
 
 ## 9. 测试矩阵
 

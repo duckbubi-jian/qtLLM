@@ -114,6 +114,12 @@ class FakeMcpTransport final : public infrastructure::mcp::McpTransport
         emit stopped();
     }
 
+    void failWhileRunning()
+    {
+        emit transportError(QStringLiteral("invalid_message"),
+                            QStringLiteral("Fake protocol failure."));
+    }
+
    private:
     bool running_ = false;
     int nextRequestId_ = 0;
@@ -173,6 +179,7 @@ class StdioMcpTransportTest final : public QObject
     void rejectsInvalidServerIds();
     void builtInFilesystemWritesCppFile();
     void tracksServerLifecycleAndRevokesCapabilities();
+    void restartsFailedRunningTransport();
     void isolatesMultipleServerFailures();
     void rejectsInvalidServerStateTransitions();
     void paginatesToolsAtomicallyAndPreservesMetadata();
@@ -573,6 +580,41 @@ void StdioMcpTransportTest::tracksServerLifecycleAndRevokesCapabilities()
     QCOMPARE(runtime.serverSnapshot(QStringLiteral("alpha"))->state,
              McpServerState::Starting);
     QVERIFY(stateSpy.count() >= 7);
+}
+
+void StdioMcpTransportTest::restartsFailedRunningTransport()
+{
+    using infrastructure::mcp::McpHostRuntime;
+    using infrastructure::mcp::McpServerState;
+
+    QSharedPointer<FakeMcpTransport> transport;
+    McpHostRuntime runtime(
+        [&transport](const infrastructure::mcp::McpServerConfig&)
+            -> QSharedPointer<infrastructure::mcp::McpTransport>
+        {
+            transport = QSharedPointer<FakeMcpTransport>::create();
+            return transport;
+        });
+    QString errorMessage;
+    QVERIFY2(runtime.addServer(runtimeTestConfig(QStringLiteral("alpha")),
+                               errorMessage),
+             qPrintable(errorMessage));
+    runtime.startServer(QStringLiteral("alpha"));
+    QVERIFY(transport->isRunning());
+
+    transport->failWhileRunning();
+    QCOMPARE(runtime.serverSnapshot(QStringLiteral("alpha"))->state,
+             McpServerState::Failed);
+    QVERIFY(transport->isRunning());
+
+    QSignalSpy stoppedSpy(&runtime, &McpHostRuntime::serverStopped);
+    QSignalSpy startedSpy(&runtime, &McpHostRuntime::serverStarted);
+    runtime.startServer(QStringLiteral("alpha"));
+    QCOMPARE(stoppedSpy.count(), 1);
+    QTRY_COMPARE(runtime.serverSnapshot(QStringLiteral("alpha"))->state,
+                 McpServerState::Starting);
+    QCOMPARE(startedSpy.count(), 1);
+    QVERIFY(transport->isRunning());
 }
 
 void StdioMcpTransportTest::isolatesMultipleServerFailures()

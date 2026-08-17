@@ -27,6 +27,7 @@ class AgentControllerTest final : public QObject
     void toolCatalogOmitsWholeDefinitions();
     void rejectsUnchangedRetryAfterToolError();
     void rejectsRepeatedSuccessfulToolCall();
+    void preservesSummaryWhenCompletionReviewFormattingFails();
     void allowsRepeatedPollingUntilTerminalStatus();
     void cancelsPendingStatusPoll();
     void rejectsAlternatingCompletedToolCycle();
@@ -216,6 +217,9 @@ void AgentControllerTest::completesMultiStepToolRun()
     QVERIFY(controller.start(request, {}, {echoTool()}));
     QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
     QCOMPARE(generationCount, 1);
+    QCOMPARE(lastMessages.size(), 2);
+    QCOMPARE(lastMessages.at(0).role, chat::Role::System);
+    QCOMPARE(lastMessages.at(1).role, chat::Role::User);
     QVERIFY(lastMessages.constFirst().content.contains(
         QStringLiteral("fake.echo")));
     QVERIFY(
@@ -698,7 +702,9 @@ void AgentControllerTest::rejectsRepeatedSuccessfulToolCall()
             { return infrastructure::mcp::ToolDecision::Allow; }});
 
     const auto action = QByteArrayLiteral(
-        R"({"action":"call_tool","tool":"fake.echo","arguments":{"value":1}})");
+        R"({"action":"call_tool","tool":"fake.echo","arguments":{"file_path":"E:/stl_case1/qyck_shaft.stl"}})");
+    const auto equivalentPathAction = QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.echo","arguments":{"file_path":"E:\\stl_case1\\qyck_shaft.stl"}})");
     QVERIFY(controller.start(QStringLiteral("Do work"), {}, {echoTool()}));
     controller.receiveToken(action);
     controller.completeGeneration(false);
@@ -711,13 +717,75 @@ void AgentControllerTest::rejectsRepeatedSuccessfulToolCall()
     controller.receiveToolResult(result);
     QCOMPARE(generationCount, 2);
 
-    controller.receiveToken(action);
+    controller.receiveToken(equivalentPathAction);
     controller.completeGeneration(false);
     QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
     QCOMPARE(toolCallCount, 1);
     QCOMPARE(generationCount, 3);
     QVERIFY(generatedMessages.constLast().content.contains(
         QStringLiteral("already completed successfully")));
+}
+
+void AgentControllerTest::preservesSummaryWhenCompletionReviewFormattingFails()
+{
+    auto toolCallCount = 0;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [](const QList<chat::Message>&, const models::InferencePreset&,
+               int) {},
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-%1").arg(toolCallCount);
+            },
+            [](const QString&) {},
+            [](const QString&, const QJsonObject&, QString&) { return true; },
+            [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+    QSignalSpy finalSpy(&controller,
+                        &application::AgentController::finalAnswerReady);
+
+    QVERIFY(controller.start(
+        QStringLiteral("1. Import the STL.\n2. Summarize the result."), {},
+        {echoTool()}));
+    const QJsonArray plan{
+        planStep(QStringLiteral("import"), QStringLiteral("Import the STL"),
+                 true),
+        planStep(QStringLiteral("summary"),
+                 QStringLiteral("Summarize the result"), false)};
+    controller.receiveToken(taskPlanAction(plan));
+    controller.completeGeneration(false);
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.echo","arguments":{"path":"case.stl"}})"));
+    controller.completeGeneration(false);
+
+    agent::ToolResult result;
+    result.requestId = QStringLiteral("tool-request-1");
+    result.serverId = QStringLiteral("fake");
+    result.toolName = QStringLiteral("echo");
+    controller.receiveToolResult(result);
+
+    const auto final = QByteArrayLiteral(
+        R"({"action":"final","content":"The STL was imported successfully."})");
+    controller.receiveToken(final);
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+
+    const auto malformedReview = QByteArrayLiteral(
+        R"({"action":"review_completion","verdict":"","steps":[],"detail":""})");
+    controller.receiveToken(malformedReview);
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(finalSpy.count(), 0);
+
+    controller.receiveToken(malformedReview);
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Completed);
+    QCOMPARE(finalSpy.count(), 1);
+    QCOMPARE(finalSpy.constFirst().at(1).toString(),
+             QStringLiteral("The STL was imported successfully."));
+    QCOMPARE(toolCallCount, 1);
 }
 
 void AgentControllerTest::allowsRepeatedPollingUntilTerminalStatus()

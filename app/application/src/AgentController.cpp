@@ -5,6 +5,7 @@
 #include "ToolResultStatus.hpp"
 
 #include <QDebug>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QUuid>
 
@@ -23,11 +24,40 @@ constexpr auto maximumCompletionReviewsPerEvidenceRevision = 2;
 constexpr qsizetype maximumDetectedCycleLength = 4;
 constexpr qsizetype maximumLoggedEventDataBytes = 4'096;
 
+QJsonValue canonicalJsonValue(const QJsonValue& value)
+{
+    if (value.isString())
+    {
+        auto text = value.toString();
+        if (text.size() >= 3 && text.at(1) == QLatin1Char(':') &&
+            (text.at(2) == QLatin1Char('/') || text.at(2) == QLatin1Char('\\')))
+            text.replace(QLatin1Char('\\'), QLatin1Char('/'));
+        return text;
+    }
+    if (value.isArray())
+    {
+        QJsonArray result;
+        for (const auto& item : value.toArray())
+            result.append(canonicalJsonValue(item));
+        return result;
+    }
+    if (value.isObject())
+    {
+        QJsonObject result;
+        const auto object = value.toObject();
+        for (const auto& key : object.keys())
+            result.insert(key, canonicalJsonValue(object.value(key)));
+        return result;
+    }
+    return value;
+}
+
 QString toolCallSignature(const agent::Action& action)
 {
+    const auto arguments = canonicalJsonValue(action.arguments).toObject();
     return action.toolName + QLatin1Char('\n') +
            QString::fromUtf8(
-               QJsonDocument(action.arguments).toJson(QJsonDocument::Compact));
+               QJsonDocument(arguments).toJson(QJsonDocument::Compact));
 }
 
 QString repeatedCompletedCallError(const QStringList& history,
@@ -155,8 +185,13 @@ bool AgentController::start(const QString& userRequest,
         !tools.isEmpty() &&
         AgentPromptBuilder::requiresCompletionReview(request);
     if (run.taskPlanRequired)
-        run.inferenceMessages.append(
-            AgentPromptBuilder::taskPlanMessage(request));
+    {
+        // Keep the initial prompt as one user turn; the worker requires
+        // strictly alternating user and assistant messages.
+        run.inferenceMessages.last().content +=
+            QStringLiteral("\n\n") +
+            AgentPromptBuilder::taskPlanMessage(request).content;
+    }
     activeRun_ = std::move(run);
     preset_ = preset;
     availableTools_ = tools;
@@ -703,6 +738,28 @@ QString AgentController::validateCompletionReview(
     return {};
 }
 
+bool AgentController::hasSufficientCompletionEvidence() const
+{
+    if (!activeRun_ || activeRun_->pendingFinalCandidate.isEmpty() ||
+        activeRun_->completionSteps.isEmpty() ||
+        !unfinishedEvidenceReason(toolEvidence_).isEmpty())
+        return false;
+
+    auto requiredToolSteps = 0;
+    for (const auto& value : activeRun_->completionSteps)
+        if (value.toObject().value(QStringLiteral("requires_tool")).toBool())
+            ++requiredToolSteps;
+
+    auto successfulTerminalEvidence = 0;
+    for (const auto& evidence : toolEvidence_)
+        if (evidence.value(QStringLiteral("outcome")).toString() ==
+                QLatin1String("success") &&
+            evidence.value(QStringLiteral("terminal")).toBool())
+            ++successfulTerminalEvidence;
+
+    return successfulTerminalEvidence >= requiredToolSteps;
+}
+
 void AgentController::handleCompletionReview(const agent::Action& action,
                                              const QByteArray& rawAction)
 {
@@ -824,6 +881,20 @@ void AgentController::retryCompletionReview(const QByteArray& rawAction,
                    "action=%3")
                    .arg(activeRun_->id, singleLine(errorMessage),
                         singleLine(QString::fromUtf8(rawAction)).left(2'048));
+        if (hasSufficientCompletionEvidence())
+        {
+            const auto content =
+                std::exchange(activeRun_->pendingFinalCandidate, QString{});
+            activeRun_->awaitingCompletionReview = false;
+            recordEvent(
+                agent::EventType::Warning,
+                QStringLiteral(
+                    "Completion review formatting failed after correction; "
+                    "using the prepared final answer because successful "
+                    "terminal evidence covers every tool-required step."));
+            completeRun(content);
+            return;
+        }
         failRun(QStringLiteral("completion_unverified"), errorMessage);
         return;
     }

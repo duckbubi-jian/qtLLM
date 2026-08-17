@@ -1,66 +1,56 @@
-# qtLLM 模型包规范
+# qtLLM Model Package Specification
 
-## 1. 设计约束
+This document defines the model package format currently supported by qtLLM.
+The runtime and model weights are distributed separately. Each package
+represents one logical model and one quantization or fine-tuning variant.
 
-qtLLM 的运行框架与模型权重分离发布。一个模型包必须且只能表示一个逻辑模型：
+## Package layout
 
-- 不同模型分别打包。
-- 同一模型的不同量化版本分别打包。
-- 同一模型的不同微调版本分别打包。
-- GGUF 因文件大小而分片时，可以在一个包内包含多个分片。
-- 模型包只包含数据、配置、文档和许可证，不包含 EXE、DLL、脚本或插件。
+A package is a directory containing a UTF-8 `manifest.json`, one or more GGUF
+files, a `preset.json`, and a non-empty license file:
 
-推荐发布物命名：
+```text
+qwen-4b-q4km/
+|- manifest.json
+|- model.gguf
+|- preset.json
+|- LICENSE.txt
+`- README.md                 # optional
+```
+
+Large GGUF models may be split into files such as
+`model-00001-of-00003.gguf`. All shards belong to the same logical model and
+must be listed in `modelFiles` in load order. A package must not contain an
+undeclared GGUF file.
+
+Packages contain data and metadata only. They must not contain executables,
+libraries, scripts, plugins, or other code intended to be run by qtLLM.
+
+Recommended archive names are:
 
 ```text
 qtLLM-runtime-1.0.0.exe
-qtLLM-model-deepseek-r1-distill-qwen-7b-q4km-1.0.0.zip
 qtLLM-model-qwen-4b-q4km-1.0.0.zip
 ```
 
-## 2. 模型包目录
+## manifest.json
 
-标准模型包解压后只有一个顶层目录：
-
-```text
-deepseek-r1-distill-qwen-7b-q4km/
-├── manifest.json
-├── model.gguf
-├── preset.json
-├── LICENSE.txt
-└── README.md
-```
-
-分片模型可以使用：
-
-```text
-model-00001-of-00003.gguf
-model-00002-of-00003.gguf
-model-00003-of-00003.gguf
-```
-
-这些分片必须共同组成一个模型，不得作为多个可独立选择的模型展示。清单中的
-`modelFiles` 按加载顺序声明分片，框架将第一个分片交给 llama.cpp，由 llama.cpp
-发现并加载同目录中的其余分片。
-
-## 3. manifest.json
-
-`manifest.json` 是正式模型包的必需文件，使用 UTF-8 编码。Schema v1 示例：
+Schema version 1 requires the following fields:
 
 ```json
 {
   "schemaVersion": 1,
-  "id": "deepseek-r1-distill-qwen-7b-q4km",
-  "displayName": "DeepSeek R1 Distill Qwen 7B Q4_K_M",
+  "id": "qwen-4b-q4km",
+  "displayName": "Qwen 4B Q4_K_M",
   "packageVersion": "1.0.0",
-  "modelRevision": "upstream-revision-or-commit",
+  "modelRevision": "fixed-conversion-revision",
   "engine": "llama.cpp",
   "format": "gguf",
   "modelFiles": [
     {
       "path": "model.gguf",
       "sizeBytes": 4680000000,
-      "sha256": "replace-with-64-lowercase-hex-characters"
+      "sha256": "lowercase-64-character-sha256"
     }
   ],
   "minimumRuntimeVersion": "0.1.0",
@@ -69,28 +59,36 @@ model-00003-of-00003.gguf
   "presetFile": "preset.json",
   "licenseFile": "LICENSE.txt",
   "upstream": {
-    "publisher": "DeepSeek",
-    "modelId": "DeepSeek-R1-Distill-Qwen-7B",
-    "revision": "replace-with-fixed-revision",
-    "source": "replace-with-official-source"
+    "publisher": "Model publisher",
+    "modelId": "upstream-model-id",
+    "revision": "fixed-upstream-revision",
+    "source": "https://official-source.example/model"
   }
 }
 ```
 
-版本字段职责：
+Field requirements:
 
-| 字段 | 含义 |
+| Field | Requirement |
 | --- | --- |
-| `schemaVersion` | 清单格式版本 |
-| `packageVersion` | qtLLM 模型包的发布版本 |
-| `modelRevision` | 上游权重或转换产物的固定版本 |
-| `minimumRuntimeVersion` | 能加载此包的最低框架版本 |
+| `schemaVersion` | Must be `1`. |
+| `id` | Unique package identifier using lowercase ASCII letters, numbers, `.`, `_`, or `-`. |
+| `packageVersion` | Version of this package, independent of the model revision. |
+| `modelRevision` | Fixed revision of the packaged weights or conversion. |
+| `engine` / `format` | Must be `llama.cpp` / `gguf`. |
+| `modelFiles` | One to 128 GGUF files. Every entry needs a safe relative `path`, exact `sizeBytes`, and lowercase SHA-256. |
+| `minimumRuntimeVersion` | Numeric dotted runtime version, for example `0.1.0`. |
+| `defaultContextSize` | Must match `preset.json.contextSize`. |
+| `presetFile` / `licenseFile` | Safe relative paths to existing files inside the package. The license file must not be empty. |
+| `upstream` | Must identify the publisher, upstream model ID, fixed revision, and source URL or reference. |
 
-`id` 在一个模型库中必须唯一。模型文件大小必须与 `sizeBytes` 一致，SHA-256 必须在首次安装和用户主动校验时验证。
+The runtime checks the manifest, package ID, runtime compatibility, declared
+paths, file sizes, GGUF headers, and package contents before loading a model.
+It computes SHA-256 for every declared model file during verification.
 
-## 4. preset.json
+## preset.json
 
-`preset.json` 保存推荐推理参数，不保存用户会话数据：
+`preset.json` contains recommended inference parameters only. It must contain:
 
 ```json
 {
@@ -103,79 +101,40 @@ model-00003-of-00003.gguf
 }
 ```
 
-Chat template 优先读取 GGUF 元数据。只有在模型验证阶段确认元数据缺失或错误时，才允许未来的 Schema 版本显式覆盖模板。
+`maxOutputTokens` must be smaller than `contextSize`. Chat templates are read
+from GGUF metadata; this package format does not provide a separate template
+override.
 
-## 5. 模型库发现规则
+## Discovery and verification
 
-用户可以在设置中指定模型库根目录，例如：
+When a model-library directory is selected, qtLLM scans its immediate child
+directories. A child containing `manifest.json` is treated as a model package.
+The normal flow is:
 
-```text
-D:\qtLLM-models\
-├── deepseek-r1-distill-qwen-7b-q4km\
-│   ├── manifest.json
-│   └── model.gguf
-└── qwen-4b-q4km\
-    ├── manifest.json
-    └── model.gguf
-```
+1. Parse and validate `manifest.json`.
+1. Resolve all referenced paths as package-relative files.
+1. Check the GGUF files, sizes, headers, preset, license, and package contents.
+1. Hash the model files and compare their SHA-256 values.
+1. Add the package to the model list only after verification succeeds.
 
-框架只扫描根目录的一级子目录，每个一级子目录视为一个候选模型包。发现流程为：
+The UI currently selects a package directory and loads the first declared GGUF
+file. llama.cpp handles additional shards in the same directory. Runtime
+settings, conversations, and logs are stored outside the package.
 
-1. 读取 `manifest.json`，检查 JSON 和 `schemaVersion`。
-1. 检查包 ID 是否重复及运行时版本是否兼容。
-1. 验证所有路径均为包目录内的相对路径。
-1. 检查文件存在、大小、GGUF 格式及架构支持情况。
-1. 校验 SHA-256，成功后标记为“已验证模型包”。
-1. 读取推荐参数并将模型加入可选列表。
+Users may also select a `.gguf` file directly. Direct GGUF mode does not use a
+manifest or provenance metadata, uses runtime defaults, and is always shown as
+an unverified model.
 
-框架还允许用户直接选择兼容的 `.gguf` 文件。此模式不要求清单，但必须标记为“未验证模型”，不承诺来源、许可证、推荐参数或运行时兼容性。
+## Safety requirements
 
-当前 UI 只支持选择模型包目录，并加载清单声明的单个 GGUF 或首个 GGUF 分片。
-底层保留裸 `.gguf` 解析仅用于兼容旧配置，不在 UI 中提供入口。加载模型包时先同步检查清单、
-相对路径、文件类型、文件大小、GGUF 头、运行时版本和推荐参数，再在后台计算模型
-文件 SHA-256。校验成功后自动采用 `preset.json`，并将文件绝对路径、大小、最后
-修改时间和期望哈希组成的校验记录写入 exe 同级 `qtLLM.ini`；记录完全匹配时可以
-跳过重复哈希，任一项变化都会重新校验。没有相邻清单的裸 GGUF 只检查扩展名和
-GGUF 头，使用框架默认参数并保持“未验证”标记。
+- Reject absolute paths, `..` traversal, and links that resolve outside the package.
+- Reject executable content, including EXE, DLL, shared libraries, scripts, and plugins.
+- Reject undeclared GGUF files.
+- Enforce package file-count and extraction-size limits before installation.
+- Never execute package-provided files.
+- Treat a verified package as internally consistent with its manifest; this is
+  not publisher authentication. Release tooling should provide any required
+  signature or distribution trust separately.
 
-“已验证模型包”表示当前文件与该包自身的清单一致，不代表发布者身份已经通过
-密码学认证。商业发布还必须由可信发布流程对清单或完整模型包签名，并由 runtime
-内置的信任根验证签名。
-
-## 6. 托管与外部模型
-
-模型采用两种存放模式：
-
-- 托管安装：框架将验证后的包原子地安装到应用模型库，可以执行更新和卸载。
-- 外部引用：用户指定已有模型目录，框架只读扫描，不移动、不覆盖、不删除其中内容。
-
-托管安装应先解压至临时目录，完成全部校验后再重命名到最终目录。失败或取消时不得留下可被扫描到的半成品模型包。
-
-用户会话、设置和日志不得写入模型包，应保存在：
-
-```text
-%LOCALAPPDATA%\<Company>\qtLLM\
-├── conversations.db
-├── settings.json
-└── logs\
-```
-
-## 7. 安全边界
-
-- 拒绝绝对路径、`..` 路径穿越和指向包外部的符号链接。
-- 模型包不执行任何随包提供的代码或命令。
-- 拒绝模型包中的 EXE、DLL、BAT、CMD、PS1、JS 和其他可执行内容。
-- 解压前检查声明大小、实际压缩大小和可用磁盘空间。
-- 限制文件数量和解压总大小，防止恶意压缩包耗尽磁盘。
-- 模型加载在 `qtllm-worker` 进程中完成，异常不得带崩主界面。
-- 正式发布的模型包必须附带准确的许可证、来源和固定上游版本。
-
-## 8. 发布形态
-
-| 版本 | 内容 | 更新方式 |
-| --- | --- | --- |
-| 框架版 | Qt 应用、worker、推理引擎、运行库 | 独立更新框架 |
-| 模型包 | 一个逻辑模型及其元数据和许可证 | 独立更新单个模型 |
-| 离线套装 | 框架安装器和一个独立模型包 | 安装后仍分别管理 |
-
-即使通过同一个离线介质交付，框架和模型也不能合并为不可拆分的安装组件。
+Model packages may be shipped beside the runtime in an offline bundle, but the
+runtime and each model package remain independently versioned and replaceable.

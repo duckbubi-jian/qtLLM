@@ -351,7 +351,11 @@ chat::Message AgentPromptBuilder::completionReviewCorrectionMessage(
         QStringLiteral(
             "The completion review was rejected by the local controller: %1 "
             "Do not return final. Return one corrected review_completion "
-            "action, or a valid call_tool action for an unfinished step.")
+            "action, or a valid call_tool action for an unfinished step. "
+            "Use the exact verdict \"complete\", \"continue\", or "
+            "\"blocked\"; do not use \"completed\". Every step must use "
+            "the keys id, description, requires_tool, status, and evidence, "
+            "where evidence is an array of numeric sequence values.")
             .arg(errorMessage)};
 }
 

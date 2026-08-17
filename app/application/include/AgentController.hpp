@@ -102,6 +102,7 @@ class AgentController final : public QObject
                                const QString& errorMessage);
     void retryUnfinishedFinal(const QByteArray& rawAction,
                               const QString& errorMessage);
+    [[nodiscard]] bool hasSufficientCompletionEvidence() const;
     [[nodiscard]] QString validateCompletionReview(
         const agent::Action& action) const;
     void executeTool(const agent::Action& action);

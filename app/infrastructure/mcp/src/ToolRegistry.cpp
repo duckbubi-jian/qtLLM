@@ -229,4 +229,28 @@ bool ToolRegistry::validateArguments(const QString& qualifiedName,
     return validateValue(arguments, definition->inputSchema,
                          QStringLiteral("arguments"), errorMessage);
 }
+
+bool ToolRegistry::validateOutput(const QString& qualifiedName,
+                                  const QJsonValue& output,
+                                  QString& errorMessage) const
+{
+    const auto* definition = find(qualifiedName);
+    if (definition == nullptr)
+    {
+        errorMessage =
+            QStringLiteral("Tool is not registered: %1").arg(qualifiedName);
+        return false;
+    }
+    if (!definition->hasOutputSchema && definition->outputSchema.isEmpty())
+        return true;
+    if (output.isUndefined())
+    {
+        errorMessage = QStringLiteral(
+            "Tool result did not include structuredContent required by "
+            "outputSchema.");
+        return false;
+    }
+    return validateValue(output, definition->outputSchema,
+                         QStringLiteral("structuredContent"), errorMessage);
+}
 }  // namespace qtllm::infrastructure::mcp

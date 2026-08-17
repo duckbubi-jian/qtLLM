@@ -7,9 +7,11 @@
 #include "ToolRegistry.hpp"
 #include "ToolResult.hpp"
 
+#include <QElapsedTimer>
 #include <QHash>
 #include <QList>
 #include <QObject>
+#include <QSet>
 #include <QSharedPointer>
 
 #include <functional>
@@ -66,6 +68,11 @@ class McpHostRuntime final : public QObject
                        const QString& message);
     void notificationReceived(const QString& serverId, const QString& method,
                               const QJsonObject& params);
+    void progressReceived(const QString& serverId, const QJsonValue& token,
+                          double progress, double total,
+                          const QString& message);
+    void loggingMessageReceived(const QString& serverId, const QString& level,
+                                const QString& logger, const QJsonValue& data);
     void diagnosticReceived(const QString& serverId, const QString& text);
     void serverError(const QString& serverId, const QString& code,
                      const QString& message);
@@ -82,6 +89,8 @@ class McpHostRuntime final : public QObject
         QString serverId;
         Operation operation = Operation::Initialize;
         QString toolName;
+        QList<agent::ToolDefinition> tools;
+        QSet<QString> cursors;
     };
     struct ServerConnection
     {
@@ -89,8 +98,16 @@ class McpHostRuntime final : public QObject
         QSharedPointer<McpTransport> transport;
         bool stopRequested = false;
     };
+    struct NotificationWindow
+    {
+        qint64 startedAtMs = 0;
+        int accepted = 0;
+        bool reported = false;
+    };
 
     void connectTransport(const QString& serverId, McpTransport* transport);
+    void handleNotification(const QString& serverId, const QString& method,
+                            const QJsonObject& params);
     QString invalidRequest(const QString& serverId, const QString& method,
                            const QString& message);
     void handleResponse(const QString& serverId, const QString& requestId,
@@ -103,10 +120,16 @@ class McpHostRuntime final : public QObject
     void publishSnapshot(const QString& serverId);
     void revokeCapabilities(const QString& serverId);
     void discardPendingRequests(const QString& serverId);
+    [[nodiscard]] bool hasToolRefresh(const QString& serverId) const;
+    void refreshQueuedTools(const QString& serverId);
+    [[nodiscard]] bool acceptNotification(const QString& serverId);
 
     TransportFactory transportFactory_;
     QHash<QString, ServerConnection> connections_;
     QHash<QString, PendingRequest> pending_;
+    QSet<QString> queuedToolRefreshes_;
+    QElapsedTimer notificationClock_;
+    QHash<QString, NotificationWindow> notificationWindows_;
     McpServerRegistry serverRegistry_;
     ToolRegistry toolRegistry_;
 };

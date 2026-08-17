@@ -93,6 +93,9 @@ void StdioMcpTransport::cancel(const QString& requestId)
     if (requestId.isEmpty() || !pending_.contains(requestId)) return;
     failPending(requestId, QStringLiteral("cancelled"),
                 QStringLiteral("MCP request was cancelled."));
+    notify(QStringLiteral("notifications/cancelled"),
+           {{QStringLiteral("requestId"), requestId},
+            {QStringLiteral("reason"), QStringLiteral("cancelled")}});
 }
 
 void StdioMcpTransport::cancelAll()

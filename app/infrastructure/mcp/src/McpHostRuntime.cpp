@@ -18,11 +18,12 @@ constexpr auto clientName = "qtLLM";
 constexpr auto clientVersion = "0.2.0";
 constexpr qsizetype maximumServerInstructions = 4'096;
 constexpr qsizetype maximumCombinedInstructions = 8'192;
+constexpr auto notificationWindowMs = 1'000;
+constexpr auto maximumNotificationsPerWindow = 100;
 
-QJsonObject structuredToolResult(const QJsonObject& result)
+QJsonValue structuredToolResult(const QJsonObject& result)
 {
-    const auto structured = result.value(QStringLiteral("structuredContent"));
-    return structured.isObject() ? structured.toObject() : QJsonObject{};
+    return result.value(QStringLiteral("structuredContent"));
 }
 
 QString textToolResult(const QJsonObject& result)
@@ -73,6 +74,100 @@ bool validateServerConfig(const McpServerConfig& config, QString& errorMessage)
     }
     return true;
 }
+
+bool parseToolPage(const QString& serverId, const QStringList& allowlist,
+                   const QJsonObject& result,
+                   const QList<agent::ToolDefinition>& accumulated,
+                   QList<agent::ToolDefinition>& definitions,
+                   QString& errorMessage)
+{
+    const auto toolsValue = result.value(QStringLiteral("tools"));
+    if (!toolsValue.isArray())
+    {
+        errorMessage = QStringLiteral("tools/list result has no tools array.");
+        return false;
+    }
+
+    QSet<QString> names;
+    for (const auto& definition : accumulated)
+        names.insert(definition.name);
+    definitions = accumulated;
+    for (const auto& value : toolsValue.toArray())
+    {
+        if (!value.isObject())
+        {
+            errorMessage =
+                QStringLiteral("tools/list contains a non-object tool.");
+            return false;
+        }
+        const auto object = value.toObject();
+        const auto nameValue = object.value(QStringLiteral("name"));
+        const auto descriptionValue =
+            object.value(QStringLiteral("description"));
+        const auto inputSchema = object.value(QStringLiteral("inputSchema"));
+        const auto outputSchema = object.value(QStringLiteral("outputSchema"));
+        const auto annotations = object.value(QStringLiteral("annotations"));
+        const auto name = nameValue.toString().trimmed();
+        if (!nameValue.isString() || name.isEmpty())
+        {
+            errorMessage = QStringLiteral(
+                "tools/list contains a tool with an invalid name.");
+            return false;
+        }
+        if (names.contains(name))
+        {
+            errorMessage =
+                QStringLiteral("Duplicate tool: %1.%2").arg(serverId, name);
+            return false;
+        }
+        names.insert(name);
+        if (!descriptionValue.isUndefined() && !descriptionValue.isString())
+        {
+            errorMessage =
+                QStringLiteral("Tool %1.%2 has a non-string description.")
+                    .arg(serverId, name);
+            return false;
+        }
+        if (!inputSchema.isObject())
+        {
+            errorMessage =
+                QStringLiteral("Tool %1.%2 has no inputSchema object.")
+                    .arg(serverId, name);
+            return false;
+        }
+        if (!outputSchema.isUndefined() && !outputSchema.isObject())
+        {
+            errorMessage =
+                QStringLiteral("Tool %1.%2 has an invalid outputSchema.")
+                    .arg(serverId, name);
+            return false;
+        }
+        if (!annotations.isUndefined() && !annotations.isObject())
+        {
+            errorMessage = QStringLiteral("Tool %1.%2 has invalid annotations.")
+                               .arg(serverId, name);
+            return false;
+        }
+        if (!allowlist.isEmpty() && !allowlist.contains(name)) continue;
+        definitions.append({serverId + QLatin1Char('.') + name, serverId, name,
+                            descriptionValue.toString(), inputSchema.toObject(),
+                            outputSchema.toObject(), annotations.toObject(),
+                            !outputSchema.isUndefined()});
+    }
+    return true;
+}
+
+agent::ToolFailureKind failureKind(const QString& code)
+{
+    if (code == QLatin1String("invalid_response") ||
+        code == QLatin1String("invalid_message"))
+        return agent::ToolFailureKind::Protocol;
+    if (code == QLatin1String("remote_error"))
+        return agent::ToolFailureKind::Server;
+    if (code == QLatin1String("invalid_request"))
+        return agent::ToolFailureKind::LocalValidation;
+    return agent::ToolFailureKind::Transport;
+}
 }  // namespace
 
 McpHostRuntime::McpHostRuntime(QObject* parent)
@@ -88,8 +183,10 @@ McpHostRuntime::McpHostRuntime(TransportFactory transportFactory,
 {
     qRegisterMetaType<agent::ToolDefinition>();
     qRegisterMetaType<agent::ToolResult>();
+    qRegisterMetaType<agent::ToolFailureKind>();
     qRegisterMetaType<McpServerState>();
     qRegisterMetaType<McpServerSnapshot>();
+    notificationClock_.start();
 }
 
 McpHostRuntime::~McpHostRuntime()
@@ -321,10 +418,19 @@ QString McpHostRuntime::listTools(const QString& serverId)
         return invalidRequest(
             serverId, QStringLiteral("tools/list"),
             QStringLiteral("MCP server did not declare the Tools capability."));
+    if (hasToolRefresh(serverId))
+        return invalidRequest(
+            serverId, QStringLiteral("tools/list"),
+            QStringLiteral("MCP tool refresh is already in progress."));
     const auto requestId = iterator->transport->request(
         QStringLiteral("tools/list"), {}, iterator->config.requestTimeoutMs);
     if (!requestId.isEmpty())
-        pending_.insert(requestId, {serverId, Operation::ListTools, {}});
+    {
+        PendingRequest pending;
+        pending.serverId = serverId;
+        pending.operation = Operation::ListTools;
+        pending_.insert(requestId, std::move(pending));
+    }
     return requestId;
 }
 
@@ -413,7 +519,7 @@ void McpHostRuntime::connectTransport(const QString& serverId,
             { handleFailure(serverId, requestId, method, code, message); });
     connect(transportPointer, &McpTransport::notificationReceived, this,
             [this, serverId](const QString& method, const QJsonObject& params)
-            { emit notificationReceived(serverId, method, params); });
+            { handleNotification(serverId, method, params); });
     connect(transportPointer, &McpTransport::diagnosticReceived, this,
             [this, serverId](const QString& text)
             { emit diagnosticReceived(serverId, text); });
@@ -428,6 +534,70 @@ void McpHostRuntime::connectTransport(const QString& serverId,
                 publishSnapshot(serverId);
                 emit serverError(serverId, code, message);
             });
+}
+
+void McpHostRuntime::handleNotification(const QString& serverId,
+                                        const QString& method,
+                                        const QJsonObject& params)
+{
+    if (method == QLatin1String("notifications/tools/list_changed"))
+    {
+        const auto snapshot = serverRegistry_.snapshot(serverId);
+        if (snapshot && snapshot->capabilities.toolsListChanged &&
+            (snapshot->state == McpServerState::Ready ||
+             snapshot->state == McpServerState::Degraded))
+        {
+            if (hasToolRefresh(serverId))
+                queuedToolRefreshes_.insert(serverId);
+            else
+                listTools(serverId);
+        }
+        emit notificationReceived(serverId, method, params);
+        return;
+    }
+    if (!acceptNotification(serverId)) return;
+
+    if (method == QLatin1String("notifications/progress"))
+    {
+        const auto token = params.value(QStringLiteral("progressToken"));
+        const auto progress = params.value(QStringLiteral("progress"));
+        const auto total = params.value(QStringLiteral("total"));
+        const auto message = params.value(QStringLiteral("message"));
+        if ((!token.isString() && !token.isDouble()) || !progress.isDouble() ||
+            (!total.isUndefined() && !total.isDouble()) ||
+            (!message.isUndefined() && !message.isString()))
+        {
+            emit serverError(
+                serverId, QStringLiteral("invalid_notification"),
+                QStringLiteral("Invalid MCP progress notification."));
+        }
+        else
+        {
+            emit progressReceived(serverId, token, progress.toDouble(),
+                                  total.isDouble() ? total.toDouble() : -1.0,
+                                  message.toString());
+        }
+    }
+    else if (method == QLatin1String("notifications/message"))
+    {
+        const auto level = params.value(QStringLiteral("level"));
+        const auto logger = params.value(QStringLiteral("logger"));
+        if (!level.isString() ||
+            (!logger.isUndefined() && !logger.isString()) ||
+            !params.contains(QStringLiteral("data")))
+        {
+            emit serverError(
+                serverId, QStringLiteral("invalid_notification"),
+                QStringLiteral("Invalid MCP logging notification."));
+        }
+        else
+        {
+            emit loggingMessageReceived(serverId, level.toString(),
+                                        logger.toString(),
+                                        params.value(QStringLiteral("data")));
+        }
+    }
+    emit notificationReceived(serverId, method, params);
 }
 
 QString McpHostRuntime::invalidRequest(const QString& serverId,
@@ -473,33 +643,62 @@ void McpHostRuntime::handleResponse(const QString& serverId,
     }
     if (pending.operation == Operation::ListTools)
     {
-        QList<agent::ToolDefinition> definitions;
-        const auto toolsValue = result.value(QStringLiteral("tools"));
         const auto connection = connections_.constFind(serverId);
-        if (!toolsValue.isArray() || connection == connections_.constEnd())
+        if (connection == connections_.constEnd()) return;
+
+        QList<agent::ToolDefinition> definitions;
+        QString pageError;
+        if (!parseToolPage(serverId, connection->config.toolAllowlist, result,
+                           pending.tools, definitions, pageError))
         {
-            handleFailure(
-                serverId, requestId, method, QStringLiteral("invalid_response"),
-                QStringLiteral("tools/list result has no tools array."),
-                &pending);
+            handleFailure(serverId, requestId, method,
+                          QStringLiteral("invalid_response"), pageError,
+                          &pending);
             return;
         }
-        const auto allowlist = connection->config.toolAllowlist;
-        for (const auto& value : toolsValue.toArray())
+
+        const auto nextCursorValue = result.value(QStringLiteral("nextCursor"));
+        if (!nextCursorValue.isUndefined() && !nextCursorValue.isNull())
         {
-            if (!value.isObject()) continue;
-            const auto object = value.toObject();
-            const auto name =
-                object.value(QStringLiteral("name")).toString().trimmed();
-            if (name.isEmpty() ||
-                !object.value(QStringLiteral("inputSchema")).isObject() ||
-                (!allowlist.isEmpty() && !allowlist.contains(name)))
-                continue;
-            definitions.append(
-                {serverId + QLatin1Char('.') + name, serverId, name,
-                 object.value(QStringLiteral("description")).toString(),
-                 object.value(QStringLiteral("inputSchema")).toObject()});
+            const auto cursor = nextCursorValue.toString();
+            if (!nextCursorValue.isString() || cursor.isEmpty() ||
+                pending.cursors.contains(cursor))
+            {
+                handleFailure(
+                    serverId, requestId, method,
+                    QStringLiteral("invalid_response"),
+                    QStringLiteral("tools/list returned an invalid or repeated "
+                                   "nextCursor."),
+                    &pending);
+                return;
+            }
+
+            const auto nextRequestId = connection->transport->request(
+                QStringLiteral("tools/list"),
+                {{QStringLiteral("cursor"), cursor}},
+                connection->config.requestTimeoutMs);
+            if (nextRequestId.isEmpty())
+            {
+                serverRegistry_.setError(
+                    serverId, QStringLiteral("request_failed"),
+                    QStringLiteral("Unable to request the next tools page."));
+                const auto snapshot = serverRegistry_.snapshot(serverId);
+                if (snapshot && snapshot->state == McpServerState::Ready)
+                    changeState(serverId, McpServerState::Degraded);
+                publishSnapshot(serverId);
+                refreshQueuedTools(serverId);
+                return;
+            }
+            PendingRequest nextPending;
+            nextPending.serverId = serverId;
+            nextPending.operation = Operation::ListTools;
+            nextPending.tools = std::move(definitions);
+            nextPending.cursors = pending.cursors;
+            nextPending.cursors.insert(cursor);
+            pending_.insert(nextRequestId, std::move(nextPending));
+            return;
         }
+
         QString registryError;
         if (!toolRegistry_.replaceServerTools(serverId, definitions,
                                               registryError))
@@ -516,6 +715,7 @@ void McpHostRuntime::handleResponse(const QString& serverId,
             changeState(serverId, McpServerState::Ready);
         publishSnapshot(serverId);
         emit toolsChanged(serverId, definitions);
+        refreshQueuedTools(serverId);
         return;
     }
 
@@ -525,14 +725,19 @@ void McpHostRuntime::handleResponse(const QString& serverId,
     toolResult.toolName = pending.toolName;
     const auto structuredResult = structuredToolResult(result);
     const auto structuredFailure =
-        structuredResult.value(QStringLiteral("ok")).isBool() &&
-        !structuredResult.value(QStringLiteral("ok")).toBool();
+        structuredResult.isObject() &&
+        structuredResult.toObject().value(QStringLiteral("ok")).isBool() &&
+        !structuredResult.toObject().value(QStringLiteral("ok")).toBool();
     toolResult.isError =
         result.value(QStringLiteral("isError")).toBool() || structuredFailure;
     if (toolResult.isError)
     {
-        const auto error =
-            structuredResult.value(QStringLiteral("error")).toObject();
+        toolResult.failureKind = agent::ToolFailureKind::Tool;
+        const auto error = structuredResult.isObject()
+                               ? structuredResult.toObject()
+                                     .value(QStringLiteral("error"))
+                                     .toObject()
+                               : QJsonObject{};
         toolResult.errorCode = error.value(QStringLiteral("code")).toString();
         toolResult.errorMessage =
             error.value(QStringLiteral("message")).toString().trimmed();
@@ -566,6 +771,34 @@ void McpHostRuntime::handleResponse(const QString& serverId,
     else
     {
         toolResult.result = result;
+        toolResult.structuredContent = structuredResult;
+        const auto content = result.value(QStringLiteral("content"));
+        if (content.isArray())
+        {
+            toolResult.contentBlocks = content.toArray();
+            static const QSet<QString> knownContentTypes{
+                QStringLiteral("text"), QStringLiteral("image"),
+                QStringLiteral("audio"), QStringLiteral("resource"),
+                QStringLiteral("resource_link")};
+            for (const auto& block : toolResult.contentBlocks)
+            {
+                const auto type =
+                    block.toObject().value(QStringLiteral("type")).toString();
+                if (!block.isObject() || type.isEmpty())
+                    toolResult.unknownContentBlockTypes.append(
+                        QStringLiteral("<invalid>"));
+                else if (!knownContentTypes.contains(type))
+                    toolResult.unknownContentBlockTypes.append(type);
+            }
+        }
+
+        QString outputError;
+        if (!toolResult.isError &&
+            !toolRegistry_.validateOutput(
+                serverId + QLatin1Char('.') + pending.toolName,
+                structuredResult, outputError))
+            emit serverError(serverId, QStringLiteral("output_schema_mismatch"),
+                             outputError);
     }
     emit toolResultReady(toolResult);
 }
@@ -612,6 +845,7 @@ void McpHostRuntime::handleFailure(const QString& serverId,
         if (snapshot && snapshot->state == McpServerState::Ready)
             changeState(serverId, McpServerState::Degraded);
         publishSnapshot(serverId);
+        refreshQueuedTools(serverId);
         return;
     }
 
@@ -622,6 +856,7 @@ void McpHostRuntime::handleFailure(const QString& serverId,
     result.isError = true;
     result.errorCode = code;
     result.errorMessage = message;
+    result.failureKind = failureKind(code);
     emit toolResultReady(result);
 }
 
@@ -649,6 +884,8 @@ void McpHostRuntime::publishSnapshot(const QString& serverId)
 void McpHostRuntime::revokeCapabilities(const QString& serverId)
 {
     const auto before = serverRegistry_.snapshot(serverId);
+    queuedToolRefreshes_.remove(serverId);
+    notificationWindows_.remove(serverId);
     toolRegistry_.removeServer(serverId);
     if (!serverRegistry_.revokeCapabilities(serverId)) return;
     if (before && before->toolCount > 0) emit toolsChanged(serverId, {});
@@ -664,5 +901,46 @@ void McpHostRuntime::discardPendingRequests(const QString& serverId)
         else
             ++iterator;
     }
+}
+
+bool McpHostRuntime::hasToolRefresh(const QString& serverId) const
+{
+    for (auto iterator = pending_.constBegin(); iterator != pending_.constEnd();
+         ++iterator)
+        if (iterator->serverId == serverId &&
+            iterator->operation == Operation::ListTools)
+            return true;
+    return false;
+}
+
+void McpHostRuntime::refreshQueuedTools(const QString& serverId)
+{
+    if (!queuedToolRefreshes_.remove(serverId)) return;
+    listTools(serverId);
+}
+
+bool McpHostRuntime::acceptNotification(const QString& serverId)
+{
+    const auto now = notificationClock_.elapsed();
+    auto& window = notificationWindows_[serverId];
+    if (now - window.startedAtMs >= notificationWindowMs)
+    {
+        window.startedAtMs = now;
+        window.accepted = 0;
+        window.reported = false;
+    }
+    if (window.accepted < maximumNotificationsPerWindow)
+    {
+        ++window.accepted;
+        return true;
+    }
+    if (!window.reported)
+    {
+        window.reported = true;
+        emit serverError(
+            serverId, QStringLiteral("notification_rate_limited"),
+            QStringLiteral("MCP notification rate exceeded 100 per second."));
+    }
+    return false;
 }
 }  // namespace qtllm::infrastructure::mcp

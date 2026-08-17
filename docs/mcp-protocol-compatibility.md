@@ -19,7 +19,7 @@ current code, not planned support. Planned work is tracked in
 
 | Version | Status | Transport | Conformance coverage |
 | --- | --- | --- | --- |
-| `2024-11-05` | Supported | stdio | initialize, initialized, basic Tools, errors, timeout, local cancellation |
+| `2024-11-05` | Supported | stdio | lifecycle, paginated and dynamic Tools, rich results, errors, timeout, protocol cancellation |
 | Any other version | Rejected | none | unsupported-version integration test |
 
 Additional versions must not be added to this table until their lifecycle and
@@ -31,24 +31,24 @@ feature differences have dedicated Fake Server coverage.
 | --- | --- | --- |
 | Lifecycle | `initialize` and `notifications/initialized` | Supported |
 | Lifecycle | Validate negotiated protocol version | Supported |
-| Lifecycle | Preserve Server capabilities, info, and instructions | Supported internally |
-| Lifecycle | Multi-state Server health model | Not implemented |
+| Lifecycle | Preserve Server capabilities, info, and instructions | Supported |
+| Lifecycle | Multi-state Server health model | Supported |
 | Transport | stdio JSON-RPC | Supported |
 | Transport | Streamable HTTP | Not implemented |
-| Tools | `tools/list`, single page | Supported |
-| Tools | Cursor pagination | Not implemented |
+| Tools | `tools/list` | Supported |
+| Tools | Cursor pagination and atomic snapshots | Supported |
 | Tools | `tools/call` | Supported |
 | Tools | Input schema validation | Supported subset |
-| Tools | Output schema and annotations | Not implemented |
-| Tools | List-changed notification | Not implemented |
+| Tools | Output schema and annotations | Supported |
+| Tools | List-changed notification and refresh coalescing | Supported |
 | Results | Text content and raw result preservation | Supported |
-| Results | General content-block model | Not implemented |
-| Results | `structuredContent` object | Supported |
-| Results | `structuredContent` array or scalar | Not implemented |
+| Results | General content-block preservation | Supported |
+| Results | Unknown content-block type reporting | Supported |
+| Results | `structuredContent` object, array, or scalar | Supported |
 | Cancellation | Stop local wait and ignore late response | Supported |
-| Cancellation | Send protocol cancellation notification | Not implemented |
+| Cancellation | Send protocol cancellation notification | Supported |
 | Notifications | Parse transport notifications | Supported at transport boundary |
-| Notifications | Progress and logging routing | Not implemented |
+| Notifications | Typed progress and logging routing | Supported, rate limited per Server |
 | Resources | Discovery, read, templates, subscriptions | Not implemented |
 | Prompts | Discovery and get | Not implemented |
 | Roots | Per-Server authorized roots | Not implemented |
@@ -67,7 +67,7 @@ feature differences have dedicated Fake Server coverage.
 - The bundled filesystem Server resolves canonical paths beneath explicitly
   supplied roots and remains a reference Server, not an in-process Host tool.
 
-## Stage 0 Regression Coverage
+## Regression Coverage
 
 - A Server returning an unsupported protocol version never reaches initialized
   state and receives no `notifications/initialized` notification.
@@ -77,3 +77,12 @@ feature differences have dedicated Fake Server coverage.
 - A size budget omits complete tool definitions; it never truncates a name,
   description, schema, UTF-8 sequence, or closing JSON delimiter.
 - Tests run with the Fake MCP Server and do not require a model or network.
+- Two Servers can expose same-named tools independently; failure or restart of
+  one Server does not revoke the other Server's capabilities.
+- Multi-page tool discovery remains invisible until every page succeeds. A
+  later-page failure or repeated cursor retains the previous snapshot.
+- List-changed storms are coalesced, while progress and logging storms are
+  capped per Server.
+- Output schema, annotations, structured arrays, unknown content blocks, and
+  protocol cancellation have deterministic Fake Server or fake transport
+  coverage.

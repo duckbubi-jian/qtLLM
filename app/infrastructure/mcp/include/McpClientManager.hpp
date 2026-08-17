@@ -57,6 +57,11 @@ class McpClientManager final : public QObject
                        const QString& message);
     void notificationReceived(const QString& serverId, const QString& method,
                               const QJsonObject& params);
+    void progressReceived(const QString& serverId, const QJsonValue& token,
+                          double progress, double total,
+                          const QString& message);
+    void loggingMessageReceived(const QString& serverId, const QString& level,
+                                const QString& logger, const QJsonValue& data);
     void diagnosticReceived(const QString& serverId, const QString& text);
     void serverError(const QString& serverId, const QString& code,
                      const QString& message);

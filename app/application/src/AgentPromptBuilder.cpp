@@ -150,8 +150,13 @@ chat::Message AgentPromptBuilder::toolResultMessage(
 {
     const auto structured =
         result.result.value(QStringLiteral("structuredContent"));
-    QJsonObject payload =
-        structured.isObject() ? structured.toObject() : result.result;
+    QJsonObject payload;
+    if (structured.isObject())
+        payload = structured.toObject();
+    else if (!structured.isUndefined())
+        payload.insert(QStringLiteral("structuredContent"), structured);
+    else
+        payload = result.result;
     if (!result.errorCode.isEmpty())
     {
         payload.insert(QStringLiteral("errorCode"), result.errorCode);

@@ -20,9 +20,14 @@ struct CatalogEntry
 
 QJsonObject toolJson(const agent::ToolDefinition& tool)
 {
-    return {{QStringLiteral("name"), tool.qualifiedName},
-            {QStringLiteral("description"), tool.description},
-            {QStringLiteral("inputSchema"), tool.inputSchema}};
+    QJsonObject result{{QStringLiteral("name"), tool.qualifiedName},
+                       {QStringLiteral("description"), tool.description},
+                       {QStringLiteral("inputSchema"), tool.inputSchema}};
+    if (tool.hasOutputSchema || !tool.outputSchema.isEmpty())
+        result.insert(QStringLiteral("outputSchema"), tool.outputSchema);
+    if (!tool.annotations.isEmpty())
+        result.insert(QStringLiteral("annotations"), tool.annotations);
+    return result;
 }
 
 QByteArray serialize(const QJsonArray& definitions)

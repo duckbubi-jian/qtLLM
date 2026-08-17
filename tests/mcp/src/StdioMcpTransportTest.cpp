@@ -40,17 +40,20 @@ class FakeMcpTransport final : public infrastructure::mcp::McpTransport
         emit stopped();
     }
 
-    QString request(const QString& method, const QJsonObject&, int) override
+    QString request(const QString& method, const QJsonObject& params,
+                    int) override
     {
         if (!running_) return {};
         const auto requestId = QString::number(++nextRequestId_);
         requests_.insert(requestId, method);
+        requestParams_.insert(requestId, params);
         return requestId;
     }
 
     void cancel(const QString& requestId) override
     {
         const auto method = requests_.take(requestId);
+        requestParams_.remove(requestId);
         if (!method.isEmpty())
             emit requestFailed(requestId, method, QStringLiteral("cancelled"),
                                QStringLiteral("Request cancelled."));
@@ -72,6 +75,7 @@ class FakeMcpTransport final : public infrastructure::mcp::McpTransport
     void respond(const QString& requestId, const QJsonObject& result)
     {
         const auto method = requests_.take(requestId);
+        requestParams_.remove(requestId);
         if (!method.isEmpty()) emit responseReceived(requestId, method, result);
     }
 
@@ -79,8 +83,27 @@ class FakeMcpTransport final : public infrastructure::mcp::McpTransport
               const QString& message)
     {
         const auto method = requests_.take(requestId);
+        requestParams_.remove(requestId);
         if (!method.isEmpty())
             emit requestFailed(requestId, method, code, message);
+    }
+
+    [[nodiscard]] QString requestForMethod(const QString& method) const
+    {
+        for (auto iterator = requests_.constBegin();
+             iterator != requests_.constEnd(); ++iterator)
+            if (iterator.value() == method) return iterator.key();
+        return {};
+    }
+
+    [[nodiscard]] QJsonObject requestParams(const QString& requestId) const
+    {
+        return requestParams_.value(requestId);
+    }
+
+    void sendNotification(const QString& method, const QJsonObject& params)
+    {
+        emit notificationReceived(method, params);
     }
 
     void crash()
@@ -95,6 +118,7 @@ class FakeMcpTransport final : public infrastructure::mcp::McpTransport
     bool running_ = false;
     int nextRequestId_ = 0;
     QHash<QString, QString> requests_;
+    QHash<QString, QJsonObject> requestParams_;
     QStringList notifications_;
 };
 
@@ -106,12 +130,15 @@ infrastructure::mcp::McpServerConfig runtimeTestConfig(const QString& serverId)
     return config;
 }
 
-QJsonObject initializeResult()
+QJsonObject initializeResult(bool toolsListChanged = false)
 {
+    QJsonObject toolsCapability;
+    if (toolsListChanged)
+        toolsCapability.insert(QStringLiteral("listChanged"), true);
     return {{QStringLiteral("protocolVersion"),
              infrastructure::mcp::latestSupportedProtocolVersion()},
             {QStringLiteral("capabilities"),
-             QJsonObject{{QStringLiteral("tools"), QJsonObject{}}}},
+             QJsonObject{{QStringLiteral("tools"), toolsCapability}}},
             {QStringLiteral("serverInfo"),
              QJsonObject{{QStringLiteral("name"), QStringLiteral("fake")},
                          {QStringLiteral("version"), QStringLiteral("1")}}}};
@@ -148,6 +175,11 @@ class StdioMcpTransportTest final : public QObject
     void tracksServerLifecycleAndRevokesCapabilities();
     void isolatesMultipleServerFailures();
     void rejectsInvalidServerStateTransitions();
+    void paginatesToolsAtomicallyAndPreservesMetadata();
+    void refreshesToolsFromListChangedNotification();
+    void routesTypedNotificationsAndRichResults();
+    void limitsNotificationStorms();
+    void sendsProtocolCancellation();
 };
 
 infrastructure::mcp::McpServerConfig testConfig()
@@ -334,7 +366,10 @@ void StdioMcpTransportTest::propagatesRemoteErrors()
         &manager, &infrastructure::mcp::McpClientManager::toolResultReady);
     QVERIFY(!manager.callTool(QStringLiteral("fake.error"), {}).isEmpty());
     QTRY_COMPARE_WITH_TIMEOUT(resultSpy.count(), 1, 2'000);
-    QVERIFY(qvariant_cast<agent::ToolResult>(resultSpy.at(0).at(0)).isError);
+    const auto remoteError =
+        qvariant_cast<agent::ToolResult>(resultSpy.at(0).at(0));
+    QVERIFY(remoteError.isError);
+    QCOMPARE(remoteError.failureKind, agent::ToolFailureKind::Server);
 
     QVERIFY(
         !manager.callTool(QStringLiteral("fake.business_error"), {}).isEmpty());
@@ -342,6 +377,7 @@ void StdioMcpTransportTest::propagatesRemoteErrors()
     const auto businessError =
         qvariant_cast<agent::ToolResult>(resultSpy.at(1).at(0));
     QVERIFY(businessError.isError);
+    QCOMPARE(businessError.failureKind, agent::ToolFailureKind::Tool);
     QCOMPARE(businessError.errorCode, QStringLiteral("CASE_PATH_EXISTS"));
     QCOMPARE(businessError.errorMessage,
              QStringLiteral("Case path already exists."));
@@ -606,6 +642,303 @@ void StdioMcpTransportTest::rejectsInvalidServerStateTransitions()
     QVERIFY(errorMessage.contains(QStringLiteral("stopped -> ready")));
     QCOMPARE(registry.snapshot(QStringLiteral("alpha"))->state,
              infrastructure::mcp::McpServerState::Stopped);
+}
+
+void StdioMcpTransportTest::paginatesToolsAtomicallyAndPreservesMetadata()
+{
+    using infrastructure::mcp::McpHostRuntime;
+    using infrastructure::mcp::McpServerState;
+
+    QHash<QString, QSharedPointer<FakeMcpTransport>> transports;
+    McpHostRuntime runtime(
+        [&transports](const infrastructure::mcp::McpServerConfig& config)
+            -> QSharedPointer<infrastructure::mcp::McpTransport>
+        {
+            auto transport = QSharedPointer<FakeMcpTransport>::create();
+            transports.insert(config.serverId, transport);
+            return transport;
+        });
+    QString errorMessage;
+    QVERIFY(runtime.addServer(runtimeTestConfig(QStringLiteral("alpha")),
+                              errorMessage));
+    runtime.startServer(QStringLiteral("alpha"));
+    auto* transport = transports.value(QStringLiteral("alpha")).get();
+    const auto initializeRequest = runtime.initialize(QStringLiteral("alpha"));
+    transport->respond(initializeRequest, initializeResult());
+
+    auto requestId = runtime.listTools(QStringLiteral("alpha"));
+    transport->respond(requestId, toolsResult(QStringLiteral("old")));
+    QCOMPARE(runtime.tools().size(), 1);
+    QCOMPARE(runtime.tools().constFirst().name, QStringLiteral("old"));
+    const auto initialRevision =
+        runtime.serverSnapshot(QStringLiteral("alpha"))->capabilityRevision;
+    QSignalSpy toolsSpy(&runtime, &McpHostRuntime::toolsChanged);
+
+    requestId = runtime.listTools(QStringLiteral("alpha"));
+    transport->respond(
+        requestId,
+        {{QStringLiteral("tools"),
+          QJsonArray{QJsonObject{
+              {QStringLiteral("name"), QStringLiteral("first")},
+              {QStringLiteral("description"), QStringLiteral("First")},
+              {QStringLiteral("inputSchema"),
+               QJsonObject{{QStringLiteral("type"), QStringLiteral("object")}}},
+              {QStringLiteral("outputSchema"),
+               QJsonObject{{QStringLiteral("type"), QStringLiteral("array")}}},
+              {QStringLiteral("annotations"),
+               QJsonObject{{QStringLiteral("readOnlyHint"), true}}}}}},
+         {QStringLiteral("nextCursor"), QStringLiteral("page-2")}});
+    QCOMPARE(runtime.tools().size(), 1);
+    QCOMPARE(runtime.tools().constFirst().name, QStringLiteral("old"));
+    QCOMPARE(toolsSpy.count(), 0);
+    QCOMPARE(
+        runtime.serverSnapshot(QStringLiteral("alpha"))->capabilityRevision,
+        initialRevision);
+
+    const auto secondPageRequest =
+        transport->requestForMethod(QStringLiteral("tools/list"));
+    QVERIFY(!secondPageRequest.isEmpty());
+    QCOMPARE(transport->requestParams(secondPageRequest)
+                 .value(QStringLiteral("cursor"))
+                 .toString(),
+             QStringLiteral("page-2"));
+    transport->respond(
+        secondPageRequest,
+        {{QStringLiteral("tools"),
+          QJsonArray{
+              QJsonObject{{QStringLiteral("name"), QStringLiteral("second")},
+                          {QStringLiteral("inputSchema"), QJsonObject{}},
+                          {QStringLiteral("outputSchema"), QJsonObject{}}}}}});
+    QCOMPARE(toolsSpy.count(), 1);
+    QCOMPARE(runtime.tools().size(), 2);
+    const auto* first = runtime.registry().find(QStringLiteral("alpha.first"));
+    QVERIFY(first != nullptr);
+    QVERIFY(first->hasOutputSchema);
+    QCOMPARE(first->outputSchema.value(QStringLiteral("type")).toString(),
+             QStringLiteral("array"));
+    QVERIFY(first->annotations.value(QStringLiteral("readOnlyHint")).toBool());
+    const auto* second =
+        runtime.registry().find(QStringLiteral("alpha.second"));
+    QVERIFY(second != nullptr);
+    QVERIFY(second->hasOutputSchema);
+    QVERIFY(second->outputSchema.isEmpty());
+    QVERIFY(
+        runtime.serverSnapshot(QStringLiteral("alpha"))->capabilityRevision >
+        initialRevision);
+
+    requestId = runtime.listTools(QStringLiteral("alpha"));
+    transport->respond(
+        requestId,
+        {{QStringLiteral("tools"),
+          QJsonArray{QJsonObject{
+              {QStringLiteral("name"), QStringLiteral("replacement")},
+              {QStringLiteral("inputSchema"), QJsonObject{}}}}},
+         {QStringLiteral("nextCursor"), QStringLiteral("fails")}});
+    const auto failedPageRequest =
+        transport->requestForMethod(QStringLiteral("tools/list"));
+    transport->fail(failedPageRequest, QStringLiteral("page_failed"),
+                    QStringLiteral("Second page failed."));
+    QCOMPARE(runtime.serverSnapshot(QStringLiteral("alpha"))->state,
+             McpServerState::Degraded);
+    QCOMPARE(runtime.tools().size(), 2);
+    QVERIFY(runtime.registry().find(QStringLiteral("alpha.first")) != nullptr);
+    QVERIFY(runtime.registry().find(QStringLiteral("alpha.replacement")) ==
+            nullptr);
+}
+
+void StdioMcpTransportTest::refreshesToolsFromListChangedNotification()
+{
+    using infrastructure::mcp::McpHostRuntime;
+
+    QHash<QString, QSharedPointer<FakeMcpTransport>> transports;
+    McpHostRuntime runtime(
+        [&transports](const infrastructure::mcp::McpServerConfig& config)
+            -> QSharedPointer<infrastructure::mcp::McpTransport>
+        {
+            auto transport = QSharedPointer<FakeMcpTransport>::create();
+            transports.insert(config.serverId, transport);
+            return transport;
+        });
+    QString errorMessage;
+    QVERIFY(runtime.addServer(runtimeTestConfig(QStringLiteral("alpha")),
+                              errorMessage));
+    runtime.startServer(QStringLiteral("alpha"));
+    auto* transport = transports.value(QStringLiteral("alpha")).get();
+    const auto initializeRequest = runtime.initialize(QStringLiteral("alpha"));
+    transport->respond(initializeRequest, initializeResult(true));
+    auto requestId = runtime.listTools(QStringLiteral("alpha"));
+    transport->respond(requestId, toolsResult(QStringLiteral("old")));
+
+    transport->sendNotification(
+        QStringLiteral("notifications/tools/list_changed"), {});
+    requestId = transport->requestForMethod(QStringLiteral("tools/list"));
+    QVERIFY(!requestId.isEmpty());
+    transport->sendNotification(
+        QStringLiteral("notifications/tools/list_changed"), {});
+    transport->sendNotification(
+        QStringLiteral("notifications/tools/list_changed"), {});
+    transport->respond(requestId, toolsResult(QStringLiteral("new")));
+
+    const auto coalescedRequest =
+        transport->requestForMethod(QStringLiteral("tools/list"));
+    QVERIFY(!coalescedRequest.isEmpty());
+    transport->respond(coalescedRequest, toolsResult(QStringLiteral("newest")));
+    QCOMPARE(runtime.tools().size(), 1);
+    QCOMPARE(runtime.tools().constFirst().name, QStringLiteral("newest"));
+    QVERIFY(
+        transport->requestForMethod(QStringLiteral("tools/list")).isEmpty());
+}
+
+void StdioMcpTransportTest::routesTypedNotificationsAndRichResults()
+{
+    using infrastructure::mcp::McpHostRuntime;
+
+    QHash<QString, QSharedPointer<FakeMcpTransport>> transports;
+    McpHostRuntime runtime(
+        [&transports](const infrastructure::mcp::McpServerConfig& config)
+            -> QSharedPointer<infrastructure::mcp::McpTransport>
+        {
+            auto transport = QSharedPointer<FakeMcpTransport>::create();
+            transports.insert(config.serverId, transport);
+            return transport;
+        });
+    QString errorMessage;
+    QVERIFY(runtime.addServer(runtimeTestConfig(QStringLiteral("alpha")),
+                              errorMessage));
+    runtime.startServer(QStringLiteral("alpha"));
+    auto* transport = transports.value(QStringLiteral("alpha")).get();
+    auto requestId = runtime.initialize(QStringLiteral("alpha"));
+    transport->respond(requestId, initializeResult());
+    requestId = runtime.listTools(QStringLiteral("alpha"));
+    transport->respond(
+        requestId,
+        {{QStringLiteral("tools"),
+          QJsonArray{QJsonObject{
+              {QStringLiteral("name"), QStringLiteral("rich")},
+              {QStringLiteral("inputSchema"),
+               QJsonObject{{QStringLiteral("type"), QStringLiteral("object")}}},
+              {QStringLiteral("outputSchema"),
+               QJsonObject{
+                   {QStringLiteral("type"), QStringLiteral("array")}}}}}}});
+
+    QSignalSpy progressSpy(&runtime, &McpHostRuntime::progressReceived);
+    QSignalSpy loggingSpy(&runtime, &McpHostRuntime::loggingMessageReceived);
+    QSignalSpy resultSpy(&runtime, &McpHostRuntime::toolResultReady);
+    QSignalSpy errorSpy(&runtime, &McpHostRuntime::serverError);
+    transport->sendNotification(
+        QStringLiteral("notifications/progress"),
+        {{QStringLiteral("progressToken"), QStringLiteral("task-1")},
+         {QStringLiteral("progress"), 1.0},
+         {QStringLiteral("total"), 2.0},
+         {QStringLiteral("message"), QStringLiteral("halfway")}});
+    transport->sendNotification(
+        QStringLiteral("notifications/message"),
+        {{QStringLiteral("level"), QStringLiteral("info")},
+         {QStringLiteral("logger"), QStringLiteral("fake")},
+         {QStringLiteral("data"),
+          QJsonObject{{QStringLiteral("message"), QStringLiteral("ready")}}}});
+    QCOMPARE(progressSpy.count(), 1);
+    QCOMPARE(loggingSpy.count(), 1);
+
+    requestId = runtime.callTool(QStringLiteral("alpha.rich"), {});
+    const QJsonArray structured{QJsonObject{{QStringLiteral("ok"), true}}};
+    transport->respond(
+        requestId,
+        {{QStringLiteral("content"),
+          QJsonArray{
+              QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                          {QStringLiteral("text"), QStringLiteral("done")}},
+              QJsonObject{
+                  {QStringLiteral("type"), QStringLiteral("custom-block")},
+                  {QStringLiteral("value"), 42}}}},
+         {QStringLiteral("structuredContent"), structured}});
+    QCOMPARE(resultSpy.count(), 1);
+    const auto result =
+        qvariant_cast<agent::ToolResult>(resultSpy.constFirst().constFirst());
+    QCOMPARE(result.structuredContent, QJsonValue(structured));
+    QCOMPARE(result.contentBlocks.size(), 2);
+    QCOMPARE(result.unknownContentBlockTypes,
+             QStringList{QStringLiteral("custom-block")});
+    QCOMPARE(errorSpy.count(), 0);
+
+    requestId = runtime.callTool(QStringLiteral("alpha.rich"), {});
+    transport->respond(requestId,
+                       {{QStringLiteral("content"), QJsonArray{}},
+                        {QStringLiteral("structuredContent"),
+                         QJsonObject{{QStringLiteral("unexpected"), true}}}});
+    QCOMPARE(resultSpy.count(), 2);
+    QCOMPARE(errorSpy.count(), 1);
+    QCOMPARE(errorSpy.constFirst().at(1).toString(),
+             QStringLiteral("output_schema_mismatch"));
+    const auto mismatchedResult =
+        qvariant_cast<agent::ToolResult>(resultSpy.at(1).constFirst());
+    QVERIFY(!mismatchedResult.isError);
+    QVERIFY(mismatchedResult.structuredContent.isObject());
+}
+
+void StdioMcpTransportTest::limitsNotificationStorms()
+{
+    using infrastructure::mcp::McpHostRuntime;
+
+    QHash<QString, QSharedPointer<FakeMcpTransport>> transports;
+    McpHostRuntime runtime(
+        [&transports](const infrastructure::mcp::McpServerConfig& config)
+            -> QSharedPointer<infrastructure::mcp::McpTransport>
+        {
+            auto transport = QSharedPointer<FakeMcpTransport>::create();
+            transports.insert(config.serverId, transport);
+            return transport;
+        });
+    QString errorMessage;
+    QVERIFY(runtime.addServer(runtimeTestConfig(QStringLiteral("alpha")),
+                              errorMessage));
+    runtime.startServer(QStringLiteral("alpha"));
+    auto* transport = transports.value(QStringLiteral("alpha")).get();
+    QSignalSpy progressSpy(&runtime, &McpHostRuntime::progressReceived);
+    QSignalSpy errorSpy(&runtime, &McpHostRuntime::serverError);
+
+    for (auto index = 0; index < 150; ++index)
+        transport->sendNotification(
+            QStringLiteral("notifications/progress"),
+            {{QStringLiteral("progressToken"), QStringLiteral("task")},
+             {QStringLiteral("progress"), index}});
+
+    QCOMPARE(progressSpy.count(), 100);
+    QCOMPARE(errorSpy.count(), 1);
+    QCOMPARE(errorSpy.constFirst().at(1).toString(),
+             QStringLiteral("notification_rate_limited"));
+}
+
+void StdioMcpTransportTest::sendsProtocolCancellation()
+{
+    infrastructure::mcp::McpClientManager manager;
+    QString errorMessage;
+    QVERIFY(manager.addServer(testConfig(), errorMessage));
+    manager.startServer(QStringLiteral("fake"));
+    QTRY_VERIFY_WITH_TIMEOUT(
+        manager.transport(QStringLiteral("fake"))->isRunning(), 2'000);
+    QSignalSpy initializedSpy(
+        &manager, &infrastructure::mcp::McpClientManager::serverInitialized);
+    manager.initialize(QStringLiteral("fake"));
+    QTRY_COMPARE_WITH_TIMEOUT(initializedSpy.count(), 1, 2'000);
+    manager.listTools(QStringLiteral("fake"));
+    QTRY_VERIFY_WITH_TIMEOUT(!manager.tools().isEmpty(), 2'000);
+
+    QSignalSpy notificationSpy(
+        &manager, &infrastructure::mcp::McpClientManager::notificationReceived);
+    const auto requestId =
+        manager.callTool(QStringLiteral("fake.slow"), QJsonObject{});
+    QVERIFY(!requestId.isEmpty());
+    manager.cancel(requestId);
+    QTRY_COMPARE_WITH_TIMEOUT(notificationSpy.count(), 1, 3'000);
+    QCOMPARE(notificationSpy.constFirst().at(1).toString(),
+             QStringLiteral("test/cancelled_seen"));
+    QCOMPARE(notificationSpy.constFirst()
+                 .at(2)
+                 .toJsonObject()
+                 .value(QStringLiteral("requestId"))
+                 .toString(),
+             requestId);
 }
 
 void StdioMcpTransportTest::builtInFilesystemWritesCppFile()

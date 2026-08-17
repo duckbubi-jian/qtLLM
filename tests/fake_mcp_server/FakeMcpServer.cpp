@@ -30,6 +30,18 @@ void writeError(QFile& output, const QJsonValue& id, int code,
     output.write(QJsonDocument(response).toJson(QJsonDocument::Compact) + '\n');
     output.flush();
 }
+
+void writeNotification(QFile& output, const QString& method,
+                       const QJsonObject& params)
+{
+    const auto notification =
+        QJsonObject{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+                    {QStringLiteral("method"), method},
+                    {QStringLiteral("params"), params}};
+    output.write(QJsonDocument(notification).toJson(QJsonDocument::Compact) +
+                 '\n');
+    output.flush();
+}
 }  // namespace
 
 int main(int argc, char* argv[])
@@ -72,6 +84,13 @@ int main(int argc, char* argv[])
         const auto request = document.object();
         const auto id = request.value(QStringLiteral("id"));
         const auto method = request.value(QStringLiteral("method")).toString();
+        if (method == QStringLiteral("notifications/cancelled"))
+        {
+            writeNotification(
+                output, QStringLiteral("test/cancelled_seen"),
+                request.value(QStringLiteral("params")).toObject());
+            continue;
+        }
         if (method.startsWith(QStringLiteral("notifications/"))) continue;
         if (method == QStringLiteral("initialize"))
         {

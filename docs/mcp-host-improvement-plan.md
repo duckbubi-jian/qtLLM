@@ -2,7 +2,7 @@
 
 ## 1. 文档状态与目标
 
-- 状态：实施中；阶段 0、阶段 1 已于 2026-08-17 完成，下一步为阶段 2。
+- 状态：实施中；阶段 0 至阶段 2 已于 2026-08-17 完成，下一步为阶段 3。
 - 基线日期：2026-08-17。
 - qtLLM 基线提交：`0432f45a0642aaafb9293d6d242c00907dfc9d3e`。
 - 参考实现：Pi Agent Harness，提交
@@ -66,18 +66,11 @@ Agent 的实际上限仍同时受本地模型的工具选择能力、上下文�
   状态和能力快照；`McpClientManager` 保留为兼容 facade。
 - Server 停止或失败时只撤销自身能力；目录刷新失败保留上一份有效工具快照并进入
   `Degraded`。
+- Tools 已支持 cursor 分页、动态目录合并刷新、output schema、annotations、丰富
+  结果、类型化通知限流和协议取消。
 
 ### 3.2 关键缺口
 
-1. `tools/list` 不支持 cursor 分页；工具目录更新不是面向多页和失败恢复设计的原子
-   快照。
-1. transport notification 已经穿过 Host facade，但尚未接入动态工具、progress
-   和 logging 的类型化处理。
-1. `ToolDefinition` 只保存 input schema，没有 output schema、annotations 和
-   Server 元数据。
-1. `structuredContent` 当前只提取 JSON object，不接受 array；图片、嵌入资源、
-   资源链接等内容没有统一内部表示。
-1. 当前取消只停止 Host 本地等待，没有向 Server 发送协议取消通知。
 1. Host 只能处理 Server response/notification，不能路由带 id 的 Server 发起请求，
    因而无法支撑 Roots、sampling 或用户输入请求。
 1. Server instructions 会进入 Agent 上下文，但缺少独立的来源标记、启用策略和
@@ -314,7 +307,7 @@ Server 崩溃不影响另一个 Server 或普通聊天。
 - fake transport 回归覆盖正常状态序列、停止撤销、重启、多 Server 同名工具隔离、
   单 Server 崩溃隔离和非法状态跳转。
 
-### 阶段 2：Tools conformance（4 至 6 个工作日）
+### 阶段 2：Tools conformance（已完成，2026-08-17）
 
 - 实现分页、动态目录、快照 revision、output schema 和 annotations。
 - 引入通用 content block 与 JSON `structuredContent`。
@@ -323,6 +316,19 @@ Server 崩溃不影响另一个 Server 或普通聊天。
 
 验收：分页和动态刷新不暴露半完成目录；同名工具按 Server 隔离；丰富结果不被
 静默丢失；本地策略始终覆盖 Server annotations。
+
+完成记录：
+
+- `tools/list` 按 cursor 收集全部页面后原子替换；重复 cursor、重复工具或任一页
+  失败均拒绝新快照并保留上一版。
+- `notifications/tools/list_changed` 仅在已声明 capability 时刷新，并将刷新期间的
+  通知风暴合并为一次后续刷新。
+- `ToolDefinition` 保留 output schema 和 annotations；成功结果执行 output schema
+  校验，校验错误独立诊断，不覆盖 Server 原始业务语义。
+- `ToolResult` 保留任意合法 `structuredContent`、原始 content blocks 和未知 block
+  类型，并区分 transport、protocol、Server 与工具业务失败。
+- progress/logging notification 通过类型化信号发布，并按 Server 限制为每秒 100
+  条；本地取消同时发送 `notifications/cancelled`，迟到响应继续丢弃。
 
 ### 阶段 3：MCP 控制面与诊断（3 至 5 个工作日）
 

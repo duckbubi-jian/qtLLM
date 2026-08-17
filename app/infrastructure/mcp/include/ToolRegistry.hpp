@@ -24,6 +24,9 @@ class ToolRegistry final
     [[nodiscard]] bool validateArguments(const QString& qualifiedName,
                                          const QJsonObject& arguments,
                                          QString& errorMessage) const;
+    [[nodiscard]] bool validateOutput(const QString& qualifiedName,
+                                      const QJsonValue& output,
+                                      QString& errorMessage) const;
 
    private:
     QHash<QString, agent::ToolDefinition> tools_;

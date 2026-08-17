@@ -22,6 +22,10 @@ McpClientManager::McpClientManager(QObject* parent) : QObject(parent)
             &McpClientManager::requestFailed);
     connect(&runtime_, &McpHostRuntime::notificationReceived, this,
             &McpClientManager::notificationReceived);
+    connect(&runtime_, &McpHostRuntime::progressReceived, this,
+            &McpClientManager::progressReceived);
+    connect(&runtime_, &McpHostRuntime::loggingMessageReceived, this,
+            &McpClientManager::loggingMessageReceived);
     connect(&runtime_, &McpHostRuntime::diagnosticReceived, this,
             &McpClientManager::diagnosticReceived);
     connect(&runtime_, &McpHostRuntime::serverError, this,

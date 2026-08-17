@@ -58,8 +58,11 @@ agent::ToolDefinition namedTool(const QString& name, const QString& description)
 
 void AgentControllerTest::toolCatalogIsStableAndValid()
 {
-    const auto alpha =
+    auto alpha =
         namedTool(QStringLiteral("alpha"), QStringLiteral("First tool"));
+    alpha.outputSchema = {{QStringLiteral("type"), QStringLiteral("object")}};
+    alpha.annotations = {{QStringLiteral("readOnlyHint"), true}};
+    alpha.hasOutputSchema = true;
     const auto middle =
         namedTool(QStringLiteral("middle"), QStringLiteral("Middle tool"));
     const auto zeta =
@@ -91,6 +94,16 @@ void AgentControllerTest::toolCatalogIsStableAndValid()
                  .value(QStringLiteral("inputSchema"))
                  .toObject(),
              alpha.inputSchema);
+    QCOMPARE(definitions.at(0)
+                 .toObject()
+                 .value(QStringLiteral("outputSchema"))
+                 .toObject(),
+             alpha.outputSchema);
+    QCOMPARE(definitions.at(0)
+                 .toObject()
+                 .value(QStringLiteral("annotations"))
+                 .toObject(),
+             alpha.annotations);
 }
 
 void AgentControllerTest::toolCatalogOmitsWholeDefinitions()

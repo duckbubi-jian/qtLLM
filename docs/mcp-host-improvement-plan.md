@@ -10,29 +10,13 @@
 
 ## 实施顺序
 
-1. P0：测试基线全绿。
 1. P1：stdio 第三方兼容与剩余协议能力。
 1. P2：真实模型 Agent + MCP 验收。
 1. P3：Server 发起请求。
 1. P4：离线发布级 conformance。
 
-P0 至 P2 完成后，当前 stdio MCP Host 才能视为稳定可用。P3 涉及新的授权
-边界，必须单独评审，不能阻塞 P0 至 P2。
-
-## P0：测试基线全绿
-
-### 工作项
-
-- 修复 `placesModelControlsInComposerAndMergesPrimaryAction` 对本地持久化状态的
-  隐式依赖，使 UI 测试在全新配置目录中稳定运行。
-- 确保 CPU 和 CUDA 构建目录均可完成完整 CTest，不保留预期失败。
-- 将测试产生的配置、日志和 worker 进程限制在隔离的临时目录中。
-
-### 验收
-
-- CPU 与 CUDA 完整构建通过。
-- 默认 CTest 全绿，不需要真实模型、网络或用户配置。
-- 连续运行测试不会残留 worker 或 MCP Server 进程。
+P1 和 P2 完成后，当前 stdio MCP Host 才能视为稳定可用。P3 涉及新的授权
+边界，必须单独评审，不能阻塞 P1 和 P2。
 
 ## P1：stdio 第三方兼容与剩余协议能力
 

@@ -50,8 +50,13 @@ ModelBadgeState modelBadgeState(const models::ModelSelection& selection)
 }
 }  // namespace
 
-MainWindow::MainWindow(QWidget* parent)
+MainWindow::MainWindow(QWidget* parent) : MainWindow(QString{}, parent)
+{
+}
+
+MainWindow::MainWindow(const QString& settingsFilePath, QWidget* parent)
     : QMainWindow(parent),
+      settingsStore_(settingsFilePath),
       mcpManager_(this),
       chatController_(
           [this](const QList<chat::Message>& messages,

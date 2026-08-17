@@ -50,6 +50,7 @@ class AssistantResponseTest final : public QObject
 
    private slots:
     void initTestCase();
+    void init();
     void parsesCompletedReasoning();
     void parsesStreamingReasoning();
     void preservesPlainAnswer();
@@ -73,11 +74,31 @@ class AssistantResponseTest final : public QObject
     void presentsComputeSettingsOnStartPage();
     void placesModelControlsInComposerAndMergesPrimaryAction();
     void configuresSingleAndCustomGpuPlacement();
+
+   private:
+    [[nodiscard]] QString settingsFilePath() const;
+
+    QTemporaryDir settingsDirectory_;
 };
 
 void AssistantResponseTest::initTestCase()
 {
+    QVERIFY(settingsDirectory_.isValid());
     ui::applyApplicationTheme(*qApp);
+}
+
+void AssistantResponseTest::init()
+{
+    const auto settingsPath = settingsFilePath();
+    QVERIFY(!QFileInfo::exists(settingsPath) || QFile::remove(settingsPath));
+    const auto mcpConfigPath =
+        settingsDirectory_.filePath(QStringLiteral("mcp-servers.json"));
+    QVERIFY(!QFileInfo::exists(mcpConfigPath) || QFile::remove(mcpConfigPath));
+}
+
+QString AssistantResponseTest::settingsFilePath() const
+{
+    return settingsDirectory_.filePath(QStringLiteral("qtLLM.ini"));
 }
 
 void AssistantResponseTest::configuresSingleAndCustomGpuPlacement()
@@ -384,7 +405,7 @@ void AssistantResponseTest::showsInlineToolApprovalAndRedactsSecrets()
 
 void AssistantResponseTest::showsAgentActivityUntilRunEnds()
 {
-    ui::MainWindow window;
+    ui::MainWindow window(settingsFilePath());
     auto* controller = window.findChild<application::AgentController*>();
     auto* prompt =
         window.findChild<QPlainTextEdit*>(QStringLiteral("promptEditor"));
@@ -458,7 +479,7 @@ void AssistantResponseTest::showsAgentActivityUntilRunEnds()
 
 void AssistantResponseTest::recordsRedactedAgentActivity()
 {
-    ui::MainWindow window;
+    ui::MainWindow window(settingsFilePath());
     auto* controller = window.findChild<application::AgentController*>();
     auto* activityLog =
         window.findChild<QPlainTextEdit*>(QStringLiteral("activityLog"));
@@ -498,7 +519,7 @@ void AssistantResponseTest::recordsRedactedAgentActivity()
 
 void AssistantResponseTest::enterSendsAndShiftEnterAddsNewline()
 {
-    ui::MainWindow window;
+    ui::MainWindow window(settingsFilePath());
     auto* chatView = qobject_cast<ui::ChatView*>(window.centralWidget());
     auto* chatController = window.findChild<application::ChatController*>();
     auto* prompt =
@@ -530,7 +551,7 @@ void AssistantResponseTest::enterSendsAndShiftEnterAddsNewline()
 
 void AssistantResponseTest::leavesPromptEmptyAfterGenerationError()
 {
-    ui::MainWindow window;
+    ui::MainWindow window(settingsFilePath());
     auto* chatView = qobject_cast<ui::ChatView*>(window.centralWidget());
     auto* prompt =
         window.findChild<QPlainTextEdit*>(QStringLiteral("promptEditor"));
@@ -546,7 +567,7 @@ void AssistantResponseTest::leavesPromptEmptyAfterGenerationError()
 
 void AssistantResponseTest::clearsVisibleAndInMemoryConversation()
 {
-    ui::MainWindow window;
+    ui::MainWindow window(settingsFilePath());
     auto* chatView = qobject_cast<ui::ChatView*>(window.centralWidget());
     auto* prompt =
         window.findChild<QPlainTextEdit*>(QStringLiteral("promptEditor"));
@@ -591,7 +612,7 @@ void AssistantResponseTest::clearsVisibleAndInMemoryConversation()
 
 void AssistantResponseTest::showsWorkspaceAsComposerLink()
 {
-    ui::MainWindow window;
+    ui::MainWindow window(settingsFilePath());
     auto* chatView = qobject_cast<ui::ChatView*>(window.centralWidget());
     auto* composer =
         window.findChild<QWidget*>(QStringLiteral("promptComposer"));
@@ -1163,7 +1184,7 @@ void AssistantResponseTest::presentsComputeSettingsOnStartPage()
 void AssistantResponseTest::
     placesModelControlsInComposerAndMergesPrimaryAction()
 {
-    ui::MainWindow window;
+    ui::MainWindow window(settingsFilePath());
     auto* chatView = qobject_cast<ui::ChatView*>(window.centralWidget());
     auto* composer =
         window.findChild<QWidget*>(QStringLiteral("promptComposer"));
@@ -1216,7 +1237,8 @@ void AssistantResponseTest::
     QCOMPARE(composer->sizePolicy().verticalPolicy(), QSizePolicy::Maximum);
     QCOMPARE(composer->maximumHeight(), 150);
     QVERIFY(!primaryAction->icon().isNull());
-    QVERIFY(modelLink->text().contains(QStringLiteral("<a ")));
+    QVERIFY(!modelLink->text().contains(QStringLiteral("<a ")));
+    QVERIFY(!modelLink->isEnabled());
     QVERIFY(!modelLink->toolTip().isEmpty());
     QVERIFY(!modelReloadAction->icon().isNull());
     QCOMPARE(modelReloadAction->text(),

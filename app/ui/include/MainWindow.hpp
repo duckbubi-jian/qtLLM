@@ -30,6 +30,8 @@ class MainWindow final : public QMainWindow
 
    public:
     explicit MainWindow(QWidget* parent = nullptr);
+    explicit MainWindow(const QString& settingsFilePath,
+                        QWidget* parent = nullptr);
 
    private slots:
     void selectModelPackage();

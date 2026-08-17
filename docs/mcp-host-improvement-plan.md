@@ -11,8 +11,8 @@
 - 核心目标：让本地模型安全、稳定地发现和使用不同来源、不同能力集合的 MCP
   Server，而不是在 Qt 主进程中增加一套代码或文件操作工具。
 
-本文是 `docs/agent-mcp-development-plan.md` 完成后的增量计划。旧文档记录
-0.2.0 的建设过程；后续 MCP 实现方向以本文和当前 `readme.md` 为准。
+本文记录 0.2.0 之后的 MCP Host 增量工作。当前运行行为以 `readme.md` 和
+[`mcp-protocol-compatibility.md`](mcp-protocol-compatibility.md) 为准。
 
 ## 2. 结论摘要
 
@@ -117,7 +117,7 @@ Agent 的实际上限仍同时受本地模型的工具选择能力、上下文�
 MainWindow / AgentController / future workflow consumers
                          |
                          v
-                   McpHostFacade
+                 McpClientManager
                          |
          +---------------+----------------+
          |               |                |
@@ -138,7 +138,7 @@ MainWindow / AgentController / future workflow consumers
 McpHostRuntime ---> ContentNormalizer ---> bounded Host events / diagnostics
 ```
 
-### 5.1 `McpHostFacade`
+### 5.1 `McpClientManager`
 
 为 Agent 和 UI 提供稳定、与 transport 无关的接口：
 
@@ -487,7 +487,7 @@ worker 任一单点故障不导致主窗口崩溃。
 - 多 Server 生命周期、状态、能力和故障彼此隔离。
 - Tools 分页、动态更新、重名隔离、取消和丰富结果均有 conformance 覆盖。
 - Host 保存并执行已协商 capabilities，不调用 Server 未声明的能力。
-- Agent 只通过 `McpHostFacade` 消费工具，不直接依赖 filesystem 或 transport 实现。
+- Agent 只通过 `McpClientManager` 消费工具，不直接依赖 filesystem 或 transport 实现。
 - `ToolPolicy` 始终拥有最终授权权力，Server annotations 不可绕过本地规则。
 - filesystem MCP 仍是受根目录和本地审批保护的参考 Server。
 - 所有原始 MCP 内容有来源和大小边界，日志及 UI 不泄漏凭据和敏感 payload。

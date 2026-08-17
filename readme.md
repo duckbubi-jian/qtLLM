@@ -21,10 +21,10 @@ The application can scan a model-library directory, import a model package, or
 open a compatible `.gguf` file directly. Direct GGUF files are shown as
 unverified models because they have no package manifest or recorded provenance.
 
-See [the development plan](docs/qt-local-llm-plan.md) and
-[the model package specification](docs/model-package-spec.md). The current
-Qt-to-worker protocol and its verification steps are documented in
-[stage two](docs/stage-2-jsonl-ipc.md).
+See [the model package specification](docs/model-package-spec.md) for the
+validated package format and trust boundaries. Current runtime behavior and
+build instructions are maintained in this README; protocol behavior is covered
+by the automated tests alongside its implementation.
 
 ## Agent and MCP
 

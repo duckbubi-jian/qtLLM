@@ -174,7 +174,7 @@ qt_add_executable(qtllm-mcp-tests
 target_link_libraries(qtllm-mcp-tests
     PRIVATE
         Qt6::Test
-        qtllm_app_infrastructure
+        qtllm_mcp_host
         qtllm_shared
 )
 

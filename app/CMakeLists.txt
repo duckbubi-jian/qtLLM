@@ -61,6 +61,7 @@ target_include_directories(qtllm_app_infrastructure
 target_link_libraries(qtllm_app_infrastructure
     PUBLIC
         Qt6::Core
+        qtllm_mcp_host
         qtllm_shared
 )
 

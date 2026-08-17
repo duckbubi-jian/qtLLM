@@ -52,6 +52,7 @@ qt_standard_project_setup()
 
 set(QTLLM_MODULE_DIRECTORIES
     app
+    mcp
     shared
     worker
     tests

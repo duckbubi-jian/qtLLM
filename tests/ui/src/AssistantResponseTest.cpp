@@ -676,33 +676,21 @@ void AssistantResponseTest::managesMcpServersFromAgentMenu()
         QStringLiteral("mcpServerAction_builtin-filesystem"));
     auto* externalAction =
         menu->findChild<QAction*>(QStringLiteral("mcpServerAction_external"));
-    auto* addAction =
-        menu->findChild<QAction*>(QStringLiteral("addMcpServerAction"));
     auto* manageAction =
         menu->findChild<QAction*>(QStringLiteral("manageMcpServersAction"));
-    auto* removeMenu =
-        menu->findChild<QMenu*>(QStringLiteral("removeMcpServerMenu"));
-    auto* removeExternalAction = menu->findChild<QAction*>(
-        QStringLiteral("removeMcpServerAction_external"));
-    auto* removeBuiltInAction = menu->findChild<QAction*>(
-        QStringLiteral("removeMcpServerAction_builtin-filesystem"));
     QVERIFY(builtInAction != nullptr);
     QVERIFY(externalAction != nullptr);
-    QVERIFY(addAction != nullptr);
     QVERIFY(manageAction != nullptr);
-    QVERIFY(removeMenu != nullptr);
-    QVERIFY(removeExternalAction != nullptr);
-    QVERIFY(removeBuiltInAction == nullptr);
+    QCOMPARE(menu->actions().size(), 4);
+    QCOMPARE(menu->actions().constFirst(), manageAction);
+    QVERIFY(menu->actions().at(1)->isSeparator());
     QVERIFY(builtInAction->isCheckable());
     QVERIFY(builtInAction->isChecked());
     QVERIFY(!externalAction->isChecked());
 
     QSignalSpy builtInSpy(&view, &ui::ChatView::builtInFilesystemMcpToggled);
     QSignalSpy externalSpy(&view, &ui::ChatView::externalMcpServerToggled);
-    QSignalSpy addSpy(&view, &ui::ChatView::addMcpServerRequested);
     QSignalSpy manageSpy(&view, &ui::ChatView::manageMcpServersRequested);
-    QSignalSpy removeSpy(&view,
-                         &ui::ChatView::removeExternalMcpServerRequested);
     builtInAction->trigger();
     QTRY_COMPARE(builtInSpy.count(), 1);
     QCOMPARE(builtInSpy.constFirst().constFirst().toBool(), false);
@@ -711,14 +699,8 @@ void AssistantResponseTest::managesMcpServersFromAgentMenu()
     QCOMPARE(externalSpy.constFirst().at(0).toString(),
              QStringLiteral("external"));
     QCOMPARE(externalSpy.constFirst().at(1).toBool(), true);
-    addAction->trigger();
-    QCOMPARE(addSpy.count(), 1);
     manageAction->trigger();
     QCOMPARE(manageSpy.count(), 1);
-    removeExternalAction->trigger();
-    QCOMPARE(removeSpy.count(), 1);
-    QCOMPARE(removeSpy.constFirst().constFirst().toString(),
-             QStringLiteral("external"));
 
     view.setAgentModeSelected(false);
     QVERIFY(button->isHidden());

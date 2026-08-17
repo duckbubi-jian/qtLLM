@@ -1436,16 +1436,12 @@ void MainWindow::buildUi()
             &MainWindow::selectWorkspaceDirectory);
     connect(chatView_, &ChatView::workspaceOpenRequested, this,
             &MainWindow::openWorkspaceDirectory);
-    connect(chatView_, &ChatView::addMcpServerRequested, this,
-            &MainWindow::addMcpServer);
     connect(chatView_, &ChatView::manageMcpServersRequested, this,
             &MainWindow::showMcpControlPanel);
     connect(chatView_, &ChatView::builtInFilesystemMcpToggled, this,
             &MainWindow::setBuiltInFilesystemMcpEnabled);
     connect(chatView_, &ChatView::externalMcpServerToggled, this,
             &MainWindow::setExternalMcpServerEnabled);
-    connect(chatView_, &ChatView::removeExternalMcpServerRequested, this,
-            &MainWindow::removeExternalMcpServer);
     connect(chatView_, &ChatView::modelLoadRequested, this,
             &MainWindow::loadSelectedModel);
     connect(chatView_, &ChatView::primaryActionRequested, this,

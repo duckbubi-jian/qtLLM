@@ -331,9 +331,6 @@ void ChatView::updateModePresentation()
 void ChatView::rebuildMcpMenu()
 {
     mcpMenu_->clear();
-    auto* heading = mcpMenu_->addAction(tr("MCP servers"));
-    heading->setEnabled(false);
-
     auto* manageAction = mcpMenu_->addAction(tr("Manage MCP servers..."));
     manageAction->setObjectName(QStringLiteral("manageMcpServersAction"));
     manageAction->setIcon(style()->standardIcon(QStyle::SP_ComputerIcon));
@@ -368,25 +365,6 @@ void ChatView::rebuildMcpMenu()
                         });
                 });
     }
-
-    mcpMenu_->addSeparator();
-    auto* addAction = mcpMenu_->addAction(tr("Add MCP server..."));
-    addAction->setObjectName(QStringLiteral("addMcpServerAction"));
-    connect(addAction, &QAction::triggered, this,
-            &ChatView::addMcpServerRequested);
-
-    auto* removeMenu = mcpMenu_->addMenu(tr("Remove MCP server"));
-    removeMenu->setObjectName(QStringLiteral("removeMcpServerMenu"));
-    for (const auto& server : mcpServers_)
-    {
-        if (server.builtIn) continue;
-        auto* removeAction = removeMenu->addAction(server.displayName);
-        removeAction->setObjectName(
-            QStringLiteral("removeMcpServerAction_%1").arg(server.serverId));
-        connect(removeAction, &QAction::triggered, this, [this, server]
-                { emit removeExternalMcpServerRequested(server.serverId); });
-    }
-    removeMenu->setEnabled(!removeMenu->actions().isEmpty());
 }
 
 bool ChatView::eventFilter(QObject* watched, QEvent* event)

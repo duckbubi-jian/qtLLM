@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ChatMessage.hpp"
+#include "ComputeDevice.hpp"
 #include "InferenceDefaults.hpp"
 #include "JsonLineProtocol.hpp"
 #include "ResponseMode.hpp"
@@ -22,6 +23,8 @@ class WorkerClient final : public QObject
     {
         bool structuredGeneration = false;
         bool grammar = false;
+        bool gpuDeviceDiscovery = false;
+        bool multiGpuLayerSplit = false;
     };
 
     enum class State
@@ -42,8 +45,10 @@ class WorkerClient final : public QObject
 
     void start(const QString& workerPath = {});
     void stop();
-    void loadModel(const QString& modelPath, int gpuLayers = -1);
+    void loadModel(const QString& modelPath,
+                   const inference::ModelLoadOptions& options = {});
     void unloadModel();
+    void refreshComputeDevices();
     void generate(
         const QList<chat::Message>& messages,
         int contextSize = inference::defaultContextSize,
@@ -66,6 +71,9 @@ class WorkerClient final : public QObject
     [[nodiscard]] QString modelPath() const;
     [[nodiscard]] QString activeGenerationRequestId() const;
     [[nodiscard]] Capabilities capabilities() const;
+    [[nodiscard]] QList<inference::ComputeDevice> computeDevices() const;
+    [[nodiscard]] QList<inference::ComputeDevice> activeComputeDevices() const;
+    [[nodiscard]] QString activeSplitMode() const;
 
    signals:
     void stateChanged(qtllm::infrastructure::WorkerClient::State state);
@@ -78,6 +86,8 @@ class WorkerClient final : public QObject
     void generationFinished(bool cancelled, const QJsonObject& metrics);
     void errorOccurred(const QString& code, const QString& message);
     void diagnosticReceived(const QString& text);
+    void computeDevicesChanged(
+        const QList<qtllm::inference::ComputeDevice>& devices);
 
    private slots:
     void onStarted();
@@ -99,8 +109,12 @@ class WorkerClient final : public QObject
     QString helloRequestId_;
     QString loadRequestId_;
     QString unloadRequestId_;
+    QString devicesRequestId_;
     QString generationRequestId_;
     QString modelPath_;
+    QString activeSplitMode_ = QStringLiteral("cpu");
+    QList<inference::ComputeDevice> computeDevices_;
+    QList<inference::ComputeDevice> activeComputeDevices_;
     Capabilities capabilities_;
     bool stopping_ = false;
 };

@@ -1,8 +1,10 @@
 #pragma once
 
+#include "ComputeDevice.hpp"
 #include "WorkerOptions.hpp"
 
 #include <QByteArray>
+#include <QList>
 #include <QString>
 
 #include <atomic>
@@ -32,12 +34,16 @@ class LlamaEngine
     LlamaEngine(const LlamaEngine&) = delete;
     LlamaEngine& operator=(const LlamaEngine&) = delete;
 
-    bool loadModel(const QString& modelPath, int gpuLayers,
+    bool loadModel(const QString& modelPath,
+                   const inference::ModelLoadOptions& options,
                    QString& errorMessage, qint64* loadMilliseconds = nullptr);
     void unloadModel();
     [[nodiscard]] bool isModelLoaded() const;
     [[nodiscard]] QString modelPath() const;
     [[nodiscard]] QString deviceDescription() const;
+    [[nodiscard]] QString splitMode() const;
+    [[nodiscard]] QList<inference::ComputeDevice> availableDevices() const;
+    [[nodiscard]] QList<inference::ComputeDevice> activeDevices() const;
 
     bool generate(const WorkerOptions& options,
                   const TokenHandler& tokenHandler, QString& errorMessage,

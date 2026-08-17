@@ -2,6 +2,7 @@
 
 #include "BuiltInMcpServer.hpp"
 #include "ChatView.hpp"
+#include "ComputeSettingsDialog.hpp"
 #include "McpControlPanel.hpp"
 #include "McpServerDialog.hpp"
 #include "MessageWidget.hpp"
@@ -92,6 +93,7 @@ MainWindow::MainWindow(QWidget* parent)
     setMinimumSize(720, 520);
 
     buildUi();
+    modelLoadOptions_ = settingsStore_.modelLoadOptions();
     chatView_->setAgentModeSelected(settingsStore_.agentModeEnabled());
     modelInfoText_ = tr("Model not checked");
     setModelPath(settingsStore_.lastModelPath());
@@ -530,6 +532,30 @@ void MainWindow::openModelDirectory()
     {
         chatView_->setStatusText(tr("Unable to open the model folder"));
         qWarning().noquote() << "Unable to open model folder:" << directory;
+    }
+}
+
+void MainWindow::showComputeSettings()
+{
+    ComputeSettingsDialog dialog(workerClient_.computeDevices(), this);
+    dialog.setOptions(modelLoadOptions_);
+    if (dialog.exec() != QDialog::Accepted) return;
+
+    const auto options = dialog.options();
+    if (options == modelLoadOptions_) return;
+    modelLoadOptions_ = options;
+    if (!settingsStore_.setModelLoadOptions(modelLoadOptions_))
+        qWarning().noquote() << "Unable to persist compute settings.";
+
+    if (workerClient_.state() ==
+            infrastructure::WorkerClient::State::ModelReady &&
+        !activeModelSelection_.modelPath.isEmpty())
+    {
+        beginModelLoad(activeModelSelection_);
+    }
+    else
+    {
+        chatView_->setStatusText(tr("Compute settings saved"));
     }
 }
 
@@ -1098,6 +1124,7 @@ void MainWindow::updateState(infrastructure::WorkerClient::State state)
     const auto conversationBusy =
         agentRunActive_ || chatController_.isGenerating();
     chatView_->setModelControlsEnabled(ready, ready && !modelPath_.isEmpty());
+    chatView_->setComputeSettingsEnabled(workerReady);
     chatView_->setWorkspaceControlsEnabled(!conversationBusy &&
                                            !filesystemConfiguredExternally_);
     chatView_->setPromptEnabled(modelReady && !conversationBusy);
@@ -1228,6 +1255,8 @@ void MainWindow::buildUi()
             &MainWindow::selectModelPackage);
     connect(chatView_, &ChatView::modelLocationRequested, this,
             &MainWindow::openModelDirectory);
+    connect(chatView_, &ChatView::computeSettingsRequested, this,
+            &MainWindow::showComputeSettings);
     connect(chatView_, &ChatView::workspaceFolderRequested, this,
             &MainWindow::selectWorkspaceDirectory);
     connect(chatView_, &ChatView::workspaceOpenRequested, this,
@@ -1870,7 +1899,8 @@ void MainWindow::startPendingModelLoad()
 {
     chatView_->setStatusText(replacingModel_ ? tr("Loading new model...")
                                              : tr("Loading model..."));
-    workerClient_.loadModel(pendingModelSelection_.modelPath);
+    workerClient_.loadModel(pendingModelSelection_.modelPath,
+                            modelLoadOptions_);
 }
 
 void MainWindow::continueModelLoadAfterUnload()

@@ -1,5 +1,6 @@
 #include "JsonLineProtocol.hpp"
 
+#include "ComputeProtocol.hpp"
 #include "ProtocolVersion.hpp"
 
 #include <QJsonArray>
@@ -20,6 +21,9 @@ class JsonLineProtocolTest final : public QObject
     void rejectsMissingFields();
     void rejectsFractionalProtocolVersion();
     void rejectsOutOfRangeProtocolVersion();
+    void roundTripsModelLoadOptions();
+    void roundTripsComputeDevices();
+    void rejectsInvalidDevicePlacement();
 };
 
 void JsonLineProtocolTest::roundTripsMessage()
@@ -85,6 +89,68 @@ void JsonLineProtocolTest::rejectsOutOfRangeProtocolVersion()
             R"({"protocolVersion":1e100,"requestId":"r","type":"hello","payload":{}})"),
         message, errorMessage));
     QCOMPARE(errorMessage, QStringLiteral("protocolVersion is out of range."));
+}
+
+void JsonLineProtocolTest::roundTripsModelLoadOptions()
+{
+    inference::ModelLoadOptions original;
+    original.gpuLayers = 36;
+    original.placementMode = inference::DevicePlacementMode::Custom;
+    original.devices = {{QStringLiteral("0000:02:00.0"), 1.0F},
+                        {QStringLiteral("0000:83:00.0"), 2.5F}};
+
+    inference::ModelLoadOptions decoded;
+    QString errorMessage;
+    QVERIFY2(protocol::parseModelLoadOptions(
+                 protocol::serializeModelLoadOptions(original), decoded,
+                 errorMessage),
+             qPrintable(errorMessage));
+    QCOMPARE(decoded, original);
+}
+
+void JsonLineProtocolTest::roundTripsComputeDevices()
+{
+    const QList<inference::ComputeDevice> original{
+        {QStringLiteral("0000:02:00.0"), QStringLiteral("CUDA0"),
+         QStringLiteral("NVIDIA GeForce RTX 3090"),
+         QStringLiteral("0000:02:00.0"), 20ULL * 1024 * 1024 * 1024,
+         24ULL * 1024 * 1024 * 1024},
+        {QStringLiteral("0000:83:00.0"), QStringLiteral("CUDA1"),
+         QStringLiteral("NVIDIA GeForce RTX 3090"),
+         QStringLiteral("0000:83:00.0"), 21ULL * 1024 * 1024 * 1024,
+         24ULL * 1024 * 1024 * 1024}};
+
+    QList<inference::ComputeDevice> decoded;
+    QString errorMessage;
+    QVERIFY2(
+        protocol::parseComputeDevices(
+            protocol::serializeComputeDevices(original), decoded, errorMessage),
+        qPrintable(errorMessage));
+    QCOMPARE(decoded, original);
+}
+
+void JsonLineProtocolTest::rejectsInvalidDevicePlacement()
+{
+    inference::ModelLoadOptions options;
+    QString errorMessage;
+    QVERIFY(!protocol::parseModelLoadOptions(
+        {{QStringLiteral("placement"),
+          QJsonObject{{QStringLiteral("mode"), QStringLiteral("single")},
+                      {QStringLiteral("deviceIds"), QJsonArray{}},
+                      {QStringLiteral("weights"), QJsonArray{}}}}},
+        options, errorMessage));
+    QCOMPARE(errorMessage,
+             QStringLiteral("Single placement requires exactly one GPU."));
+
+    QVERIFY(!protocol::parseModelLoadOptions(
+        {{QStringLiteral("placement"),
+          QJsonObject{
+              {QStringLiteral("mode"), QStringLiteral("custom")},
+              {QStringLiteral("deviceIds"),
+               QJsonArray{QStringLiteral("gpu-0"), QStringLiteral("gpu-0")}},
+              {QStringLiteral("weights"), QJsonArray{1.0, 1.0}}}}},
+        options, errorMessage));
+    QCOMPARE(errorMessage, QStringLiteral("Selected GPU IDs must be unique."));
 }
 }  // namespace qtllm::tests
 

@@ -2,6 +2,7 @@
 #include "AutoHideTabWidget.hpp"
 #include "ChatController.hpp"
 #include "ChatView.hpp"
+#include "ComputeSettingsDialog.hpp"
 #include "MainWindow.hpp"
 #include "McpControlPanel.hpp"
 #include "McpServerDialog.hpp"
@@ -15,7 +16,9 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QColor>
+#include <QComboBox>
 #include <QDir>
+#include <QDoubleSpinBox>
 #include <QEnterEvent>
 #include <QFile>
 #include <QFileInfo>
@@ -28,6 +31,7 @@
 #include <QStackedWidget>
 #include <QTabBar>
 #include <QTabWidget>
+#include <QTableWidget>
 #include <QTemporaryDir>
 #include <QTextBlock>
 #include <QTextBrowser>
@@ -67,11 +71,56 @@ class AssistantResponseTest final : public QObject
     void validatesNewMcpServerConfiguration();
     void separatesModelLocationAndReloadActions();
     void placesModelControlsInComposerAndMergesPrimaryAction();
+    void configuresSingleAndCustomGpuPlacement();
 };
 
 void AssistantResponseTest::initTestCase()
 {
     ui::applyApplicationTheme(*qApp);
+}
+
+void AssistantResponseTest::configuresSingleAndCustomGpuPlacement()
+{
+    const QList<inference::ComputeDevice> devices{
+        {QStringLiteral("0000:02:00.0"), QStringLiteral("CUDA0"),
+         QStringLiteral("NVIDIA GeForce RTX 3090"),
+         QStringLiteral("0000:02:00.0"), 20ULL * 1024 * 1024 * 1024,
+         24ULL * 1024 * 1024 * 1024},
+        {QStringLiteral("0000:83:00.0"), QStringLiteral("CUDA1"),
+         QStringLiteral("NVIDIA GeForce RTX 3090"),
+         QStringLiteral("0000:83:00.0"), 21ULL * 1024 * 1024 * 1024,
+         24ULL * 1024 * 1024 * 1024}};
+    ui::ComputeSettingsDialog dialog(devices);
+    auto* mode =
+        dialog.findChild<QComboBox*>(QStringLiteral("placementModeCombo"));
+    auto* table =
+        dialog.findChild<QTableWidget*>(QStringLiteral("deviceTable"));
+    QVERIFY(mode != nullptr);
+    QVERIFY(table != nullptr);
+
+    mode->setCurrentIndex(mode->findData(
+        static_cast<int>(inference::DevicePlacementMode::Single)));
+    QCOMPARE(table->item(0, 0)->checkState(), Qt::Checked);
+    QCOMPARE(table->item(1, 0)->checkState(), Qt::Unchecked);
+    table->item(1, 0)->setCheckState(Qt::Checked);
+    QCOMPARE(table->item(0, 0)->checkState(), Qt::Unchecked);
+    QCOMPARE(table->item(1, 0)->checkState(), Qt::Checked);
+
+    mode->setCurrentIndex(mode->findData(
+        static_cast<int>(inference::DevicePlacementMode::Custom)));
+    QCOMPARE(table->item(0, 0)->checkState(), Qt::Checked);
+    QCOMPARE(table->item(1, 0)->checkState(), Qt::Checked);
+    auto* secondWeight = qobject_cast<QDoubleSpinBox*>(table->cellWidget(1, 2));
+    QVERIFY(secondWeight != nullptr);
+    secondWeight->setValue(2.5);
+    dialog.accept();
+
+    QCOMPARE(dialog.result(), static_cast<int>(QDialog::Accepted));
+    inference::ModelLoadOptions expected;
+    expected.placementMode = inference::DevicePlacementMode::Custom;
+    expected.devices = {{QStringLiteral("0000:02:00.0"), 1.0F},
+                        {QStringLiteral("0000:83:00.0"), 2.5F}};
+    QCOMPARE(dialog.options(), expected);
 }
 
 void AssistantResponseTest::parsesCompletedReasoning()

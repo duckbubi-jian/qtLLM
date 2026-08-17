@@ -1,5 +1,6 @@
 #include "WorkerClient.hpp"
 
+#include "ComputeProtocol.hpp"
 #include "Logging.hpp"
 #include "ProtocolVersion.hpp"
 
@@ -11,6 +12,8 @@
 #include <QProcessEnvironment>
 #include <QThread>
 #include <QUuid>
+
+#include <utility>
 
 namespace qtllm::infrastructure
 {
@@ -72,7 +75,8 @@ void WorkerClient::stop()
     }
 }
 
-void WorkerClient::loadModel(const QString& modelPath, int gpuLayers)
+void WorkerClient::loadModel(const QString& modelPath,
+                             const inference::ModelLoadOptions& options)
 {
     if (state_ != State::Ready && state_ != State::ModelReady)
     {
@@ -80,15 +84,26 @@ void WorkerClient::loadModel(const QString& modelPath, int gpuLayers)
              QStringLiteral("Worker is not ready to load a model."));
         return;
     }
+    QString errorMessage;
+    if (!inference::validateModelLoadOptions(options, errorMessage))
+    {
+        fail(QStringLiteral("invalid_model_load_options"), errorMessage);
+        return;
+    }
     modelPath_.clear();
+    activeComputeDevices_.clear();
+    activeSplitMode_ = QStringLiteral("cpu");
     setState(State::LoadingModel);
-    logging::info(QStringLiteral("Loading model: %1; gpuLayers=%2")
-                      .arg(modelPath)
-                      .arg(gpuLayers));
+    logging::info(
+        QStringLiteral("Loading model: %1; gpuLayers=%2; "
+                       "placement=%3")
+            .arg(modelPath)
+            .arg(options.gpuLayers)
+            .arg(inference::devicePlacementModeName(options.placementMode)));
+    auto payload = protocol::serializeModelLoadOptions(options);
+    payload.insert(QStringLiteral("modelPath"), modelPath);
     loadRequestId_ =
-        send(QString::fromLatin1(protocol::message_type::loadModel),
-             {{QStringLiteral("modelPath"), modelPath},
-              {QStringLiteral("gpuLayers"), gpuLayers}});
+        send(QString::fromLatin1(protocol::message_type::loadModel), payload);
 }
 
 void WorkerClient::unloadModel()
@@ -97,6 +112,15 @@ void WorkerClient::unloadModel()
     setState(State::UnloadingModel);
     unloadRequestId_ =
         send(QString::fromLatin1(protocol::message_type::unloadModel));
+}
+
+void WorkerClient::refreshComputeDevices()
+{
+    if (!capabilities_.gpuDeviceDiscovery ||
+        process_.state() != QProcess::Running)
+        return;
+    devicesRequestId_ =
+        send(QString::fromLatin1(protocol::message_type::listDevices));
 }
 
 void WorkerClient::generate(const QString& prompt, const QString& systemPrompt,
@@ -188,6 +212,21 @@ WorkerClient::Capabilities WorkerClient::capabilities() const
     return capabilities_;
 }
 
+QList<inference::ComputeDevice> WorkerClient::computeDevices() const
+{
+    return computeDevices_;
+}
+
+QList<inference::ComputeDevice> WorkerClient::activeComputeDevices() const
+{
+    return activeComputeDevices_;
+}
+
+QString WorkerClient::activeSplitMode() const
+{
+    return activeSplitMode_;
+}
+
 void WorkerClient::onStarted()
 {
     logging::info(QStringLiteral("Worker process started; pid=%1")
@@ -239,9 +278,16 @@ void WorkerClient::onReadyReadStandardError()
 
 void WorkerClient::onFinished(int exitCode, QProcess::ExitStatus exitStatus)
 {
+    helloRequestId_.clear();
+    loadRequestId_.clear();
+    unloadRequestId_.clear();
+    devicesRequestId_.clear();
     modelPath_.clear();
     generationRequestId_.clear();
     capabilities_ = {};
+    computeDevices_.clear();
+    activeComputeDevices_.clear();
+    activeSplitMode_ = QStringLiteral("cpu");
     if (stopping_)
     {
         logging::info(
@@ -294,7 +340,29 @@ void WorkerClient::handleMessage(const protocol::Message& message)
             capabilities.value(QStringLiteral("structuredGeneration")).toBool();
         capabilities_.grammar =
             capabilities.value(QStringLiteral("grammar")).toBool();
+        capabilities_.gpuDeviceDiscovery =
+            capabilities.value(QStringLiteral("gpuDeviceDiscovery")).toBool();
+        capabilities_.multiGpuLayerSplit =
+            capabilities.value(QStringLiteral("multiGpuLayerSplit")).toBool();
         setState(State::Ready);
+        refreshComputeDevices();
+    }
+    else if (message.type == QLatin1String(protocol::message_type::devices) &&
+             message.requestId == devicesRequestId_)
+    {
+        QList<inference::ComputeDevice> devices;
+        QString errorMessage;
+        if (!message.payload.value(QStringLiteral("devices")).isArray() ||
+            !protocol::parseComputeDevices(
+                message.payload.value(QStringLiteral("devices")).toArray(),
+                devices, errorMessage))
+        {
+            fail(QStringLiteral("invalid_device_list"), errorMessage);
+            return;
+        }
+        devicesRequestId_.clear();
+        computeDevices_ = std::move(devices);
+        emit computeDevicesChanged(computeDevices_);
     }
     else if (message.type ==
                  QLatin1String(protocol::message_type::modelLoaded) &&
@@ -302,6 +370,17 @@ void WorkerClient::handleMessage(const protocol::Message& message)
     {
         modelPath_ =
             message.payload.value(QStringLiteral("modelPath")).toString();
+        activeSplitMode_ =
+            message.payload.value(QStringLiteral("splitMode")).toString();
+        QString deviceError;
+        if (!message.payload.value(QStringLiteral("devices")).isArray() ||
+            !protocol::parseComputeDevices(
+                message.payload.value(QStringLiteral("devices")).toArray(),
+                activeComputeDevices_, deviceError))
+        {
+            fail(QStringLiteral("invalid_active_device_list"), deviceError);
+            return;
+        }
         loadRequestId_.clear();
         setState(State::ModelReady);
         emit modelLoaded(
@@ -315,6 +394,8 @@ void WorkerClient::handleMessage(const protocol::Message& message)
              message.requestId == unloadRequestId_)
     {
         modelPath_.clear();
+        activeComputeDevices_.clear();
+        activeSplitMode_ = QStringLiteral("cpu");
         unloadRequestId_.clear();
         setState(State::Ready);
         emit modelUnloaded();
@@ -349,6 +430,10 @@ void WorkerClient::handleMessage(const protocol::Message& message)
             modelPath_.clear();
             setState(State::Ready);
             emit modelLoadFailed(code, errorMessage);
+        }
+        else if (message.requestId == devicesRequestId_)
+        {
+            devicesRequestId_.clear();
         }
         else if (message.requestId == unloadRequestId_)
         {

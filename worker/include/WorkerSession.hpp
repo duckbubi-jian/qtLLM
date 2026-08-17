@@ -31,6 +31,7 @@ class WorkerSession final : public QObject
    private:
     void dispatch(const protocol::Message& message);
     void handleHello(const protocol::Message& message);
+    void handleListDevices(const protocol::Message& message);
     void handleLoadModel(const protocol::Message& message);
     void handleUnloadModel(const protocol::Message& message);
     void handleGenerate(const protocol::Message& message);

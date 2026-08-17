@@ -72,8 +72,11 @@ qtllm-worker.exe `
 ```
 
 CPU runtime 使用 `--gpu-layers 0`。CUDA runtime 默认使用
-`--gpu-layers -1` 将所有可卸载层放到 GPU 0；没有可用 CUDA 设备时自动回退
-CPU。模型权重仍放在仓库外，一个模型包只包含一个逻辑模型。当前轻量默认模型为
+`--gpu-layers -1 --gpu-mode auto`，枚举全部可用 CUDA GPU，并由 llama.cpp 按
+空闲显存执行 Layer Split；没有可用 CUDA 设备时自动回退 CPU。`--gpu-mode cpu`
+可让 CUDA 构建在本次运行中使用 CPU，`single` 与 `custom` 模式分别配合
+`--gpu-devices` 和 `--tensor-split` 指定设备与权重。运行时 CPU 模式不替代独立
+CPU 发布包，后者仍不依赖 CUDA。模型权重仍放在仓库外，一个模型包只包含一个逻辑模型。当前轻量默认模型为
 `DeepSeek-R1-Distill-Qwen-7B Q4_K_M`；配备 24 GB 显存时可选择质量更高、速度
 较低的 `DeepSeek-R1-Distill-Qwen-14B Q4_K_M`。模型目录例如
 `D:\qtLLM-models\deepseek-r1-distill-qwen-7b-q4km` 和

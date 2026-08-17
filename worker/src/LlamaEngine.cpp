@@ -8,6 +8,7 @@
 #include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
+#include <QStringList>
 #include <QTextStream>
 
 #include <algorithm>
@@ -234,8 +235,11 @@ class LlamaEngine::Impl
    public:
     ModelPointer model;
     std::vector<ggml_backend_dev_t> devices;
+    std::vector<float> tensorSplit;
+    QStringList activeDeviceIds;
     QString modelPath;
     QString deviceDescription = QStringLiteral("CPU");
+    QString splitMode = QStringLiteral("cpu");
 };
 
 LlamaEngine::LlamaEngine() : impl_(std::make_unique<Impl>())
@@ -251,59 +255,153 @@ LlamaEngine::~LlamaEngine()
     llama_backend_free();
 }
 
-bool LlamaEngine::loadModel(const QString& modelPath, int gpuLayers,
+bool LlamaEngine::loadModel(const QString& modelPath,
+                            const inference::ModelLoadOptions& options,
                             QString& errorMessage, qint64* loadMilliseconds)
 {
     unloadModel();
+
+    if (!inference::validateModelLoadOptions(options, errorMessage))
+        return false;
 
     QElapsedTimer loadTimer;
     loadTimer.start();
 
     auto modelParameters = llama_model_default_params();
     impl_->devices.clear();
-    if (gpuLayers != 0)
+    impl_->tensorSplit.clear();
+    impl_->activeDeviceIds.clear();
+
+    struct AvailableDevice
     {
-        for (std::size_t index = 0; index < ggml_backend_dev_count(); ++index)
+        ggml_backend_dev_t handle = nullptr;
+        inference::ComputeDevice description;
+    };
+    std::vector<AvailableDevice> availableDevices;
+    for (std::size_t index = 0; index < ggml_backend_dev_count(); ++index)
+    {
+        auto* device = ggml_backend_dev_get(index);
+        if (ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_GPU)
+            continue;
+        ggml_backend_dev_props properties{};
+        ggml_backend_dev_get_props(device, &properties);
+        const auto backendName =
+            QString::fromUtf8(ggml_backend_dev_name(device));
+        const auto hardwareId = properties.device_id == nullptr
+                                    ? QString{}
+                                    : QString::fromUtf8(properties.device_id);
+        availableDevices.push_back(
+            {device,
+             {hardwareId.isEmpty() ? backendName : hardwareId, backendName,
+              QString::fromUtf8(ggml_backend_dev_description(device)),
+              hardwareId, static_cast<quint64>(properties.memory_free),
+              static_cast<quint64>(properties.memory_total)}});
+    }
+
+    std::vector<AvailableDevice> selectedDevices;
+    if (options.gpuLayers != 0 &&
+        options.placementMode != inference::DevicePlacementMode::Cpu)
+    {
+        if (options.placementMode == inference::DevicePlacementMode::Auto)
         {
-            auto* device = ggml_backend_dev_get(index);
-            if (ggml_backend_dev_type(device) == GGML_BACKEND_DEVICE_TYPE_GPU)
+            selectedDevices = availableDevices;
+        }
+        else
+        {
+            for (const auto& selection : options.devices)
             {
-                impl_->devices.push_back(device);
-                impl_->devices.push_back(nullptr);
-                break;
+                const auto match = std::find_if(
+                    availableDevices.cbegin(), availableDevices.cend(),
+                    [&selection](const AvailableDevice& candidate)
+                    {
+                        return candidate.description.id == selection.id ||
+                               candidate.description.backendName ==
+                                   selection.id;
+                    });
+                if (match == availableDevices.cend())
+                {
+                    errorMessage =
+                        QStringLiteral("Selected GPU is unavailable: %1")
+                            .arg(selection.id);
+                    return false;
+                }
+                selectedDevices.push_back(*match);
             }
         }
     }
 
-    if (!impl_->devices.empty())
+    if (!selectedDevices.empty())
     {
+        impl_->devices.reserve(selectedDevices.size() + 1);
+        for (const auto& device : selectedDevices)
+        {
+            impl_->devices.push_back(device.handle);
+            impl_->activeDeviceIds.append(device.description.id);
+        }
+        impl_->devices.push_back(nullptr);
         modelParameters.devices = impl_->devices.data();
-        modelParameters.n_gpu_layers = gpuLayers;
-        modelParameters.split_mode = LLAMA_SPLIT_MODE_NONE;
+        modelParameters.n_gpu_layers = options.gpuLayers;
+        modelParameters.split_mode = selectedDevices.size() > 1
+                                         ? LLAMA_SPLIT_MODE_LAYER
+                                         : LLAMA_SPLIT_MODE_NONE;
         modelParameters.main_gpu = 0;
-        impl_->deviceDescription = QString::fromUtf8(
-            ggml_backend_dev_description(impl_->devices.front()));
+        impl_->splitMode = selectedDevices.size() > 1
+                               ? QStringLiteral("layer")
+                               : QStringLiteral("single");
+
+        if (options.placementMode == inference::DevicePlacementMode::Custom)
+        {
+            impl_->tensorSplit.assign(llama_max_devices(), 0.0F);
+            for (std::size_t index = 0; index < selectedDevices.size(); ++index)
+                impl_->tensorSplit.at(index) =
+                    options.devices.at(static_cast<qsizetype>(index)).weight;
+            modelParameters.tensor_split = impl_->tensorSplit.data();
+        }
+
+        QStringList descriptions;
+        for (const auto& device : selectedDevices)
+            descriptions.append(device.description.description);
+        if (descriptions.size() > 1 &&
+            std::all_of(descriptions.cbegin(), descriptions.cend(),
+                        [&descriptions](const QString& description)
+                        { return description == descriptions.constFirst(); }))
+        {
+            impl_->deviceDescription = QStringLiteral("%1 x%2 (layer split)")
+                                           .arg(descriptions.constFirst())
+                                           .arg(descriptions.size());
+        }
+        else
+        {
+            impl_->deviceDescription = descriptions.join(QStringLiteral(", "));
+            if (descriptions.size() > 1)
+                impl_->deviceDescription.append(
+                    QStringLiteral(" (layer split)"));
+        }
     }
     else
     {
         modelParameters.n_gpu_layers = 0;
         impl_->deviceDescription = QStringLiteral("CPU");
+        impl_->splitMode = QStringLiteral("cpu");
     }
     modelParameters.use_mmap = true;
 
     logging::info(
         QStringLiteral("llama.cpp loading model: file=%1 gpuLayers=%2 "
-                       "device=%3")
+                       "device=%3 splitMode=%4")
             .arg(modelPath)
             .arg(modelParameters.n_gpu_layers)
-            .arg(impl_->deviceDescription));
+            .arg(impl_->deviceDescription, impl_->splitMode));
     const auto encodedPath = modelPath.toUtf8();
     ModelPointer model(
         llama_model_load_from_file(encodedPath.constData(), modelParameters));
     if (!model)
     {
         impl_->devices.clear();
+        impl_->tensorSplit.clear();
+        impl_->activeDeviceIds.clear();
         impl_->deviceDescription = QStringLiteral("CPU");
+        impl_->splitMode = QStringLiteral("cpu");
         errorMessage = QStringLiteral("Unable to load GGUF model: %1")
                            .arg(QFileInfo(modelPath).fileName());
         return false;
@@ -311,7 +409,10 @@ bool LlamaEngine::loadModel(const QString& modelPath, int gpuLayers,
     if (llama_model_get_vocab(model.get()) == nullptr)
     {
         impl_->devices.clear();
+        impl_->tensorSplit.clear();
+        impl_->activeDeviceIds.clear();
         impl_->deviceDescription = QStringLiteral("CPU");
+        impl_->splitMode = QStringLiteral("cpu");
         errorMessage = QStringLiteral("The loaded model has no vocabulary.");
         return false;
     }
@@ -330,8 +431,11 @@ void LlamaEngine::unloadModel()
 {
     impl_->model.reset();
     impl_->devices.clear();
+    impl_->tensorSplit.clear();
+    impl_->activeDeviceIds.clear();
     impl_->modelPath.clear();
     impl_->deviceDescription = QStringLiteral("CPU");
+    impl_->splitMode = QStringLiteral("cpu");
 }
 
 bool LlamaEngine::isModelLoaded() const
@@ -347,6 +451,50 @@ QString LlamaEngine::modelPath() const
 QString LlamaEngine::deviceDescription() const
 {
     return impl_->deviceDescription;
+}
+
+QString LlamaEngine::splitMode() const
+{
+    return impl_->splitMode;
+}
+
+QList<inference::ComputeDevice> LlamaEngine::availableDevices() const
+{
+    QList<inference::ComputeDevice> devices;
+    for (std::size_t index = 0; index < ggml_backend_dev_count(); ++index)
+    {
+        auto* device = ggml_backend_dev_get(index);
+        if (ggml_backend_dev_type(device) != GGML_BACKEND_DEVICE_TYPE_GPU)
+            continue;
+        ggml_backend_dev_props properties{};
+        ggml_backend_dev_get_props(device, &properties);
+        const auto backendName =
+            QString::fromUtf8(ggml_backend_dev_name(device));
+        const auto hardwareId = properties.device_id == nullptr
+                                    ? QString{}
+                                    : QString::fromUtf8(properties.device_id);
+        devices.append(
+            {hardwareId.isEmpty() ? backendName : hardwareId, backendName,
+             QString::fromUtf8(ggml_backend_dev_description(device)),
+             hardwareId, static_cast<quint64>(properties.memory_free),
+             static_cast<quint64>(properties.memory_total)});
+    }
+    return devices;
+}
+
+QList<inference::ComputeDevice> LlamaEngine::activeDevices() const
+{
+    QList<inference::ComputeDevice> result;
+    const auto available = availableDevices();
+    for (const auto& id : impl_->activeDeviceIds)
+    {
+        const auto match =
+            std::find_if(available.cbegin(), available.cend(),
+                         [&id](const inference::ComputeDevice& device)
+                         { return device.id == id; });
+        if (match != available.cend()) result.append(*match);
+    }
+    return result;
 }
 
 bool LlamaEngine::generate(const WorkerOptions& options,

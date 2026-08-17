@@ -24,6 +24,7 @@ class WorkerClientTest final : public QObject
     void startsHandshakesAndStopsWorker();
     void reportsModelLoadFailure();
     void storesMcpServerConfiguration();
+    void storesModelLoadOptions();
 };
 
 void WorkerClientTest::storesLastModelPathInExplicitIniFile()
@@ -102,6 +103,8 @@ void WorkerClientTest::startsHandshakesAndStopsWorker()
 {
     infrastructure::WorkerClient client;
     QSignalSpy errorSpy(&client, &infrastructure::WorkerClient::errorOccurred);
+    QSignalSpy devicesSpy(&client,
+                          &infrastructure::WorkerClient::computeDevicesChanged);
 
     client.start();
     QTRY_COMPARE_WITH_TIMEOUT(client.state(),
@@ -109,6 +112,15 @@ void WorkerClientTest::startsHandshakesAndStopsWorker()
     QCOMPARE(errorSpy.count(), 0);
     QCOMPARE(client.capabilities().structuredGeneration, true);
     QCOMPARE(client.capabilities().grammar, true);
+    QCOMPARE(client.capabilities().gpuDeviceDiscovery, true);
+    QCOMPARE(client.capabilities().multiGpuLayerSplit, true);
+    QTRY_COMPARE_WITH_TIMEOUT(devicesSpy.count(), 1, 5000);
+    for (const auto& device : client.computeDevices())
+    {
+        QVERIFY(!device.id.isEmpty());
+        QVERIFY(!device.backendName.isEmpty());
+        QVERIFY(device.freeMemoryBytes <= device.totalMemoryBytes);
+    }
 
     client.stop();
     QTRY_COMPARE_WITH_TIMEOUT(
@@ -162,6 +174,35 @@ void WorkerClientTest::storesMcpServerConfiguration()
     QCOMPARE(settings.alwaysAllowedMcpTools(),
              QStringList({QStringLiteral("filesystem.create_directory"),
                           QStringLiteral("filesystem.write_file")}));
+}
+
+void WorkerClientTest::storesModelLoadOptions()
+{
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const auto settingsPath =
+        QDir(directory.path()).filePath(QStringLiteral("qtLLM.ini"));
+    infrastructure::SettingsStore settings(settingsPath);
+    QCOMPARE(settings.modelLoadOptions(), inference::ModelLoadOptions{});
+
+    inference::ModelLoadOptions options;
+    options.gpuLayers = 28;
+    options.placementMode = inference::DevicePlacementMode::Custom;
+    options.devices = {{QStringLiteral("0000:02:00.0"), 1.0F},
+                       {QStringLiteral("0000:83:00.0"), 1.5F}};
+    QVERIFY(settings.setModelLoadOptions(options));
+
+    const infrastructure::SettingsStore reloaded(settingsPath);
+    QCOMPARE(reloaded.modelLoadOptions(), options);
+
+    options.devices.removeLast();
+    QVERIFY(!settings.setModelLoadOptions(options));
+    QCOMPARE(reloaded.modelLoadOptions(),
+             (inference::ModelLoadOptions{
+                 28,
+                 inference::DevicePlacementMode::Custom,
+                 {{QStringLiteral("0000:02:00.0"), 1.0F},
+                  {QStringLiteral("0000:83:00.0"), 1.5F}}}));
 }
 }  // namespace qtllm::tests
 

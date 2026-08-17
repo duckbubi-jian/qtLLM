@@ -25,6 +25,8 @@ class WorkerProcessTest final : public QObject
     void rejectsGenerationBeforeModelLoad();
     void rejectsInvalidMessageHistory();
     void rejectsInvalidResponseMode();
+    void rejectsInvalidDevicePlacement();
+    void listsComputeDevices();
     void reportsIdleStatus();
     void modelLifecycle();
     void cleanupTestCase();
@@ -85,6 +87,10 @@ void WorkerProcessTest::hello()
         capabilities.value(QStringLiteral("structuredGeneration")).toBool(),
         true);
     QCOMPARE(capabilities.value(QStringLiteral("grammar")).toBool(), true);
+    QCOMPARE(capabilities.value(QStringLiteral("gpuDeviceDiscovery")).toBool(),
+             true);
+    QCOMPARE(capabilities.value(QStringLiteral("multiGpuLayerSplit")).toBool(),
+             true);
 }
 
 void WorkerProcessTest::rejectsInvalidJson()
@@ -168,6 +174,55 @@ void WorkerProcessTest::rejectsInvalidResponseMode()
              qPrintable(errorMessage));
 }
 
+void WorkerProcessTest::rejectsInvalidDevicePlacement()
+{
+    QString errorMessage;
+    QVERIFY2(send(protocol::makeMessage(
+                      QStringLiteral("invalid-placement"),
+                      QString::fromLatin1(protocol::message_type::loadModel),
+                      {{QStringLiteral("modelPath"),
+                        QStringLiteral("C:/invalid.gguf")},
+                       {QStringLiteral("placement"),
+                        QJsonObject{
+                            {QStringLiteral("mode"), QStringLiteral("single")},
+                            {QStringLiteral("deviceIds"), QJsonArray{}},
+                            {QStringLiteral("weights"), QJsonArray{}}}}}),
+                  errorMessage),
+             qPrintable(errorMessage));
+    QVERIFY2(expectError(QStringLiteral("invalid-placement"),
+                         QStringLiteral("invalid_payload"), errorMessage),
+             qPrintable(errorMessage));
+}
+
+void WorkerProcessTest::listsComputeDevices()
+{
+    QString errorMessage;
+    QVERIFY2(send(protocol::makeMessage(
+                      QStringLiteral("devices-1"),
+                      QString::fromLatin1(protocol::message_type::listDevices)),
+                  errorMessage),
+             qPrintable(errorMessage));
+
+    protocol::Message response;
+    QVERIFY2(expect(QStringLiteral("devices-1"),
+                    QString::fromLatin1(protocol::message_type::devices),
+                    response, errorMessage),
+             qPrintable(errorMessage));
+    QVERIFY(response.payload.value(QStringLiteral("devices")).isArray());
+    const auto devices =
+        response.payload.value(QStringLiteral("devices")).toArray();
+    for (const auto& value : devices)
+    {
+        QVERIFY(value.isObject());
+        const auto device = value.toObject();
+        QVERIFY(!device.value(QStringLiteral("id")).toString().isEmpty());
+        QVERIFY(
+            !device.value(QStringLiteral("backendName")).toString().isEmpty());
+        QVERIFY(device.value(QStringLiteral("freeMemoryBytes")).toDouble() <=
+                device.value(QStringLiteral("totalMemoryBytes")).toDouble());
+    }
+}
+
 void WorkerProcessTest::reportsIdleStatus()
 {
     QString errorMessage;
@@ -186,6 +241,9 @@ void WorkerProcessTest::reportsIdleStatus()
              false);
     QCOMPARE(response.payload.value(QStringLiteral("generating")).toBool(),
              false);
+    QCOMPARE(response.payload.value(QStringLiteral("splitMode")).toString(),
+             QStringLiteral("cpu"));
+    QVERIFY(response.payload.value(QStringLiteral("devices")).isArray());
 }
 
 void WorkerProcessTest::modelLifecycle()
@@ -219,6 +277,26 @@ void WorkerProcessTest::modelLifecycle()
              qPrintable(errorMessage));
     QVERIFY(
         !response.payload.value(QStringLiteral("device")).toString().isEmpty());
+    QVERIFY(response.payload.value(QStringLiteral("devices")).isArray());
+    const auto activeDevices =
+        response.payload.value(QStringLiteral("devices")).toArray();
+    const auto splitMode =
+        response.payload.value(QStringLiteral("splitMode")).toString();
+    QVERIFY(splitMode == QLatin1String("cpu") ||
+            splitMode == QLatin1String("single") ||
+            splitMode == QLatin1String("layer"));
+    bool validExpectedGpuCount = false;
+    const auto expectedGpuCount = qEnvironmentVariableIntValue(
+        "QTLLM_TEST_EXPECTED_GPU_COUNT", &validExpectedGpuCount);
+    if (validExpectedGpuCount)
+    {
+        QVERIFY2(expectedGpuCount >= 0,
+                 "QTLLM_TEST_EXPECTED_GPU_COUNT must not be negative.");
+        QCOMPARE(activeDevices.size(), expectedGpuCount);
+        QCOMPARE(splitMode, expectedGpuCount > 1    ? QStringLiteral("layer")
+                            : expectedGpuCount == 1 ? QStringLiteral("single")
+                                                    : QStringLiteral("cpu"));
+    }
     const auto expectedDevice =
         QString::fromLocal8Bit(qgetenv("QTLLM_TEST_DEVICE_CONTAINS"));
     if (!expectedDevice.isEmpty())

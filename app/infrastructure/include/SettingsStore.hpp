@@ -1,5 +1,6 @@
 #pragma once
 
+#include "ComputeDevice.hpp"
 #include "McpServerProcess.hpp"
 
 #include <QList>
@@ -21,6 +22,8 @@ class SettingsStore final
     bool setWorkspacePath(const QString& workspacePath) const;
     [[nodiscard]] bool agentModeEnabled() const;
     bool setAgentModeEnabled(bool enabled) const;
+    [[nodiscard]] inference::ModelLoadOptions modelLoadOptions() const;
+    bool setModelLoadOptions(const inference::ModelLoadOptions& options) const;
     [[nodiscard]] bool isModelFileVerified(const QString& modelPath,
                                            qint64 expectedSize,
                                            const QString& expectedSha256) const;

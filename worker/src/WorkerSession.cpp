@@ -3,6 +3,7 @@
 #include "WorkerOptions.hpp"
 
 #include "AgentAction.hpp"
+#include "ComputeProtocol.hpp"
 #include "Logging.hpp"
 #include "ProtocolVersion.hpp"
 #include "ResponseMode.hpp"
@@ -257,6 +258,8 @@ void WorkerSession::dispatch(const protocol::Message& message)
 {
     if (message.type == QLatin1String(protocol::message_type::hello))
         handleHello(message);
+    else if (message.type == QLatin1String(protocol::message_type::listDevices))
+        handleListDevices(message);
     else if (message.type == QLatin1String(protocol::message_type::loadModel))
         handleLoadModel(message);
     else if (message.type == QLatin1String(protocol::message_type::unloadModel))
@@ -284,7 +287,17 @@ void WorkerSession::handleHello(const protocol::Message& message)
          {QStringLiteral("protocolVersion"), protocol::version},
          {QStringLiteral("capabilities"),
           QJsonObject{{QStringLiteral("structuredGeneration"), true},
-                      {QStringLiteral("grammar"), true}}}}));
+                      {QStringLiteral("grammar"), true},
+                      {QStringLiteral("gpuDeviceDiscovery"), true},
+                      {QStringLiteral("multiGpuLayerSplit"), true}}}}));
+}
+
+void WorkerSession::handleListDevices(const protocol::Message& message)
+{
+    send(protocol::makeMessage(
+        message.requestId, QString::fromLatin1(protocol::message_type::devices),
+        {{QStringLiteral("devices"),
+          protocol::serializeComputeDevices(engine_.availableDevices())}}));
 }
 
 void WorkerSession::handleLoadModel(const protocol::Message& message)
@@ -298,11 +311,11 @@ void WorkerSession::handleLoadModel(const protocol::Message& message)
 
     QString modelPath;
     QString errorMessage;
-    int gpuLayers = -1;
+    inference::ModelLoadOptions loadOptions;
     if (!readString(message.payload, QStringLiteral("modelPath"), modelPath,
                     errorMessage, true) ||
-        !readInteger(message.payload, QStringLiteral("gpuLayers"), -1, 10'000,
-                     gpuLayers, errorMessage))
+        !protocol::parseModelLoadOptions(message.payload, loadOptions,
+                                         errorMessage))
     {
         sendError(message.requestId, QStringLiteral("invalid_payload"),
                   errorMessage);
@@ -318,10 +331,13 @@ void WorkerSession::handleLoadModel(const protocol::Message& message)
     }
 
     qint64 loadMilliseconds = 0;
-    logging::info(QStringLiteral("Worker loading model: %1; gpuLayers=%2")
+    logging::info(QStringLiteral("Worker loading model: %1; gpuLayers=%2; "
+                                 "placement=%3")
                       .arg(modelInfo.absoluteFilePath())
-                      .arg(gpuLayers));
-    if (!engine_.loadModel(modelInfo.absoluteFilePath(), gpuLayers,
+                      .arg(loadOptions.gpuLayers)
+                      .arg(inference::devicePlacementModeName(
+                          loadOptions.placementMode)));
+    if (!engine_.loadModel(modelInfo.absoluteFilePath(), loadOptions,
                            errorMessage, &loadMilliseconds))
     {
         sendError(message.requestId, QStringLiteral("model_load_failed"),
@@ -336,6 +352,9 @@ void WorkerSession::handleLoadModel(const protocol::Message& message)
         QString::fromLatin1(protocol::message_type::modelLoaded),
         {{QStringLiteral("modelPath"), engine_.modelPath()},
          {QStringLiteral("device"), engine_.deviceDescription()},
+         {QStringLiteral("splitMode"), engine_.splitMode()},
+         {QStringLiteral("devices"),
+          protocol::serializeComputeDevices(engine_.activeDevices())},
          {QStringLiteral("loadMilliseconds"), loadMilliseconds}}));
 }
 
@@ -514,6 +533,10 @@ void WorkerSession::sendStatus(const QString& requestId,
     QJsonObject payload{
         {QStringLiteral("modelLoaded"), engine_.isModelLoaded()},
         {QStringLiteral("modelPath"), engine_.modelPath()},
+        {QStringLiteral("device"), engine_.deviceDescription()},
+        {QStringLiteral("splitMode"), engine_.splitMode()},
+        {QStringLiteral("devices"),
+         protocol::serializeComputeDevices(engine_.activeDevices())},
         {QStringLiteral("generating"), generating_},
         {QStringLiteral("generationRequestId"), generationRequestId_}};
     for (auto item = additionalPayload.constBegin();

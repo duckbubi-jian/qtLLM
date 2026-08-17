@@ -110,7 +110,10 @@ ChatView::ChatView(QWidget* parent)
         style()->standardIcon(QStyle::SP_DialogResetButton));
     ui_->modelReloadAction->setIcon(
         style()->standardIcon(QStyle::SP_BrowserReload));
+    ui_->computeSettingsAction->setIcon(
+        style()->standardIcon(QStyle::SP_ComputerIcon));
     ui_->modelPathLink->addAction(ui_->modelReloadAction);
+    ui_->modelPathLink->addAction(ui_->computeSettingsAction);
     ui_->workspacePathLink->addAction(ui_->workspaceChangeAction);
     ui_->transcriptTabs->addAction(ui_->clearConversationAction);
     ui_->transcriptTabs->tabBar()->setContextMenuPolicy(Qt::ActionsContextMenu);
@@ -139,6 +142,8 @@ ChatView::ChatView(QWidget* parent)
 
     connect(ui_->modelReloadAction, &QAction::triggered, this,
             &ChatView::modelFolderRequested);
+    connect(ui_->computeSettingsAction, &QAction::triggered, this,
+            &ChatView::computeSettingsRequested);
     connect(ui_->guideSelectModelButton, &QPushButton::clicked, this,
             &ChatView::modelFolderRequested);
     connect(ui_->modelPathLink, &QLabel::linkActivated, this,
@@ -220,6 +225,11 @@ void ChatView::setModelControlsEnabled(bool selectionEnabled, bool loadEnabled)
     ui_->modelReloadAction->setEnabled(selectionEnabled);
     ui_->guideSelectModelButton->setEnabled(selectionEnabled);
     ui_->guideLoadModelButton->setEnabled(loadEnabled);
+}
+
+void ChatView::setComputeSettingsEnabled(bool enabled)
+{
+    ui_->computeSettingsAction->setEnabled(enabled);
 }
 
 void ChatView::setWorkspaceControlsEnabled(bool enabled)

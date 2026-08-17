@@ -466,6 +466,14 @@
     <string>Choose another model package folder</string>
    </property>
   </action>
+  <action name="computeSettingsAction">
+   <property name="text">
+    <string>Compute settings</string>
+   </property>
+   <property name="toolTip">
+    <string>Configure CPU and GPU placement</string>
+   </property>
+  </action>
   <action name="workspaceChangeAction">
    <property name="text">
     <string>Change workspace folder</string>

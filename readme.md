@@ -98,10 +98,14 @@ so the application and its dependencies cannot silently use different build
 baselines.
 
 The CUDA runtime is a separate artifact from the CPU runtime. It targets
-compute capability 8.6 and the worker selects only GPU 0 at runtime; a
-machine without a usable CUDA device falls back to CPU. Model weights remain
-outside the repository and are packaged separately, one logical model per
-model package. The recommended single-card model is
+compute capability 8.6. Automatic placement uses every available CUDA GPU and
+lets llama.cpp split layers according to free VRAM; a machine without a usable
+CUDA device falls back to CPU. The model menu's **Compute settings** command
+can instead select CPU-only placement, one GPU by PCI ID, or a custom weighted
+layer split. CPU-only placement in the CUDA runtime is a runtime override; it
+does not replace the separate CPU artifact, which remains free of CUDA
+dependencies. Model weights remain outside the repository and are packaged
+separately, one logical model per model package. The recommended model is
 `DeepSeek-R1-Distill-Qwen-7B Q4_K_M` (roughly 4-5 GB).
 
 The GPU runtime includes qtLLM's `ggml-cuda.dll`, but deliberately does not
@@ -134,6 +138,7 @@ Set `QTLLM_TEST_MODEL` to a GGUF file or a model package directory containing
 `model.gguf` to include the real-model worker lifecycle test.
 
 For an explicit CUDA integration test, also set
-`QTLLM_TEST_GPU_LAYERS=-1` and `QTLLM_TEST_DEVICE_CONTAINS="RTX 3090"` before
-running the CUDA test preset. The test then fails unless the worker reports the
-expected GPU.
+`QTLLM_TEST_GPU_LAYERS=-1`, `QTLLM_TEST_DEVICE_CONTAINS="layer split"`, and
+`QTLLM_TEST_EXPECTED_GPU_COUNT=2` before running the CUDA worker lifecycle
+test. The test then fails unless the worker reports two active GPUs and layer
+split placement.

@@ -57,6 +57,7 @@ class ChatView final : public QWidget
                               ModelBadgeState state = ModelBadgeState::Neutral);
     void setWorkspacePresentation(const QString& workspacePath);
     void setModelControlsEnabled(bool selectionEnabled, bool loadEnabled);
+    void setComputeSettingsEnabled(bool enabled);
     void setWorkspaceControlsEnabled(bool enabled);
     void setPromptEnabled(bool enabled);
     void setClearEnabled(bool enabled);
@@ -72,6 +73,7 @@ class ChatView final : public QWidget
     void modelFolderRequested();
     void modelLoadRequested();
     void modelLocationRequested();
+    void computeSettingsRequested();
     void workspaceFolderRequested();
     void workspaceOpenRequested();
     void primaryActionRequested();

@@ -118,8 +118,8 @@ int main(int argc, char* argv[])
 
     qtllm::worker::LlamaEngine engine;
     qint64 loadMilliseconds = 0;
-    if (!engine.loadModel(options.modelPath, options.gpuLayers, errorMessage,
-                          &loadMilliseconds))
+    if (!engine.loadModel(options.modelPath, options.modelLoadOptions,
+                          errorMessage, &loadMilliseconds))
     {
         QTextStream(stderr) << "error: " << errorMessage << Qt::endl;
         return 1;

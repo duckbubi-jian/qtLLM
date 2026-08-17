@@ -34,6 +34,7 @@ class MainWindow final : public QMainWindow
    private slots:
     void selectModelPackage();
     void openModelDirectory();
+    void showComputeSettings();
     void selectWorkspaceDirectory();
     void openWorkspaceDirectory();
     void addMcpServer();
@@ -131,6 +132,7 @@ class MainWindow final : public QMainWindow
     QSet<QString> pendingMcpRestarts_;
     models::ModelSelection pendingModelSelection_;
     models::ModelSelection activeModelSelection_;
+    inference::ModelLoadOptions modelLoadOptions_;
     bool verifyingModelPackage_ = false;
     int modelVerificationPercent_ = -1;
     bool replacingModel_ = false;

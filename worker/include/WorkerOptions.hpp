@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ChatMessage.hpp"
+#include "ComputeDevice.hpp"
 #include "InferenceDefaults.hpp"
 #include "ResponseMode.hpp"
 
@@ -24,7 +25,7 @@ struct WorkerOptions
     int contextSize = inference::defaultContextSize;
     int maxTokens = inference::defaultMaxOutputTokens;
     int threads = 0;
-    int gpuLayers = -1;
+    inference::ModelLoadOptions modelLoadOptions;
     int topK = 40;
     float topP = 0.95F;
     float temperature = 0.6F;

@@ -1,5 +1,6 @@
 #include "SettingsStore.hpp"
 
+#include "ComputeProtocol.hpp"
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
@@ -74,6 +75,42 @@ bool SettingsStore::setAgentModeEnabled(bool enabled) const
 {
     QSettings settings(filePath_, QSettings::IniFormat);
     settings.setValue(QStringLiteral("chat/agentMode"), enabled);
+    settings.sync();
+    return settings.status() == QSettings::NoError;
+}
+
+inference::ModelLoadOptions SettingsStore::modelLoadOptions() const
+{
+    const QSettings settings(filePath_, QSettings::IniFormat);
+    const auto serialized =
+        settings.value(QStringLiteral("compute/modelLoadOptions"))
+            .toString()
+            .toUtf8();
+    if (serialized.isEmpty()) return {};
+
+    QJsonParseError parseError;
+    const auto document = QJsonDocument::fromJson(serialized, &parseError);
+    inference::ModelLoadOptions options;
+    QString errorMessage;
+    if (parseError.error != QJsonParseError::NoError || !document.isObject() ||
+        !protocol::parseModelLoadOptions(document.object(), options,
+                                         errorMessage))
+        return {};
+    return options;
+}
+
+bool SettingsStore::setModelLoadOptions(
+    const inference::ModelLoadOptions& options) const
+{
+    QString errorMessage;
+    if (!inference::validateModelLoadOptions(options, errorMessage))
+        return false;
+    QSettings settings(filePath_, QSettings::IniFormat);
+    settings.setValue(
+        QStringLiteral("compute/modelLoadOptions"),
+        QString::fromUtf8(
+            QJsonDocument(protocol::serializeModelLoadOptions(options))
+                .toJson(QJsonDocument::Compact)));
     settings.sync();
     return settings.status() == QSettings::NoError;
 }

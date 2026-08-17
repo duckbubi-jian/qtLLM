@@ -3,6 +3,7 @@
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QFileInfo>
+#include <QStringList>
 #include <QThread>
 
 #include <cmath>
@@ -47,6 +48,50 @@ bool parseFloat(const QCommandLineParser& parser, const QString& optionName,
     destination = parsed;
     return true;
 }
+
+bool parseModelPlacement(const QCommandLineParser& parser,
+                         inference::ModelLoadOptions& options,
+                         QString& errorMessage)
+{
+    if (!inference::parseDevicePlacementMode(
+            parser.value(QStringLiteral("gpu-mode")), options.placementMode))
+    {
+        errorMessage = QStringLiteral("Invalid --gpu-mode value: %1")
+                           .arg(parser.value(QStringLiteral("gpu-mode")));
+        return false;
+    }
+
+    auto deviceIds = parser.value(QStringLiteral("gpu-devices"))
+                         .split(QLatin1Char(','), Qt::SkipEmptyParts);
+    for (auto& id : deviceIds)
+        id = id.trimmed();
+    const auto weightValues = parser.value(QStringLiteral("tensor-split"))
+                                  .split(QLatin1Char(','), Qt::SkipEmptyParts);
+    if (!weightValues.isEmpty() && weightValues.size() != deviceIds.size())
+    {
+        errorMessage = QStringLiteral(
+            "--tensor-split must contain one weight per --gpu-devices entry.");
+        return false;
+    }
+    for (qsizetype index = 0; index < deviceIds.size(); ++index)
+    {
+        auto weight = 1.0F;
+        if (!weightValues.isEmpty())
+        {
+            bool ok = false;
+            weight = weightValues.at(index).trimmed().toFloat(&ok);
+            if (!ok || !std::isfinite(weight) || weight <= 0.0F)
+            {
+                errorMessage =
+                    QStringLiteral("Invalid --tensor-split value: %1")
+                        .arg(weightValues.at(index));
+                return false;
+            }
+        }
+        options.devices.append({deviceIds.at(index), weight});
+    }
+    return inference::validateModelLoadOptions(options, errorMessage);
+}
 }  // namespace
 
 void configureParser(QCommandLineParser& parser)
@@ -85,6 +130,18 @@ void configureParser(QCommandLineParser& parser)
          QStringLiteral(
              "Layers to offload; -1 uses all layers when a GPU is available."),
          QStringLiteral("count"), QStringLiteral("-1")});
+    parser.addOption(
+        {QStringLiteral("gpu-mode"),
+         QStringLiteral("GPU placement: auto, cpu, single, or custom."),
+         QStringLiteral("mode"), QStringLiteral("auto")});
+    parser.addOption(
+        {QStringLiteral("gpu-devices"),
+         QStringLiteral("Comma-separated GPU IDs for single or custom mode."),
+         QStringLiteral("ids")});
+    parser.addOption(
+        {QStringLiteral("tensor-split"),
+         QStringLiteral("Comma-separated positive custom GPU weights."),
+         QStringLiteral("weights")});
     parser.addOption({QStringLiteral("temperature"),
                       QStringLiteral("Sampling temperature."),
                       QStringLiteral("value"), QStringLiteral("0.6")});
@@ -133,7 +190,7 @@ bool parseOptions(const QCommandLineParser& parser, WorkerOptions& options,
         !parseInteger(parser, QStringLiteral("threads"), 0, 1024,
                       options.threads, errorMessage) ||
         !parseInteger(parser, QStringLiteral("gpu-layers"), -1, 10'000,
-                      options.gpuLayers, errorMessage) ||
+                      options.modelLoadOptions.gpuLayers, errorMessage) ||
         !parseInteger(parser, QStringLiteral("top-k"), 0, 1'000'000,
                       options.topK, errorMessage) ||
         !parseInteger(parser, QStringLiteral("seed"), std::uint32_t{0},
@@ -148,6 +205,9 @@ bool parseOptions(const QCommandLineParser& parser, WorkerOptions& options,
     {
         return false;
     }
+
+    if (!parseModelPlacement(parser, options.modelLoadOptions, errorMessage))
+        return false;
 
     if (options.threads == 0)
     {

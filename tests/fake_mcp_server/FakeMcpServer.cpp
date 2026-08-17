@@ -38,6 +38,13 @@ int main(int argc, char* argv[])
     const auto arguments = application.arguments();
     const auto invalid = arguments.contains(QStringLiteral("--invalid"));
     const auto exitImmediately = arguments.contains(QStringLiteral("--exit"));
+    const auto noToolsCapability =
+        arguments.contains(QStringLiteral("--no-tools-capability"));
+    auto protocolVersion = QStringLiteral("2024-11-05");
+    const auto protocolVersionPrefix = QStringLiteral("--protocol-version=");
+    for (const auto& argument : arguments)
+        if (argument.startsWith(protocolVersionPrefix))
+            protocolVersion = argument.mid(protocolVersionPrefix.size());
 
     QFile input;
     QFile output;
@@ -68,11 +75,14 @@ int main(int argc, char* argv[])
         if (method.startsWith(QStringLiteral("notifications/"))) continue;
         if (method == QStringLiteral("initialize"))
         {
+            const auto capabilities =
+                noToolsCapability
+                    ? QJsonObject{}
+                    : QJsonObject{{QStringLiteral("tools"), QJsonObject{}}};
             writeResponse(
                 output, id,
-                {{QStringLiteral("protocolVersion"),
-                  QStringLiteral("2024-11-05")},
-                 {QStringLiteral("capabilities"), QJsonObject{}},
+                {{QStringLiteral("protocolVersion"), protocolVersion},
+                 {QStringLiteral("capabilities"), capabilities},
                  {QStringLiteral("serverInfo"),
                   QJsonObject{
                       {QStringLiteral("name"), QStringLiteral("fake")},

@@ -1,5 +1,6 @@
 #pragma once
 
+#include "McpProtocol.hpp"
 #include "McpServerProcess.hpp"
 #include "StdioMcpTransport.hpp"
 #include "ToolDefinition.hpp"
@@ -71,7 +72,7 @@ class McpClientManager final : public QObject
     {
         QSharedPointer<StdioMcpTransport> transport;
         QList<agent::ToolDefinition> tools;
-        QString instructions;
+        McpInitializeResult initialization;
         bool initialized = false;
     };
 

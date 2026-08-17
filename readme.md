@@ -29,7 +29,7 @@ Qt-to-worker protocol and its verification steps are documented in
 ## Agent and MCP
 
 The conversation has one input path for normal answers and tool-assisted work.
-Internally, every request uses a local, bounded execution loop. The model can
+Internally, every request uses a local, controlled execution loop. The model can
 propose only `call_tool` or `final` JSON actions; Qt validates the tool name and
 arguments and applies the local policy. Calls that require approval appear as
 inline conversation cards with a risk explanation, redacted arguments, and
@@ -54,6 +54,12 @@ called. Unknown tools, invalid arguments, MCP request timeouts, and late
 responses are rejected or ignored. Agent runs have no tool-call count limit.
 After two minutes the UI shows a warning, but the run continues until it
 finishes or the user selects Stop.
+
+The incremental plan for protocol conformance, multi-server isolation, richer
+MCP capabilities, additional transports, and security boundaries is documented
+in [the MCP Host improvement plan](docs/mcp-host-improvement-plan.md). The
+currently implemented protocol surface is listed in the
+[MCP compatibility matrix](docs/mcp-protocol-compatibility.md).
 
 ## Diagnostics
 

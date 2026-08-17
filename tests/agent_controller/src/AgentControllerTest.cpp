@@ -1,5 +1,7 @@
 #include "AgentController.hpp"
+#include "ToolCatalogBuilder.hpp"
 
+#include <QJsonDocument>
 #include <QSignalSpy>
 #include <QtTest>
 
@@ -19,6 +21,8 @@ class AgentControllerTest final : public QObject
     void emptyToolPromptForbidsToolCalls();
     void casualPromptPrefersFinalWithoutTools();
     void includesRuntimeContextInPrompt();
+    void toolCatalogIsStableAndValid();
+    void toolCatalogOmitsWholeDefinitions();
     void rejectsUnchangedRetryAfterToolError();
     void rejectsRepeatedSuccessfulToolCall();
     void rejectsAlternatingCompletedToolCycle();
@@ -37,6 +41,81 @@ agent::ToolDefinition echoTool()
             QStringLiteral("echo"),
             QStringLiteral("Echo values"),
             {{QStringLiteral("type"), QStringLiteral("object")}}};
+}
+
+agent::ToolDefinition namedTool(const QString& name, const QString& description)
+{
+    return {QStringLiteral("fake.") + name,
+            QStringLiteral("fake"),
+            name,
+            description,
+            {{QStringLiteral("type"), QStringLiteral("object")},
+             {QStringLiteral("properties"),
+              QJsonObject{{QStringLiteral("value"),
+                           QJsonObject{{QStringLiteral("type"),
+                                        QStringLiteral("string")}}}}}}};
+}
+
+void AgentControllerTest::toolCatalogIsStableAndValid()
+{
+    const auto alpha =
+        namedTool(QStringLiteral("alpha"), QStringLiteral("First tool"));
+    const auto middle =
+        namedTool(QStringLiteral("middle"), QStringLiteral("Middle tool"));
+    const auto zeta =
+        namedTool(QStringLiteral("zeta"), QStringLiteral("Last tool"));
+    const auto first =
+        application::ToolCatalogBuilder::build({zeta, alpha, middle}, 4'096);
+    const auto second =
+        application::ToolCatalogBuilder::build({middle, zeta, alpha}, 4'096);
+
+    QCOMPARE(first.json, second.json);
+    QCOMPARE(first.includedToolCount, 3);
+    QCOMPARE(first.omittedToolCount, 0);
+    QVERIFY(first.json.size() <= 4'096);
+
+    QJsonParseError error;
+    const auto document = QJsonDocument::fromJson(first.json, &error);
+    QCOMPARE(error.error, QJsonParseError::NoError);
+    QVERIFY(document.isArray());
+    const auto definitions = document.array();
+    QCOMPARE(definitions.size(), 3);
+    QCOMPARE(definitions.at(0).toObject().value(QStringLiteral("name")),
+             QJsonValue(QStringLiteral("fake.alpha")));
+    QCOMPARE(definitions.at(1).toObject().value(QStringLiteral("name")),
+             QJsonValue(QStringLiteral("fake.middle")));
+    QCOMPARE(definitions.at(2).toObject().value(QStringLiteral("name")),
+             QJsonValue(QStringLiteral("fake.zeta")));
+    QCOMPARE(definitions.at(0)
+                 .toObject()
+                 .value(QStringLiteral("inputSchema"))
+                 .toObject(),
+             alpha.inputSchema);
+}
+
+void AgentControllerTest::toolCatalogOmitsWholeDefinitions()
+{
+    const auto alpha =
+        namedTool(QStringLiteral("alpha"), QStringLiteral("Small A"));
+    const auto oversized =
+        namedTool(QStringLiteral("middle"), QString(8'192, QLatin1Char('x')));
+    const auto zeta =
+        namedTool(QStringLiteral("zeta"), QStringLiteral("Small Z"));
+    const auto expected =
+        application::ToolCatalogBuilder::build({alpha, zeta}, 4'096);
+    const auto actual = application::ToolCatalogBuilder::build(
+        {zeta, oversized, alpha}, expected.json.size());
+
+    QCOMPARE(actual.json, expected.json);
+    QCOMPARE(actual.includedToolCount, 2);
+    QCOMPARE(actual.omittedToolCount, 1);
+    QVERIFY(actual.json.size() <= expected.json.size());
+    QVERIFY(QJsonDocument::fromJson(actual.json).isArray());
+
+    const auto empty = application::ToolCatalogBuilder::build({oversized}, 32);
+    QCOMPARE(empty.json, QByteArrayLiteral("[]"));
+    QCOMPARE(empty.includedToolCount, 0);
+    QCOMPARE(empty.omittedToolCount, 1);
 }
 
 void AgentControllerTest::completesMultiStepToolRun()

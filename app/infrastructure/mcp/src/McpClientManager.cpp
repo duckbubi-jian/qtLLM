@@ -9,7 +9,6 @@ namespace qtllm::infrastructure::mcp
 {
 namespace
 {
-constexpr auto mcpProtocolVersion = "2024-11-05";
 constexpr auto clientName = "qtLLM";
 constexpr auto clientVersion = "0.2.0";
 constexpr qsizetype maximumServerInstructions = 4'096;
@@ -147,11 +146,11 @@ QString McpClientManager::agentInstructions() const
     {
         const auto server = servers_.constFind(serverId);
         if (server == servers_.constEnd() || !server->initialized ||
-            server->instructions.trimmed().isEmpty())
+            server->initialization.instructions.trimmed().isEmpty())
             continue;
         instructions.append(QStringLiteral("%1: %2").arg(
-            serverId,
-            server->instructions.trimmed().left(maximumServerInstructions)));
+            serverId, server->initialization.instructions.trimmed().left(
+                          maximumServerInstructions)));
     }
     return instructions.join(QLatin1Char('\n'))
         .left(maximumCombinedInstructions);
@@ -189,8 +188,7 @@ QString McpClientManager::initialize(const QString& serverId)
     if (iterator->initialized) return {};
     const auto requestId = iterator->transport->request(
         QStringLiteral("initialize"),
-        {{QStringLiteral("protocolVersion"),
-          QString::fromLatin1(mcpProtocolVersion)},
+        {{QStringLiteral("protocolVersion"), latestSupportedProtocolVersion()},
          {QStringLiteral("capabilities"), QJsonObject{}},
          {QStringLiteral("clientInfo"),
           QJsonObject{{QStringLiteral("name"), QString::fromLatin1(clientName)},
@@ -211,6 +209,10 @@ QString McpClientManager::listTools(const QString& serverId)
     if (!iterator->initialized)
         return invalidRequest(serverId, QStringLiteral("tools/list"),
                               QStringLiteral("MCP server is not initialized."));
+    if (!iterator->initialization.capabilities.tools)
+        return invalidRequest(
+            serverId, QStringLiteral("tools/list"),
+            QStringLiteral("MCP server did not declare the Tools capability."));
     const auto requestId = iterator->transport->request(
         QStringLiteral("tools/list"), {},
         iterator->transport->config().requestTimeoutMs);
@@ -236,6 +238,10 @@ QString McpClientManager::callTool(const QString& qualifiedToolName,
     if (!iterator->initialized)
         return invalidRequest(serverId, QStringLiteral("tools/call"),
                               QStringLiteral("MCP server is not initialized."));
+    if (!iterator->initialization.capabilities.tools)
+        return invalidRequest(
+            serverId, QStringLiteral("tools/call"),
+            QStringLiteral("MCP server did not declare the Tools capability."));
 
     if (registry_.find(qualifiedToolName) == nullptr)
         return invalidRequest(serverId, QStringLiteral("tools/call"),
@@ -281,7 +287,10 @@ void McpClientManager::connectTransport(const QString& serverId,
             {
                 if (auto iterator = servers_.find(serverId);
                     iterator != servers_.end())
+                {
                     iterator->initialized = false;
+                    iterator->initialization = {};
+                }
                 emit serverStopped(serverId);
             });
     connect(transportPointer, &StdioMcpTransport::responseReceived, this,
@@ -322,24 +331,23 @@ void McpClientManager::handleResponse(const QString& serverId,
 
     if (pending.operation == Operation::Initialize)
     {
-        if (!result.value(QStringLiteral("protocolVersion")).isString())
+        McpInitializeResult initialization;
+        QString errorMessage;
+        if (!parseInitializeResult(result, initialization, errorMessage))
         {
-            handleFailure(
-                serverId, requestId, method, QStringLiteral("invalid_response"),
-                QStringLiteral("initialize result has no protocolVersion."));
+            handleFailure(serverId, requestId, method,
+                          QStringLiteral("invalid_response"), errorMessage);
             return;
         }
         if (auto server = servers_.find(serverId); server != servers_.end())
         {
             server->initialized = true;
-            server->instructions =
-                result.value(QStringLiteral("instructions")).toString();
+            server->initialization = initialization;
         }
         if (auto* serverTransport = transport(serverId))
             serverTransport->notify(
                 QStringLiteral("notifications/initialized"));
-        emit serverInitialized(
-            serverId, result.value(QStringLiteral("serverInfo")).toObject());
+        emit serverInitialized(serverId, initialization.serverInfo);
         return;
     }
     if (pending.operation == Operation::ListTools)

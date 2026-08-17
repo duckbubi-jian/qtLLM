@@ -1,5 +1,6 @@
 #include "BuiltInMcpServer.hpp"
 #include "McpClientManager.hpp"
+#include "McpProtocol.hpp"
 #include "ToolPolicy.hpp"
 
 #include <QCoreApplication>
@@ -18,6 +19,9 @@ class StdioMcpTransportTest final : public QObject
 
    private slots:
     void listsAndCallsTools();
+    void parsesInitializeCapabilities();
+    void rejectsUnsupportedProtocolVersion();
+    void rejectsUndeclaredToolsCapability();
     void propagatesRemoteErrors();
     void timesOutAndCanCancel();
     void validatesArgumentsBeforeCallingServer();
@@ -35,6 +39,116 @@ infrastructure::mcp::McpServerConfig testConfig()
     config.initializeTimeoutMs = 2'000;
     config.requestTimeoutMs = 2'000;
     return config;
+}
+
+void StdioMcpTransportTest::parsesInitializeCapabilities()
+{
+    QCOMPARE(infrastructure::mcp::latestSupportedProtocolVersion(),
+             QStringLiteral("2024-11-05"));
+    QVERIFY(infrastructure::mcp::isSupportedProtocolVersion(
+        QStringLiteral("2024-11-05")));
+    QVERIFY(!infrastructure::mcp::isSupportedProtocolVersion(
+        QStringLiteral("2099-01-01")));
+    QVERIFY(!infrastructure::mcp::isSupportedProtocolVersion(
+        QStringLiteral(" 2024-11-05")));
+
+    const QJsonObject capabilities{
+        {QStringLiteral("tools"),
+         QJsonObject{{QStringLiteral("listChanged"), true}}},
+        {QStringLiteral("resources"),
+         QJsonObject{{QStringLiteral("subscribe"), true},
+                     {QStringLiteral("listChanged"), true}}},
+        {QStringLiteral("prompts"),
+         QJsonObject{{QStringLiteral("listChanged"), true}}},
+        {QStringLiteral("logging"), QJsonObject{}},
+        {QStringLiteral("completions"), QJsonObject{}}};
+    const QJsonObject initialize{
+        {QStringLiteral("protocolVersion"), QStringLiteral("2024-11-05")},
+        {QStringLiteral("capabilities"), capabilities},
+        {QStringLiteral("serverInfo"),
+         QJsonObject{{QStringLiteral("name"), QStringLiteral("test")},
+                     {QStringLiteral("version"), QStringLiteral("1")}}},
+        {QStringLiteral("instructions"), QStringLiteral("Test guidance")}};
+
+    infrastructure::mcp::McpInitializeResult result;
+    QString errorMessage;
+    QVERIFY2(infrastructure::mcp::parseInitializeResult(initialize, result,
+                                                        errorMessage),
+             qPrintable(errorMessage));
+    QCOMPARE(result.protocolVersion, QStringLiteral("2024-11-05"));
+    QVERIFY(result.capabilities.tools);
+    QVERIFY(result.capabilities.toolsListChanged);
+    QVERIFY(result.capabilities.resources);
+    QVERIFY(result.capabilities.resourcesSubscribe);
+    QVERIFY(result.capabilities.resourcesListChanged);
+    QVERIFY(result.capabilities.prompts);
+    QVERIFY(result.capabilities.promptsListChanged);
+    QVERIFY(result.capabilities.logging);
+    QVERIFY(result.capabilities.completions);
+    QCOMPARE(result.capabilities.raw, capabilities);
+    QCOMPARE(result.instructions, QStringLiteral("Test guidance"));
+
+    auto invalid = initialize;
+    invalid.insert(QStringLiteral("capabilities"),
+                   QJsonObject{{QStringLiteral("tools"), true}});
+    QVERIFY(!infrastructure::mcp::parseInitializeResult(invalid, result,
+                                                        errorMessage));
+    QVERIFY(errorMessage.contains(QStringLiteral("tools")));
+}
+
+void StdioMcpTransportTest::rejectsUnsupportedProtocolVersion()
+{
+    auto config = testConfig();
+    config.arguments.append(QStringLiteral("--protocol-version=2099-01-01"));
+    infrastructure::mcp::McpClientManager manager;
+    QString errorMessage;
+    QVERIFY2(manager.addServer(config, errorMessage), qPrintable(errorMessage));
+    QSignalSpy startedSpy(
+        &manager, &infrastructure::mcp::McpClientManager::serverStarted);
+    QSignalSpy initializedSpy(
+        &manager, &infrastructure::mcp::McpClientManager::serverInitialized);
+    QSignalSpy failureSpy(
+        &manager, &infrastructure::mcp::McpClientManager::requestFailed);
+
+    manager.startServer(config.serverId);
+    QTRY_COMPARE_WITH_TIMEOUT(startedSpy.count(), 1, 2'000);
+    QVERIFY(!manager.initialize(config.serverId).isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(failureSpy.count(), 1, 2'000);
+    QCOMPARE(initializedSpy.count(), 0);
+    QCOMPARE(failureSpy.at(0).at(2).toString(), QStringLiteral("initialize"));
+    QCOMPARE(failureSpy.at(0).at(3).toString(),
+             QStringLiteral("invalid_response"));
+    QVERIFY(failureSpy.at(0).at(4).toString().contains(
+        QStringLiteral("Unsupported MCP protocol version")));
+    QVERIFY(manager.agentInstructions().isEmpty());
+}
+
+void StdioMcpTransportTest::rejectsUndeclaredToolsCapability()
+{
+    auto config = testConfig();
+    config.arguments.append(QStringLiteral("--no-tools-capability"));
+    infrastructure::mcp::McpClientManager manager;
+    QString errorMessage;
+    QVERIFY2(manager.addServer(config, errorMessage), qPrintable(errorMessage));
+    QSignalSpy startedSpy(
+        &manager, &infrastructure::mcp::McpClientManager::serverStarted);
+    QSignalSpy initializedSpy(
+        &manager, &infrastructure::mcp::McpClientManager::serverInitialized);
+    QSignalSpy failureSpy(
+        &manager, &infrastructure::mcp::McpClientManager::requestFailed);
+
+    manager.startServer(config.serverId);
+    QTRY_COMPARE_WITH_TIMEOUT(startedSpy.count(), 1, 2'000);
+    QVERIFY(!manager.initialize(config.serverId).isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(initializedSpy.count(), 1, 2'000);
+    QVERIFY(manager.listTools(config.serverId).isEmpty());
+    QCOMPARE(failureSpy.count(), 1);
+    QCOMPARE(failureSpy.at(0).at(2).toString(), QStringLiteral("tools/list"));
+    QCOMPARE(failureSpy.at(0).at(3).toString(),
+             QStringLiteral("invalid_request"));
+    QVERIFY(failureSpy.at(0).at(4).toString().contains(
+        QStringLiteral("did not declare the Tools capability")));
+    QVERIFY(manager.tools().isEmpty());
 }
 
 void StdioMcpTransportTest::listsAndCallsTools()

@@ -1,5 +1,10 @@
 # qtLLM 0.2.0 Agent MCP 开发计划
 
+> 状态说明（2026-08-17）：本文记录 0.2.0 的原始建设计划和阶段结果。
+> 当前默认运行行为以 `readme.md` 为准；0.2.0 之后的通用 MCP Host
+> 架构演进、能力路线和安全边界见
+> [MCP Host 改进工作计划](mcp-host-improvement-plan.md)。
+
 ## 1. 版本目标
 
 qtLLM 0.2.0 的目标是在现有本地聊天能力上增加受控的 Agent

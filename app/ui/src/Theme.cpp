@@ -297,6 +297,18 @@ QLabel#guideModelNameLabel {
     border-radius: 5px;
     font-family: "Cascadia Mono", "Consolas", monospace;
 }
+QLabel#guideComputeSummaryLabel {
+    color: #64748b;
+    padding: 0 2px;
+}
+QToolButton#guideComputeSettingsButton {
+    border: 1px solid transparent;
+    border-radius: 5px;
+}
+QToolButton#guideComputeSettingsButton:hover {
+    background: #e8eef5;
+    border-color: #cbd5e1;
+}
 QPushButton#guideLoadModelButton {
     min-width: 180px;
     min-height: 42px;

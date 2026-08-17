@@ -56,6 +56,7 @@ class ChatView final : public QWidget
                               const QString& modelInformation,
                               ModelBadgeState state = ModelBadgeState::Neutral);
     void setWorkspacePresentation(const QString& workspacePath);
+    void setComputePresentation(const QString& summary);
     void setModelControlsEnabled(bool selectionEnabled, bool loadEnabled);
     void setComputeSettingsEnabled(bool enabled);
     void setWorkspaceControlsEnabled(bool enabled);

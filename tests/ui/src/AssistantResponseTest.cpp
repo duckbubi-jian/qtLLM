@@ -70,6 +70,7 @@ class AssistantResponseTest final : public QObject
     void redactsSensitiveMcpDiagnostics();
     void validatesNewMcpServerConfiguration();
     void separatesModelLocationAndReloadActions();
+    void presentsComputeSettingsOnStartPage();
     void placesModelControlsInComposerAndMergesPrimaryAction();
     void configuresSingleAndCustomGpuPlacement();
 };
@@ -1127,6 +1128,36 @@ void AssistantResponseTest::separatesModelLocationAndReloadActions()
     reloadAction->trigger();
     QCOMPARE(locationRequested.count(), 1);
     QCOMPARE(folderRequested.count(), 1);
+}
+
+void AssistantResponseTest::presentsComputeSettingsOnStartPage()
+{
+    ui::ChatView view;
+    auto* summary =
+        view.findChild<QLabel*>(QStringLiteral("guideComputeSummaryLabel"));
+    auto* button = view.findChild<QToolButton*>(
+        QStringLiteral("guideComputeSettingsButton"));
+    auto* action =
+        view.findChild<QAction*>(QStringLiteral("computeSettingsAction"));
+    QVERIFY(summary != nullptr);
+    QVERIFY(button != nullptr);
+    QVERIFY(action != nullptr);
+    QVERIFY(!button->icon().isNull());
+    QVERIFY(!button->toolTip().isEmpty());
+    QVERIFY(!button->accessibleName().isEmpty());
+
+    view.setComputePresentation(QStringLiteral("Compute: Custom - 2 GPUs"));
+    QCOMPARE(summary->text(), QStringLiteral("Compute: Custom - 2 GPUs"));
+
+    view.setComputeSettingsEnabled(false);
+    QVERIFY(!button->isEnabled());
+    QVERIFY(!action->isEnabled());
+    view.setComputeSettingsEnabled(true);
+
+    QSignalSpy settingsRequested(&view,
+                                 &ui::ChatView::computeSettingsRequested);
+    button->click();
+    QCOMPARE(settingsRequested.count(), 1);
 }
 
 void AssistantResponseTest::

@@ -94,6 +94,7 @@ MainWindow::MainWindow(QWidget* parent)
 
     buildUi();
     modelLoadOptions_ = settingsStore_.modelLoadOptions();
+    updateComputePresentation();
     chatView_->setAgentModeSelected(settingsStore_.agentModeEnabled());
     modelInfoText_ = tr("Model not checked");
     setModelPath(settingsStore_.lastModelPath());
@@ -112,6 +113,9 @@ MainWindow::MainWindow(QWidget* parent)
 
     connect(&workerClient_, &infrastructure::WorkerClient::stateChanged, this,
             &MainWindow::updateState);
+    connect(&workerClient_,
+            &infrastructure::WorkerClient::computeDevicesChanged, this,
+            [this] { updateComputePresentation(); });
     connect(
         &workerClient_, &infrastructure::WorkerClient::modelLoaded, this,
         [this](const QString& path, qint64 milliseconds, const QString& device)
@@ -544,6 +548,7 @@ void MainWindow::showComputeSettings()
     const auto options = dialog.options();
     if (options == modelLoadOptions_) return;
     modelLoadOptions_ = options;
+    updateComputePresentation();
     if (!settingsStore_.setModelLoadOptions(modelLoadOptions_))
         qWarning().noquote() << "Unable to persist compute settings.";
 
@@ -1108,6 +1113,37 @@ void MainWindow::resetConversationView()
     pendingUtf8_.clear();
     chatView_->setStatusText(tr("Conversation cleared"));
     updateClearButton();
+}
+
+void MainWindow::updateComputePresentation()
+{
+    QString mode;
+    auto gpuCount = 0;
+    switch (modelLoadOptions_.placementMode)
+    {
+        case inference::DevicePlacementMode::Auto:
+            mode = tr("Automatic");
+            gpuCount = workerClient_.computeDevices().size();
+            break;
+        case inference::DevicePlacementMode::Cpu:
+            mode = tr("CPU");
+            break;
+        case inference::DevicePlacementMode::Single:
+            mode = tr("Single GPU");
+            break;
+        case inference::DevicePlacementMode::Custom:
+            mode = tr("Custom");
+            gpuCount = modelLoadOptions_.devices.size();
+            break;
+    }
+
+    auto summary = tr("Compute: %1").arg(mode);
+    if (gpuCount > 0)
+    {
+        summary += QStringLiteral(" \u00b7 ");
+        summary += gpuCount == 1 ? tr("1 GPU") : tr("%1 GPUs").arg(gpuCount);
+    }
+    chatView_->setComputePresentation(summary);
 }
 
 void MainWindow::updateState(infrastructure::WorkerClient::State state)

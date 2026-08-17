@@ -122,6 +122,9 @@ ChatView::ChatView(QWidget* parent)
         style()->standardIcon(QStyle::SP_DirOpenIcon));
     ui_->guideLoadModelButton->setIcon(
         style()->standardIcon(QStyle::SP_MediaPlay));
+    ui_->guideComputeSettingsButton->setIcon(
+        style()->standardIcon(QStyle::SP_ComputerIcon));
+    ui_->guideComputeSettingsButton->setIconSize(QSize(16, 16));
 
     ui_->workspacePathLink->setSizePolicy(QSizePolicy::Preferred,
                                           QSizePolicy::Preferred);
@@ -143,6 +146,8 @@ ChatView::ChatView(QWidget* parent)
     connect(ui_->modelReloadAction, &QAction::triggered, this,
             &ChatView::modelFolderRequested);
     connect(ui_->computeSettingsAction, &QAction::triggered, this,
+            &ChatView::computeSettingsRequested);
+    connect(ui_->guideComputeSettingsButton, &QToolButton::clicked, this,
             &ChatView::computeSettingsRequested);
     connect(ui_->guideSelectModelButton, &QPushButton::clicked, this,
             &ChatView::modelFolderRequested);
@@ -220,6 +225,11 @@ void ChatView::setWorkspacePresentation(const QString& workspacePath)
     updateWorkspacePresentation();
 }
 
+void ChatView::setComputePresentation(const QString& summary)
+{
+    ui_->guideComputeSummaryLabel->setText(summary);
+}
+
 void ChatView::setModelControlsEnabled(bool selectionEnabled, bool loadEnabled)
 {
     ui_->modelReloadAction->setEnabled(selectionEnabled);
@@ -230,6 +240,7 @@ void ChatView::setModelControlsEnabled(bool selectionEnabled, bool loadEnabled)
 void ChatView::setComputeSettingsEnabled(bool enabled)
 {
     ui_->computeSettingsAction->setEnabled(enabled);
+    ui_->guideComputeSettingsButton->setEnabled(enabled);
 }
 
 void ChatView::setWorkspaceControlsEnabled(bool enabled)

@@ -102,6 +102,7 @@ class MainWindow final : public QMainWindow
     void appendMcpDiagnostic(const QString& serverId, const QString& category,
                              const QString& text);
     void setModelPath(const QString& modelPath);
+    void updateComputePresentation();
     void updatePrimaryAction(bool stopMode);
     bool startBuiltInFilesystem(const QString& workspacePath,
                                 QString& errorMessage);

@@ -20,6 +20,8 @@ QJsonObject serializeServerConfig(const McpServerConfig& config)
             {QStringLiteral("enabled"), config.enabled},
             {QStringLiteral("toolAllowlist"),
              QJsonArray::fromStringList(config.toolAllowlist)},
+            {QStringLiteral("authorizedRoots"),
+             QJsonArray::fromStringList(config.authorizedRoots)},
             {QStringLiteral("initializeTimeoutMs"), config.initializeTimeoutMs},
             {QStringLiteral("requestTimeoutMs"), config.requestTimeoutMs},
             {QStringLiteral("maxResultBytes"), config.maxResultBytes}};
@@ -33,11 +35,14 @@ bool parseServerConfig(const QJsonObject& object, McpServerConfig& config,
     const auto arguments = object.value(QStringLiteral("arguments"));
     const auto environment = object.value(QStringLiteral("environment"));
     const auto allowlist = object.value(QStringLiteral("toolAllowlist"));
+    const auto authorizedRoots =
+        object.value(QStringLiteral("authorizedRoots"));
     if (!serverId.isString() || serverId.toString().trimmed().isEmpty() ||
         !program.isString() || program.toString().trimmed().isEmpty() ||
         (!arguments.isUndefined() && !arguments.isArray()) ||
         (!environment.isUndefined() && !environment.isObject()) ||
-        (!allowlist.isUndefined() && !allowlist.isArray()))
+        (!allowlist.isUndefined() && !allowlist.isArray()) ||
+        (!authorizedRoots.isUndefined() && !authorizedRoots.isArray()))
     {
         errorMessage = QStringLiteral("Invalid MCP server configuration.");
         return false;
@@ -57,7 +62,7 @@ bool parseServerConfig(const QJsonObject& object, McpServerConfig& config,
             if (!item.isString())
             {
                 errorMessage = QStringLiteral(
-                    "MCP arguments and toolAllowlist must contain strings.");
+                    "MCP string-list configuration contains a non-string.");
                 return false;
             }
             target.append(item.toString());
@@ -65,7 +70,8 @@ bool parseServerConfig(const QJsonObject& object, McpServerConfig& config,
         return true;
     };
     if (!readStringArray(arguments, parsed.arguments) ||
-        !readStringArray(allowlist, parsed.toolAllowlist))
+        !readStringArray(allowlist, parsed.toolAllowlist) ||
+        !readStringArray(authorizedRoots, parsed.authorizedRoots))
         return false;
     const auto environmentObject = environment.toObject();
     for (auto item = environmentObject.constBegin();

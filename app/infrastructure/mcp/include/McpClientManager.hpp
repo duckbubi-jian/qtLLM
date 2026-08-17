@@ -25,6 +25,15 @@ class McpClientManager final : public QObject
     [[nodiscard]] QStringList serverIds() const;
     [[nodiscard]] StdioMcpTransport* transport(const QString& serverId) const;
     [[nodiscard]] QList<agent::ToolDefinition> tools() const;
+    [[nodiscard]] QList<McpResourceDefinition> resources(
+        const QString& serverId = {}) const;
+    [[nodiscard]] QList<McpResourceTemplateDefinition> resourceTemplates(
+        const QString& serverId = {}) const;
+    [[nodiscard]] QList<McpPromptDefinition> prompts(
+        const QString& serverId = {}) const;
+    [[nodiscard]] QList<McpRoot> roots(const QString& serverId) const;
+    [[nodiscard]] bool isResourceSubscribed(const QString& serverId,
+                                            const QString& uri) const;
     [[nodiscard]] QString agentInstructions() const;
     [[nodiscard]] const ToolRegistry& registry() const;
     [[nodiscard]] std::optional<McpServerSnapshot> serverSnapshot(
@@ -35,6 +44,14 @@ class McpClientManager final : public QObject
     void stopServer(const QString& serverId);
     QString initialize(const QString& serverId);
     QString listTools(const QString& serverId);
+    QString listResources(const QString& serverId);
+    QString listResourceTemplates(const QString& serverId);
+    QString readResource(const QString& serverId, const QString& uri);
+    QString subscribeResource(const QString& serverId, const QString& uri);
+    QString unsubscribeResource(const QString& serverId, const QString& uri);
+    QString listPrompts(const QString& serverId);
+    QString getPrompt(const QString& serverId, const QString& name,
+                      const QJsonObject& arguments = {});
     QString callTool(const QString& qualifiedToolName,
                      const QJsonObject& arguments);
     void cancel(const QString& requestId);
@@ -51,6 +68,26 @@ class McpClientManager final : public QObject
                            const QJsonObject& serverInfo);
     void toolsChanged(const QString& serverId,
                       const QList<qtllm::agent::ToolDefinition>& tools);
+    void resourcesChanged(
+        const QString& serverId,
+        const QList<qtllm::infrastructure::mcp::McpResourceDefinition>&
+            resources);
+    void resourceTemplatesChanged(
+        const QString& serverId,
+        const QList<qtllm::infrastructure::mcp::McpResourceTemplateDefinition>&
+            templates);
+    void resourceReadReady(
+        const qtllm::infrastructure::mcp::McpResourceReadResult& result);
+    void resourceSubscriptionChanged(const QString& serverId,
+                                     const QString& uri, bool subscribed);
+    void resourceUpdated(const QString& serverId, const QString& uri);
+    void promptsChanged(
+        const QString& serverId,
+        const QList<qtllm::infrastructure::mcp::McpPromptDefinition>& prompts);
+    void promptReady(const qtllm::infrastructure::mcp::McpPromptResult& result);
+    void rootsRequested(
+        const QString& serverId,
+        const QList<qtllm::infrastructure::mcp::McpRoot>& roots);
     void toolResultReady(const qtllm::agent::ToolResult& result);
     void requestFailed(const QString& serverId, const QString& requestId,
                        const QString& method, const QString& code,

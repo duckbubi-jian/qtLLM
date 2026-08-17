@@ -31,10 +31,12 @@ class McpServerDialog final : public QDialog
    private:
     bool configureFastMcpPackage();
     bool configureCustomServer();
+    bool configureAuthorizedRoots();
     bool validateServerId(const QString& serverId);
     void browseFastMcpFolder();
     void browseProgram();
     void browseWorkingDirectory();
+    void browseAuthorizedRoot();
     void showValidationError(const QString& message);
 
     std::unique_ptr<Ui::McpServerDialog> ui_;

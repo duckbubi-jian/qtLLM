@@ -52,9 +52,13 @@ feature differences have dedicated Fake Server coverage.
 | Notifications | Typed progress and logging routing | Supported, rate limited per Server |
 | Diagnostics | Per-Server state, stderr, logging, and error history | Supported, bounded and redacted |
 | Host UI | Server overview, Tools policy, and lifecycle controls | Supported |
-| Resources | Discovery, read, templates, subscriptions | Not implemented |
-| Prompts | Discovery and get | Not implemented |
-| Roots | Per-Server authorized roots | Not implemented |
+| Resources | Discovery, read, templates, subscriptions | Supported |
+| Resources | `notifications/resources/list_changed` and `notifications/resources/updated` | Supported, subscribed URIs only |
+| Prompts | Discovery and get | Supported |
+| Prompts | `notifications/prompts/list_changed` | Supported |
+| Roots | Per-Server authorized roots | Supported |
+| Server requests | `roots/list` | Supported, explicit configured roots only |
+| Server requests | Unknown or unsupported methods | Rejected with standard JSON-RPC error |
 | Server requests | Sampling and user input requests | Not implemented |
 
 ## Current Safety Boundaries
@@ -90,6 +94,15 @@ feature differences have dedicated Fake Server coverage.
   start no-op.
 - Multi-page tool discovery remains invisible until every page succeeds. A
   later-page failure or repeated cursor retains the previous snapshot.
+- Resource, resource-template, and Prompt catalogs use the same atomic
+  pagination rules. A failed catalog refresh retains its previous snapshot and
+  keeps the Server degraded until the failed catalog recovers.
+- Resource reads and Prompt results enforce the configured byte budget. Prompt
+  arguments are validated locally before a request is sent.
+- `roots/list` returns only the roots explicitly authorized for that Server;
+  the Host does not infer roots from another Server or from the workspace.
+- Resource subscriptions accept updates only for URIs that were explicitly
+  subscribed, and catalog change notifications are refresh-coalesced.
 - List-changed storms are coalesced, while progress and logging storms are
   capped per Server.
 - Output schema, annotations, structured arrays, unknown content blocks, and

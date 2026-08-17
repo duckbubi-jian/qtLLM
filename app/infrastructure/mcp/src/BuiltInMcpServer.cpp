@@ -64,6 +64,7 @@ bool createBuiltInFilesystemServerConfig(const QString& applicationDirectory,
     result.program = executableInfo.absoluteFilePath();
     result.arguments = {QStringLiteral("--write-root"), workspacePath};
     result.workingDirectory = workspacePath;
+    result.authorizedRoots = {workspacePath};
     result.toolAllowlist = {QStringLiteral("read_text_file"),
                             QStringLiteral("read_multiple_files"),
                             QStringLiteral("list_directory"),

@@ -16,6 +16,22 @@ McpClientManager::McpClientManager(QObject* parent) : QObject(parent)
             &McpClientManager::serverInitialized);
     connect(&runtime_, &McpHostRuntime::toolsChanged, this,
             &McpClientManager::toolsChanged);
+    connect(&runtime_, &McpHostRuntime::resourcesChanged, this,
+            &McpClientManager::resourcesChanged);
+    connect(&runtime_, &McpHostRuntime::resourceTemplatesChanged, this,
+            &McpClientManager::resourceTemplatesChanged);
+    connect(&runtime_, &McpHostRuntime::resourceReadReady, this,
+            &McpClientManager::resourceReadReady);
+    connect(&runtime_, &McpHostRuntime::resourceSubscriptionChanged, this,
+            &McpClientManager::resourceSubscriptionChanged);
+    connect(&runtime_, &McpHostRuntime::resourceUpdated, this,
+            &McpClientManager::resourceUpdated);
+    connect(&runtime_, &McpHostRuntime::promptsChanged, this,
+            &McpClientManager::promptsChanged);
+    connect(&runtime_, &McpHostRuntime::promptReady, this,
+            &McpClientManager::promptReady);
+    connect(&runtime_, &McpHostRuntime::rootsRequested, this,
+            &McpClientManager::rootsRequested);
     connect(&runtime_, &McpHostRuntime::toolResultReady, this,
             &McpClientManager::toolResultReady);
     connect(&runtime_, &McpHostRuntime::requestFailed, this,
@@ -60,6 +76,35 @@ QList<agent::ToolDefinition> McpClientManager::tools() const
     return runtime_.tools();
 }
 
+QList<McpResourceDefinition> McpClientManager::resources(
+    const QString& serverId) const
+{
+    return runtime_.resources(serverId);
+}
+
+QList<McpResourceTemplateDefinition> McpClientManager::resourceTemplates(
+    const QString& serverId) const
+{
+    return runtime_.resourceTemplates(serverId);
+}
+
+QList<McpPromptDefinition> McpClientManager::prompts(
+    const QString& serverId) const
+{
+    return runtime_.prompts(serverId);
+}
+
+QList<McpRoot> McpClientManager::roots(const QString& serverId) const
+{
+    return runtime_.roots(serverId);
+}
+
+bool McpClientManager::isResourceSubscribed(const QString& serverId,
+                                            const QString& uri) const
+{
+    return runtime_.isResourceSubscribed(serverId, uri);
+}
+
 QString McpClientManager::agentInstructions() const
 {
     return runtime_.agentInstructions();
@@ -99,6 +144,46 @@ QString McpClientManager::initialize(const QString& serverId)
 QString McpClientManager::listTools(const QString& serverId)
 {
     return runtime_.listTools(serverId);
+}
+
+QString McpClientManager::listResources(const QString& serverId)
+{
+    return runtime_.listResources(serverId);
+}
+
+QString McpClientManager::listResourceTemplates(const QString& serverId)
+{
+    return runtime_.listResourceTemplates(serverId);
+}
+
+QString McpClientManager::readResource(const QString& serverId,
+                                       const QString& uri)
+{
+    return runtime_.readResource(serverId, uri);
+}
+
+QString McpClientManager::subscribeResource(const QString& serverId,
+                                            const QString& uri)
+{
+    return runtime_.subscribeResource(serverId, uri);
+}
+
+QString McpClientManager::unsubscribeResource(const QString& serverId,
+                                              const QString& uri)
+{
+    return runtime_.unsubscribeResource(serverId, uri);
+}
+
+QString McpClientManager::listPrompts(const QString& serverId)
+{
+    return runtime_.listPrompts(serverId);
+}
+
+QString McpClientManager::getPrompt(const QString& serverId,
+                                    const QString& name,
+                                    const QJsonObject& arguments)
+{
+    return runtime_.getPrompt(serverId, name, arguments);
 }
 
 QString McpClientManager::callTool(const QString& qualifiedToolName,

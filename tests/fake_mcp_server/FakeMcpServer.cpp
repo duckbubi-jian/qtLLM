@@ -52,6 +52,8 @@ int main(int argc, char* argv[])
     const auto exitImmediately = arguments.contains(QStringLiteral("--exit"));
     const auto noToolsCapability =
         arguments.contains(QStringLiteral("--no-tools-capability"));
+    const auto requestRoots =
+        arguments.contains(QStringLiteral("--request-roots"));
     auto protocolVersion = QStringLiteral("2024-11-05");
     const auto protocolVersionPrefix = QStringLiteral("--protocol-version=");
     for (const auto& argument : arguments)
@@ -84,6 +86,14 @@ int main(int argc, char* argv[])
         const auto request = document.object();
         const auto id = request.value(QStringLiteral("id"));
         const auto method = request.value(QStringLiteral("method")).toString();
+        if (method.isEmpty() &&
+            id.toString() == QLatin1String("server-roots-1"))
+        {
+            writeNotification(
+                output, QStringLiteral("test/roots_received"),
+                request.value(QStringLiteral("result")).toObject());
+            continue;
+        }
         if (method == QStringLiteral("notifications/cancelled"))
         {
             writeNotification(
@@ -91,13 +101,33 @@ int main(int argc, char* argv[])
                 request.value(QStringLiteral("params")).toObject());
             continue;
         }
+        if (method == QLatin1String("notifications/initialized"))
+        {
+            if (requestRoots)
+            {
+                const auto rootRequest = QJsonObject{
+                    {QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+                    {QStringLiteral("id"), QStringLiteral("server-roots-1")},
+                    {QStringLiteral("method"), QStringLiteral("roots/list")},
+                    {QStringLiteral("params"), QJsonObject{}}};
+                output.write(
+                    QJsonDocument(rootRequest).toJson(QJsonDocument::Compact) +
+                    '\n');
+                output.flush();
+            }
+            continue;
+        }
         if (method.startsWith(QStringLiteral("notifications/"))) continue;
         if (method == QStringLiteral("initialize"))
         {
-            const auto capabilities =
-                noToolsCapability
-                    ? QJsonObject{}
-                    : QJsonObject{{QStringLiteral("tools"), QJsonObject{}}};
+            QJsonObject capabilities{
+                {QStringLiteral("resources"),
+                 QJsonObject{{QStringLiteral("subscribe"), true},
+                             {QStringLiteral("listChanged"), true}}},
+                {QStringLiteral("prompts"),
+                 QJsonObject{{QStringLiteral("listChanged"), true}}}};
+            if (!noToolsCapability)
+                capabilities.insert(QStringLiteral("tools"), QJsonObject{});
             writeResponse(
                 output, id,
                 {{QStringLiteral("protocolVersion"), protocolVersion},
@@ -193,6 +223,87 @@ int main(int argc, char* argv[])
                 writeResponse(output, id,
                               {{QStringLiteral("content"), content}});
             }
+        }
+        else if (method == QStringLiteral("resources/list"))
+        {
+            writeResponse(
+                output, id,
+                {{QStringLiteral("resources"),
+                  QJsonArray{QJsonObject{
+                      {QStringLiteral("uri"),
+                       QStringLiteral("test://resource/readme")},
+                      {QStringLiteral("name"), QStringLiteral("Readme")},
+                      {QStringLiteral("description"),
+                       QStringLiteral("Fake resource")},
+                      {QStringLiteral("mimeType"),
+                       QStringLiteral("text/plain")}}}}});
+        }
+        else if (method == QStringLiteral("resources/templates/list"))
+        {
+            writeResponse(output, id,
+                          {{QStringLiteral("resourceTemplates"),
+                            QJsonArray{QJsonObject{
+                                {QStringLiteral("uriTemplate"),
+                                 QStringLiteral("test://resource/{name}")},
+                                {QStringLiteral("name"),
+                                 QStringLiteral("Named resource")},
+                                {QStringLiteral("mimeType"),
+                                 QStringLiteral("text/plain")}}}}});
+        }
+        else if (method == QStringLiteral("resources/read"))
+        {
+            const auto uri = request.value(QStringLiteral("params"))
+                                 .toObject()
+                                 .value(QStringLiteral("uri"))
+                                 .toString();
+            writeResponse(output, id,
+                          {{QStringLiteral("contents"),
+                            QJsonArray{QJsonObject{
+                                {QStringLiteral("uri"), uri},
+                                {QStringLiteral("mimeType"),
+                                 QStringLiteral("text/plain")},
+                                {QStringLiteral("text"),
+                                 QStringLiteral("Fake resource content")}}}}});
+        }
+        else if (method == QStringLiteral("resources/subscribe") ||
+                 method == QStringLiteral("resources/unsubscribe"))
+        {
+            writeResponse(output, id, {});
+        }
+        else if (method == QStringLiteral("prompts/list"))
+        {
+            writeResponse(
+                output, id,
+                {{QStringLiteral("prompts"),
+                  QJsonArray{QJsonObject{
+                      {QStringLiteral("name"), QStringLiteral("summarize")},
+                      {QStringLiteral("description"),
+                       QStringLiteral("Summarize a topic")},
+                      {QStringLiteral("arguments"),
+                       QJsonArray{QJsonObject{
+                           {QStringLiteral("name"), QStringLiteral("topic")},
+                           {QStringLiteral("required"), true}}}}}}}});
+        }
+        else if (method == QStringLiteral("prompts/get"))
+        {
+            const auto topic = request.value(QStringLiteral("params"))
+                                   .toObject()
+                                   .value(QStringLiteral("arguments"))
+                                   .toObject()
+                                   .value(QStringLiteral("topic"))
+                                   .toString();
+            writeResponse(
+                output, id,
+                {{QStringLiteral("description"),
+                  QStringLiteral("Generated fake prompt")},
+                 {QStringLiteral("messages"),
+                  QJsonArray{QJsonObject{
+                      {QStringLiteral("role"), QStringLiteral("user")},
+                      {QStringLiteral("content"),
+                       QJsonObject{
+                           {QStringLiteral("type"), QStringLiteral("text")},
+                           {QStringLiteral("text"),
+                            QStringLiteral("Summarize %1").arg(topic)}}}}}}});
         }
         else
         {

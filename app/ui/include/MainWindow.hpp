@@ -45,6 +45,11 @@ class MainWindow final : public QMainWindow
     void stopMcpServer(const QString& serverId);
     void restartMcpServer(const QString& serverId);
     void refreshMcpTools(const QString& serverId);
+    void readMcpResource(const QString& serverId, const QString& uri);
+    void setMcpResourceSubscribed(const QString& serverId, const QString& uri,
+                                  bool subscribe);
+    void getMcpPrompt(const QString& serverId, const QString& name,
+                      const QJsonObject& arguments);
     void loadSelectedModel();
     void finishModelPackageVerification();
     void continueModelLoadAfterUnload();

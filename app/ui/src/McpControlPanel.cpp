@@ -5,6 +5,8 @@
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QJsonDocument>
+#include <QJsonParseError>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
@@ -211,6 +213,84 @@ McpControlPanel::McpControlPanel(QWidget* parent) : QDialog(parent)
                                                QHeaderView::ResizeToContents);
     tabs->addTab(toolsList_, tr("Tools"));
 
+    auto* resourcesPage = new QWidget(tabs);
+    auto* resourcesLayout = new QVBoxLayout(resourcesPage);
+    resourcesLayout->setContentsMargins(8, 8, 8, 8);
+    resourcesLayout->setSpacing(6);
+    resourcesList_ = new QTreeWidget(resourcesPage);
+    resourcesList_->setObjectName(QStringLiteral("mcpResourceList"));
+    resourcesList_->setColumnCount(3);
+    resourcesList_->setHeaderLabels(
+        {tr("Resource"), tr("URI or template"), tr("MIME")});
+    resourcesList_->setRootIsDecorated(false);
+    resourcesList_->setAlternatingRowColors(true);
+    resourcesList_->setUniformRowHeights(true);
+    resourcesList_->header()->setSectionResizeMode(
+        0, QHeaderView::ResizeToContents);
+    resourcesList_->header()->setSectionResizeMode(1, QHeaderView::Stretch);
+    resourcesList_->header()->setSectionResizeMode(
+        2, QHeaderView::ResizeToContents);
+    resourcesLayout->addWidget(resourcesList_, 1);
+    resourceResultEdit_ = new QPlainTextEdit(resourcesPage);
+    resourceResultEdit_->setObjectName(QStringLiteral("mcpResourceResult"));
+    resourceResultEdit_->setReadOnly(true);
+    resourceResultEdit_->setMaximumBlockCount(500);
+    resourceResultEdit_->setMaximumHeight(150);
+    resourcesLayout->addWidget(resourceResultEdit_);
+    auto* resourceActions = new QHBoxLayout;
+    resourceActions->addStretch(1);
+    subscribeResourceButton_ = actionButton(
+        resourcesPage, QStringLiteral("subscribeMcpResourceButton"),
+        tr("Subscribe"), QStyle::SP_DialogApplyButton);
+    readResourceButton_ =
+        actionButton(resourcesPage, QStringLiteral("readMcpResourceButton"),
+                     tr("Read"), QStyle::SP_FileIcon);
+    resourceActions->addWidget(subscribeResourceButton_);
+    resourceActions->addWidget(readResourceButton_);
+    resourcesLayout->addLayout(resourceActions);
+    tabs->addTab(resourcesPage, tr("Resources"));
+
+    auto* promptsPage = new QWidget(tabs);
+    auto* promptsLayout = new QVBoxLayout(promptsPage);
+    promptsLayout->setContentsMargins(8, 8, 8, 8);
+    promptsLayout->setSpacing(6);
+    promptsList_ = new QTreeWidget(promptsPage);
+    promptsList_->setObjectName(QStringLiteral("mcpPromptList"));
+    promptsList_->setColumnCount(3);
+    promptsList_->setHeaderLabels(
+        {tr("Prompt"), tr("Description"), tr("Arguments")});
+    promptsList_->setRootIsDecorated(false);
+    promptsList_->setAlternatingRowColors(true);
+    promptsList_->setUniformRowHeights(true);
+    promptsList_->header()->setSectionResizeMode(0,
+                                                 QHeaderView::ResizeToContents);
+    promptsList_->header()->setSectionResizeMode(1, QHeaderView::Stretch);
+    promptsList_->header()->setSectionResizeMode(2,
+                                                 QHeaderView::ResizeToContents);
+    promptsLayout->addWidget(promptsList_, 1);
+    auto* promptArgumentsLayout = new QHBoxLayout;
+    auto* promptArgumentsLabel =
+        new QLabel(tr("Arguments (JSON)"), promptsPage);
+    promptArgumentsEdit_ = new QLineEdit(promptsPage);
+    promptArgumentsEdit_->setObjectName(QStringLiteral("mcpPromptArguments"));
+    promptArgumentsLayout->addWidget(promptArgumentsLabel);
+    promptArgumentsLayout->addWidget(promptArgumentsEdit_, 1);
+    promptsLayout->addLayout(promptArgumentsLayout);
+    promptResultEdit_ = new QPlainTextEdit(promptsPage);
+    promptResultEdit_->setObjectName(QStringLiteral("mcpPromptResult"));
+    promptResultEdit_->setReadOnly(true);
+    promptResultEdit_->setMaximumBlockCount(500);
+    promptResultEdit_->setMaximumHeight(150);
+    promptsLayout->addWidget(promptResultEdit_);
+    auto* promptActions = new QHBoxLayout;
+    promptActions->addStretch(1);
+    getPromptButton_ =
+        actionButton(promptsPage, QStringLiteral("getMcpPromptButton"),
+                     tr("Get prompt"), QStyle::SP_DialogApplyButton);
+    promptActions->addWidget(getPromptButton_);
+    promptsLayout->addLayout(promptActions);
+    tabs->addTab(promptsPage, tr("Prompts"));
+
     diagnosticsEdit_ = new QPlainTextEdit(tabs);
     diagnosticsEdit_->setObjectName(QStringLiteral("mcpDiagnostics"));
     diagnosticsEdit_->setReadOnly(true);
@@ -229,7 +309,7 @@ McpControlPanel::McpControlPanel(QWidget* parent) : QDialog(parent)
                      tr("Restart"), QStyle::SP_BrowserReload);
     refreshButton_ =
         actionButton(detailPane, QStringLiteral("refreshMcpToolsButton"),
-                     tr("Refresh tools"), QStyle::SP_DialogApplyButton);
+                     tr("Refresh catalogs"), QStyle::SP_DialogApplyButton);
     runtimeActions->addWidget(startButton_);
     runtimeActions->addWidget(stopButton_);
     runtimeActions->addWidget(restartButton_);
@@ -287,8 +367,112 @@ McpControlPanel::McpControlPanel(QWidget* parent) : QDialog(parent)
                 if (const auto* server = selectedServer())
                     emit refreshToolsRequested(server->serverId);
             });
+    connect(resourcesList_, &QTreeWidget::currentItemChanged, this,
+            [this](QTreeWidgetItem*, QTreeWidgetItem*)
+            { updateCatalogActions(); });
+    connect(promptsList_, &QTreeWidget::currentItemChanged, this,
+            [this](QTreeWidgetItem* current, QTreeWidgetItem*)
+            {
+                QJsonObject arguments;
+                if (current != nullptr)
+                {
+                    const auto* server = selectedServer();
+                    const auto name = current->data(0, Qt::UserRole).toString();
+                    if (server != nullptr)
+                        for (const auto& prompt : server->prompts)
+                            if (prompt.name == name)
+                                for (const auto& argument : prompt.arguments)
+                                    if (argument.required)
+                                        arguments.insert(argument.name,
+                                                         QString{});
+                }
+                promptArgumentsEdit_->setText(QString::fromUtf8(
+                    QJsonDocument(arguments).toJson(QJsonDocument::Compact)));
+                updateCatalogActions();
+            });
+    connect(readResourceButton_, &QToolButton::clicked, this,
+            [this]
+            {
+                const auto* server = selectedServer();
+                const auto* resource = resourcesList_->currentItem();
+                if (server != nullptr && resource != nullptr)
+                    emit readResourceRequested(
+                        server->serverId,
+                        resource->data(0, Qt::UserRole).toString());
+            });
+    connect(subscribeResourceButton_, &QToolButton::clicked, this,
+            [this]
+            {
+                const auto* server = selectedServer();
+                const auto* resource = resourcesList_->currentItem();
+                if (server != nullptr && resource != nullptr)
+                    emit resourceSubscriptionRequested(
+                        server->serverId,
+                        resource->data(0, Qt::UserRole).toString(),
+                        !resource->data(0, Qt::UserRole + 2).toBool());
+            });
+    connect(getPromptButton_, &QToolButton::clicked, this,
+            [this]
+            {
+                const auto* server = selectedServer();
+                const auto* prompt = promptsList_->currentItem();
+                if (server == nullptr || prompt == nullptr) return;
+                QJsonParseError error;
+                const auto arguments = QJsonDocument::fromJson(
+                    promptArgumentsEdit_->text().toUtf8(), &error);
+                if (error.error != QJsonParseError::NoError ||
+                    !arguments.isObject())
+                {
+                    promptResultEdit_->setPlainText(
+                        tr("Prompt arguments must be a JSON object."));
+                    return;
+                }
+                emit getPromptRequested(
+                    server->serverId, prompt->data(0, Qt::UserRole).toString(),
+                    arguments.object());
+            });
 
     updateDetails();
+}
+
+void McpControlPanel::showResourceResult(
+    const infrastructure::mcp::McpResourceReadResult& result)
+{
+    const auto* server = selectedServer();
+    if (server == nullptr || server->serverId != result.serverId) return;
+    QStringList text;
+    for (const auto& content : result.contents)
+    {
+        text.append(QStringLiteral("[%1] %2").arg(
+            content.uri, content.mimeType.isEmpty() ? tr("unspecified MIME")
+                                                    : content.mimeType));
+        text.append(content.binary ? tr("Binary content: %n Base64 bytes",
+                                        nullptr, content.blob.size())
+                                   : content.text);
+    }
+    resourceResultEdit_->setPlainText(text.join(QStringLiteral("\n\n")));
+}
+
+void McpControlPanel::showPromptResult(
+    const infrastructure::mcp::McpPromptResult& result)
+{
+    const auto* server = selectedServer();
+    if (server == nullptr || server->serverId != result.serverId) return;
+    QStringList text;
+    if (!result.description.isEmpty()) text.append(result.description);
+    for (const auto& message : result.messages)
+    {
+        const auto type =
+            message.content.value(QStringLiteral("type")).toString();
+        text.append(QStringLiteral("[%1 / %2]").arg(message.role, type));
+        if (type == QLatin1String("text"))
+            text.append(
+                message.content.value(QStringLiteral("text")).toString());
+        else
+            text.append(QString::fromUtf8(
+                QJsonDocument(message.content).toJson(QJsonDocument::Compact)));
+    }
+    promptResultEdit_->setPlainText(text.join(QStringLiteral("\n\n")));
 }
 
 void McpControlPanel::setServers(
@@ -398,6 +582,42 @@ void McpControlPanel::updateDetails()
         for (const auto& tool : server->tools)
             toolsList_->addTopLevelItem(new QTreeWidgetItem(
                 {tool.name, tool.localPolicy, tool.serverHints}));
+
+    resourcesList_->clear();
+    if (hasServer)
+        for (const auto& resource : server->resources)
+        {
+            auto* item = new QTreeWidgetItem({resource.name, resource.uri,
+                                              resource.mimeType.isEmpty()
+                                                  ? tr("Unspecified")
+                                                  : resource.mimeType});
+            item->setData(0, Qt::UserRole, resource.uri);
+            item->setData(0, Qt::UserRole + 1, resource.resourceTemplate);
+            item->setData(0, Qt::UserRole + 2, resource.subscribed);
+            if (resource.resourceTemplate)
+                item->setToolTip(0, tr("Resource template"));
+            resourcesList_->addTopLevelItem(item);
+        }
+    if (resourcesList_->topLevelItemCount() > 0)
+        resourcesList_->setCurrentItem(resourcesList_->topLevelItem(0));
+
+    promptsList_->clear();
+    if (hasServer)
+        for (const auto& prompt : server->prompts)
+        {
+            QStringList arguments;
+            for (const auto& argument : prompt.arguments)
+                arguments.append(argument.required
+                                     ? tr("%1 (required)").arg(argument.name)
+                                     : argument.name);
+            auto* item =
+                new QTreeWidgetItem({prompt.name, prompt.description,
+                                     arguments.join(QStringLiteral(", "))});
+            item->setData(0, Qt::UserRole, prompt.name);
+            promptsList_->addTopLevelItem(item);
+        }
+    if (promptsList_->topLevelItemCount() > 0)
+        promptsList_->setCurrentItem(promptsList_->topLevelItem(0));
     diagnosticsEdit_->setPlainText(
         hasServer ? server->diagnostics.join(QLatin1Char('\n')) : QString{});
     if (hasServer)
@@ -422,8 +642,40 @@ void McpControlPanel::updateDetails()
                             state != McpServerState::Stopping);
     restartButton_->setEnabled(controls && !busy);
     refreshButton_->setEnabled(
-        controls && server->snapshot.capabilities.tools &&
+        controls &&
+        (server->snapshot.capabilities.tools ||
+         server->snapshot.capabilities.resources ||
+         server->snapshot.capabilities.prompts) &&
         (state == McpServerState::Ready || state == McpServerState::Degraded));
     addButton_->setEnabled(!hasServer || server->controlsEnabled);
+    updateCatalogActions();
+}
+
+void McpControlPanel::updateCatalogActions()
+{
+    const auto* server = selectedServer();
+    using infrastructure::mcp::McpServerState;
+    const auto ready = server != nullptr && server->controlsEnabled &&
+                       server->available && server->enabled &&
+                       server->registered &&
+                       (server->snapshot.state == McpServerState::Ready ||
+                        server->snapshot.state == McpServerState::Degraded);
+    const auto* resource = resourcesList_->currentItem();
+    readResourceButton_->setEnabled(
+        ready && resource != nullptr &&
+        !resource->data(0, Qt::UserRole + 1).toBool());
+    const auto subscribable =
+        ready && server->snapshot.capabilities.resourcesSubscribe &&
+        resource != nullptr && !resource->data(0, Qt::UserRole + 1).toBool();
+    subscribeResourceButton_->setEnabled(subscribable);
+    const auto subscribed =
+        resource != nullptr && resource->data(0, Qt::UserRole + 2).toBool();
+    subscribeResourceButton_->setText(subscribed ? tr("Unsubscribe")
+                                                 : tr("Subscribe"));
+    subscribeResourceButton_->setToolTip(subscribeResourceButton_->text());
+    getPromptButton_->setEnabled(ready &&
+                                 promptsList_->currentItem() != nullptr);
+    promptArgumentsEdit_->setEnabled(ready &&
+                                     promptsList_->currentItem() != nullptr);
 }
 }  // namespace qtllm::ui

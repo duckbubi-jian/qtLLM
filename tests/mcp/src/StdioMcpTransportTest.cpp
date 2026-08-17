@@ -72,6 +72,22 @@ class FakeMcpTransport final : public infrastructure::mcp::McpTransport
         return running_;
     }
 
+    bool respond(const QJsonValue& requestId,
+                 const QJsonObject& result) override
+    {
+        responses_.insert(requestId.toVariant().toString(), result);
+        return running_;
+    }
+
+    bool respondError(const QJsonValue& requestId, int code,
+                      const QString& message) override
+    {
+        errors_.insert(requestId.toVariant().toString(),
+                       QJsonObject{{QStringLiteral("code"), code},
+                                   {QStringLiteral("message"), message}});
+        return running_;
+    }
+
     void respond(const QString& requestId, const QJsonObject& result)
     {
         const auto method = requests_.take(requestId);
@@ -106,6 +122,22 @@ class FakeMcpTransport final : public infrastructure::mcp::McpTransport
         emit notificationReceived(method, params);
     }
 
+    void sendRequest(const QJsonValue& requestId, const QString& method,
+                     const QJsonObject& params = {})
+    {
+        emit requestReceived(requestId, method, params);
+    }
+
+    [[nodiscard]] QJsonObject response(const QString& requestId) const
+    {
+        return responses_.value(requestId);
+    }
+
+    [[nodiscard]] QJsonObject responseError(const QString& requestId) const
+    {
+        return errors_.value(requestId);
+    }
+
     void crash()
     {
         running_ = false;
@@ -125,6 +157,8 @@ class FakeMcpTransport final : public infrastructure::mcp::McpTransport
     int nextRequestId_ = 0;
     QHash<QString, QString> requests_;
     QHash<QString, QJsonObject> requestParams_;
+    QHash<QString, QJsonObject> responses_;
+    QHash<QString, QJsonObject> errors_;
     QStringList notifications_;
 };
 
@@ -145,6 +179,22 @@ QJsonObject initializeResult(bool toolsListChanged = false)
              infrastructure::mcp::latestSupportedProtocolVersion()},
             {QStringLiteral("capabilities"),
              QJsonObject{{QStringLiteral("tools"), toolsCapability}}},
+            {QStringLiteral("serverInfo"),
+             QJsonObject{{QStringLiteral("name"), QStringLiteral("fake")},
+                         {QStringLiteral("version"), QStringLiteral("1")}}}};
+}
+
+QJsonObject catalogInitializeResult(bool listChanged = true)
+{
+    return {{QStringLiteral("protocolVersion"),
+             infrastructure::mcp::latestSupportedProtocolVersion()},
+            {QStringLiteral("capabilities"),
+             QJsonObject{
+                 {QStringLiteral("resources"),
+                  QJsonObject{{QStringLiteral("subscribe"), true},
+                              {QStringLiteral("listChanged"), listChanged}}},
+                 {QStringLiteral("prompts"),
+                  QJsonObject{{QStringLiteral("listChanged"), listChanged}}}}},
             {QStringLiteral("serverInfo"),
              QJsonObject{{QStringLiteral("name"), QStringLiteral("fake")},
                          {QStringLiteral("version"), QStringLiteral("1")}}}};
@@ -187,6 +237,10 @@ class StdioMcpTransportTest final : public QObject
     void routesTypedNotificationsAndRichResults();
     void limitsNotificationStorms();
     void sendsProtocolCancellation();
+    void discoversReadsAndGetsMcpCatalogs();
+    void keepsIndependentCatalogFailuresDegraded();
+    void servesOnlyAuthorizedRoots();
+    void roundTripsRootsOverStdio();
 };
 
 infrastructure::mcp::McpServerConfig testConfig()
@@ -490,6 +544,7 @@ void StdioMcpTransportTest::roundTripsServerConfiguration()
                               QStringLiteral("not-a-real-secret"));
     config.workingDirectory = QStringLiteral("D:/workspace");
     config.toolAllowlist = {QStringLiteral("echo")};
+    config.authorizedRoots = {QDir::rootPath()};
     config.maxResultBytes = 8'192;
 
     infrastructure::mcp::McpServerConfig parsed;
@@ -503,6 +558,7 @@ void StdioMcpTransportTest::roundTripsServerConfiguration()
     QCOMPARE(parsed.arguments, config.arguments);
     QCOMPARE(parsed.environment, config.environment);
     QCOMPARE(parsed.toolAllowlist, config.toolAllowlist);
+    QCOMPARE(parsed.authorizedRoots, config.authorizedRoots);
     QCOMPARE(parsed.maxResultBytes, config.maxResultBytes);
 }
 
@@ -981,6 +1037,343 @@ void StdioMcpTransportTest::sendsProtocolCancellation()
                  .value(QStringLiteral("requestId"))
                  .toString(),
              requestId);
+}
+
+void StdioMcpTransportTest::discoversReadsAndGetsMcpCatalogs()
+{
+    using infrastructure::mcp::McpHostRuntime;
+
+    QSharedPointer<FakeMcpTransport> transport;
+    McpHostRuntime runtime(
+        [&transport](const infrastructure::mcp::McpServerConfig&)
+            -> QSharedPointer<infrastructure::mcp::McpTransport>
+        {
+            transport = QSharedPointer<FakeMcpTransport>::create();
+            return transport;
+        });
+    QString errorMessage;
+    QVERIFY2(runtime.addServer(runtimeTestConfig(QStringLiteral("alpha")),
+                               errorMessage),
+             qPrintable(errorMessage));
+    runtime.startServer(QStringLiteral("alpha"));
+    const auto initializeRequest = runtime.initialize(QStringLiteral("alpha"));
+    transport->respond(initializeRequest, catalogInitializeResult());
+
+    QSignalSpy resourcesSpy(&runtime, &McpHostRuntime::resourcesChanged);
+    auto requestId = runtime.listResources(QStringLiteral("alpha"));
+    transport->respond(
+        requestId,
+        {{QStringLiteral("resources"),
+          QJsonArray{QJsonObject{
+              {QStringLiteral("uri"), QStringLiteral("test://resource/one")},
+              {QStringLiteral("name"), QStringLiteral("One")},
+              {QStringLiteral("mimeType"), QStringLiteral("text/plain")}}}},
+         {QStringLiteral("nextCursor"), QStringLiteral("page-2")}});
+    QVERIFY(runtime.resources().isEmpty());
+    const auto secondResourcePage =
+        transport->requestForMethod(QStringLiteral("resources/list"));
+    QVERIFY(!secondResourcePage.isEmpty());
+    QCOMPARE(transport->requestParams(secondResourcePage)
+                 .value(QStringLiteral("cursor"))
+                 .toString(),
+             QStringLiteral("page-2"));
+    transport->respond(
+        secondResourcePage,
+        {{QStringLiteral("resources"),
+          QJsonArray{QJsonObject{
+              {QStringLiteral("uri"), QStringLiteral("test://resource/two")},
+              {QStringLiteral("name"), QStringLiteral("Two")}}}}});
+    QCOMPARE(resourcesSpy.count(), 1);
+    QCOMPARE(runtime.resources(QStringLiteral("alpha")).size(), 2);
+
+    QSignalSpy templatesSpy(&runtime,
+                            &McpHostRuntime::resourceTemplatesChanged);
+    requestId = runtime.listResourceTemplates(QStringLiteral("alpha"));
+    transport->respond(
+        requestId, {{QStringLiteral("resourceTemplates"),
+                     QJsonArray{QJsonObject{
+                         {QStringLiteral("uriTemplate"),
+                          QStringLiteral("test://resource/{name}")},
+                         {QStringLiteral("name"), QStringLiteral("Named")}}}}});
+    QCOMPARE(templatesSpy.count(), 1);
+    QCOMPARE(runtime.resourceTemplates(QStringLiteral("alpha")).size(), 1);
+
+    QSignalSpy promptsSpy(&runtime, &McpHostRuntime::promptsChanged);
+    requestId = runtime.listPrompts(QStringLiteral("alpha"));
+    transport->respond(
+        requestId,
+        {{QStringLiteral("prompts"),
+          QJsonArray{QJsonObject{
+              {QStringLiteral("name"), QStringLiteral("summarize")},
+              {QStringLiteral("description"), QStringLiteral("Summarize")},
+              {QStringLiteral("arguments"),
+               QJsonArray{QJsonObject{
+                   {QStringLiteral("name"), QStringLiteral("topic")},
+                   {QStringLiteral("required"), true}}}}}}}});
+    QCOMPARE(promptsSpy.count(), 1);
+    QCOMPARE(runtime.prompts(QStringLiteral("alpha")).size(), 1);
+
+    const auto resourceCatalog = QJsonObject{
+        {QStringLiteral("resources"),
+         QJsonArray{
+             QJsonObject{
+                 {QStringLiteral("uri"), QStringLiteral("test://resource/one")},
+                 {QStringLiteral("name"), QStringLiteral("One")}},
+             QJsonObject{
+                 {QStringLiteral("uri"), QStringLiteral("test://resource/two")},
+                 {QStringLiteral("name"), QStringLiteral("Two")}}}}};
+    const auto templateCatalog =
+        QJsonObject{{QStringLiteral("resourceTemplates"),
+                     QJsonArray{QJsonObject{
+                         {QStringLiteral("uriTemplate"),
+                          QStringLiteral("test://resource/{name}")},
+                         {QStringLiteral("name"), QStringLiteral("Named")}}}}};
+    transport->sendNotification(
+        QStringLiteral("notifications/resources/list_changed"), {});
+    const auto firstResourceRefresh =
+        transport->requestForMethod(QStringLiteral("resources/list"));
+    const auto firstTemplateRefresh =
+        transport->requestForMethod(QStringLiteral("resources/templates/list"));
+    QVERIFY(!firstResourceRefresh.isEmpty());
+    QVERIFY(!firstTemplateRefresh.isEmpty());
+    transport->sendNotification(
+        QStringLiteral("notifications/resources/list_changed"), {});
+    transport->respond(firstResourceRefresh, resourceCatalog);
+    transport->respond(firstTemplateRefresh, templateCatalog);
+    const auto secondResourceRefresh =
+        transport->requestForMethod(QStringLiteral("resources/list"));
+    const auto secondTemplateRefresh =
+        transport->requestForMethod(QStringLiteral("resources/templates/list"));
+    QVERIFY(!secondResourceRefresh.isEmpty());
+    QVERIFY(!secondTemplateRefresh.isEmpty());
+    transport->respond(secondResourceRefresh, resourceCatalog);
+    transport->respond(secondTemplateRefresh, templateCatalog);
+    QCOMPARE(resourcesSpy.count(), 3);
+    QCOMPARE(templatesSpy.count(), 3);
+
+    const auto promptCatalog =
+        QJsonObject{{QStringLiteral("prompts"),
+                     QJsonArray{QJsonObject{
+                         {QStringLiteral("name"), QStringLiteral("summarize")},
+                         {QStringLiteral("arguments"),
+                          QJsonArray{QJsonObject{
+                              {QStringLiteral("name"), QStringLiteral("topic")},
+                              {QStringLiteral("required"), true}}}}}}}};
+    transport->sendNotification(
+        QStringLiteral("notifications/prompts/list_changed"), {});
+    const auto firstPromptRefresh =
+        transport->requestForMethod(QStringLiteral("prompts/list"));
+    QVERIFY(!firstPromptRefresh.isEmpty());
+    transport->sendNotification(
+        QStringLiteral("notifications/prompts/list_changed"), {});
+    transport->respond(firstPromptRefresh, promptCatalog);
+    const auto secondPromptRefresh =
+        transport->requestForMethod(QStringLiteral("prompts/list"));
+    QVERIFY(!secondPromptRefresh.isEmpty());
+    transport->respond(secondPromptRefresh, promptCatalog);
+    QCOMPARE(promptsSpy.count(), 3);
+
+    QSignalSpy failureSpy(&runtime, &McpHostRuntime::requestFailed);
+    QVERIFY(
+        runtime
+            .getPrompt(QStringLiteral("alpha"), QStringLiteral("summarize"), {})
+            .isEmpty());
+    QCOMPARE(failureSpy.count(), 1);
+    QVERIFY(failureSpy.constFirst().at(4).toString().contains(
+        QStringLiteral("required")));
+
+    QSignalSpy resourceResultSpy(&runtime, &McpHostRuntime::resourceReadReady);
+    requestId = runtime.readResource(QStringLiteral("alpha"),
+                                     QStringLiteral("test://resource/one"));
+    transport->respond(
+        requestId,
+        {{QStringLiteral("contents"),
+          QJsonArray{QJsonObject{
+              {QStringLiteral("uri"), QStringLiteral("test://resource/one")},
+              {QStringLiteral("mimeType"), QStringLiteral("text/plain")},
+              {QStringLiteral("text"), QStringLiteral("resource text")}}}}});
+    QCOMPARE(resourceResultSpy.count(), 1);
+    const auto resourceResult =
+        qvariant_cast<infrastructure::mcp::McpResourceReadResult>(
+            resourceResultSpy.constFirst().constFirst());
+    QCOMPARE(resourceResult.contents.size(), 1);
+    QCOMPARE(resourceResult.contents.constFirst().text,
+             QStringLiteral("resource text"));
+
+    QSignalSpy promptResultSpy(&runtime, &McpHostRuntime::promptReady);
+    requestId =
+        runtime.getPrompt(QStringLiteral("alpha"), QStringLiteral("summarize"),
+                          {{QStringLiteral("topic"), QStringLiteral("MCP")}});
+    transport->respond(
+        requestId,
+        {{QStringLiteral("description"), QStringLiteral("Generated")},
+         {QStringLiteral("messages"),
+          QJsonArray{QJsonObject{
+              {QStringLiteral("role"), QStringLiteral("user")},
+              {QStringLiteral("content"),
+               QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                           {QStringLiteral("text"),
+                            QStringLiteral("Summarize MCP")}}}}}}});
+    QCOMPARE(promptResultSpy.count(), 1);
+    const auto promptResult =
+        qvariant_cast<infrastructure::mcp::McpPromptResult>(
+            promptResultSpy.constFirst().constFirst());
+    QCOMPARE(promptResult.messages.size(), 1);
+    QCOMPARE(promptResult.messages.constFirst().role, QStringLiteral("user"));
+
+    QSignalSpy subscriptionSpy(&runtime,
+                               &McpHostRuntime::resourceSubscriptionChanged);
+    requestId = runtime.subscribeResource(
+        QStringLiteral("alpha"), QStringLiteral("test://resource/one"));
+    transport->respond(requestId, {});
+    QCOMPARE(subscriptionSpy.count(), 1);
+    QSignalSpy updatedSpy(&runtime, &McpHostRuntime::resourceUpdated);
+    transport->sendNotification(
+        QStringLiteral("notifications/resources/updated"),
+        {{QStringLiteral("uri"), QStringLiteral("test://resource/one")}});
+    QCOMPARE(updatedSpy.count(), 1);
+
+    const auto snapshot = runtime.serverSnapshot(QStringLiteral("alpha"));
+    QCOMPARE(snapshot->resourceCount, 2);
+    QCOMPARE(snapshot->resourceTemplateCount, 1);
+    QCOMPARE(snapshot->promptCount, 1);
+
+    runtime.stopServer(QStringLiteral("alpha"));
+    QVERIFY(runtime.resources().isEmpty());
+    QVERIFY(runtime.resourceTemplates().isEmpty());
+    QVERIFY(runtime.prompts().isEmpty());
+}
+
+void StdioMcpTransportTest::keepsIndependentCatalogFailuresDegraded()
+{
+    using infrastructure::mcp::McpHostRuntime;
+    using infrastructure::mcp::McpServerState;
+
+    QSharedPointer<FakeMcpTransport> transport;
+    McpHostRuntime runtime(
+        [&transport](const infrastructure::mcp::McpServerConfig&)
+            -> QSharedPointer<infrastructure::mcp::McpTransport>
+        {
+            transport = QSharedPointer<FakeMcpTransport>::create();
+            return transport;
+        });
+    QString errorMessage;
+    QVERIFY2(runtime.addServer(runtimeTestConfig(QStringLiteral("alpha")),
+                               errorMessage),
+             qPrintable(errorMessage));
+    runtime.startServer(QStringLiteral("alpha"));
+    const auto initializeRequest = runtime.initialize(QStringLiteral("alpha"));
+    transport->respond(initializeRequest, catalogInitializeResult());
+
+    const auto resourceRequest = runtime.listResources(QStringLiteral("alpha"));
+    const auto promptRequest = runtime.listPrompts(QStringLiteral("alpha"));
+    QVERIFY(!resourceRequest.isEmpty());
+    QVERIFY(!promptRequest.isEmpty());
+    transport->fail(resourceRequest, QStringLiteral("invalid_response"),
+                    QStringLiteral("Invalid resource catalog."));
+    transport->respond(promptRequest,
+                       {{QStringLiteral("prompts"), QJsonArray{}}});
+
+    auto snapshot = runtime.serverSnapshot(QStringLiteral("alpha"));
+    QVERIFY(snapshot.has_value());
+    QCOMPARE(snapshot->state, McpServerState::Degraded);
+    QCOMPARE(snapshot->lastErrorCode, QStringLiteral("invalid_response"));
+    QCOMPARE(snapshot->lastErrorMessage,
+             QStringLiteral("Invalid resource catalog."));
+
+    const auto recoveryRequest = runtime.listResources(QStringLiteral("alpha"));
+    QVERIFY(!recoveryRequest.isEmpty());
+    transport->respond(recoveryRequest,
+                       {{QStringLiteral("resources"), QJsonArray{}}});
+
+    snapshot = runtime.serverSnapshot(QStringLiteral("alpha"));
+    QVERIFY(snapshot.has_value());
+    QCOMPARE(snapshot->state, McpServerState::Ready);
+    QVERIFY(snapshot->lastErrorCode.isEmpty());
+    QVERIFY(snapshot->lastErrorMessage.isEmpty());
+}
+
+void StdioMcpTransportTest::servesOnlyAuthorizedRoots()
+{
+    using infrastructure::mcp::McpHostRuntime;
+
+    QTemporaryDir authorized;
+    QVERIFY(authorized.isValid());
+    QSharedPointer<FakeMcpTransport> transport;
+    McpHostRuntime runtime(
+        [&transport](const infrastructure::mcp::McpServerConfig&)
+            -> QSharedPointer<infrastructure::mcp::McpTransport>
+        {
+            transport = QSharedPointer<FakeMcpTransport>::create();
+            return transport;
+        });
+    auto config = runtimeTestConfig(QStringLiteral("alpha"));
+    config.authorizedRoots = {authorized.path()};
+    QString errorMessage;
+    QVERIFY2(runtime.addServer(config, errorMessage), qPrintable(errorMessage));
+    runtime.startServer(config.serverId);
+    const auto initializeRequest = runtime.initialize(config.serverId);
+    transport->respond(initializeRequest, catalogInitializeResult());
+
+    QSignalSpy rootsSpy(&runtime, &McpHostRuntime::rootsRequested);
+    transport->sendRequest(QStringLiteral("roots-1"),
+                           QStringLiteral("roots/list"));
+    QCOMPARE(rootsSpy.count(), 1);
+    const auto response = transport->response(QStringLiteral("roots-1"));
+    const auto roots = response.value(QStringLiteral("roots")).toArray();
+    QCOMPARE(roots.size(), 1);
+    QCOMPARE(roots.at(0).toObject().value(QStringLiteral("uri")).toString(),
+             runtime.roots(config.serverId).constFirst().uri);
+
+    transport->sendRequest(QStringLiteral("sampling-1"),
+                           QStringLiteral("sampling/createMessage"));
+    QCOMPARE(transport->responseError(QStringLiteral("sampling-1"))
+                 .value(QStringLiteral("code"))
+                 .toInt(),
+             -32601);
+
+    auto invalid = runtimeTestConfig(QStringLiteral("invalid-root"));
+    invalid.authorizedRoots = {
+        QDir(authorized.path()).filePath(QStringLiteral("missing"))};
+    QVERIFY(!runtime.addServer(invalid, errorMessage));
+    QVERIFY(errorMessage.contains(QStringLiteral("root"), Qt::CaseInsensitive));
+}
+
+void StdioMcpTransportTest::roundTripsRootsOverStdio()
+{
+    QTemporaryDir authorized;
+    QVERIFY(authorized.isValid());
+    auto config = testConfig();
+    config.arguments.append(QStringLiteral("--request-roots"));
+    config.authorizedRoots = {authorized.path()};
+
+    infrastructure::mcp::McpClientManager manager;
+    QString errorMessage;
+    QVERIFY2(manager.addServer(config, errorMessage), qPrintable(errorMessage));
+    QSignalSpy notificationSpy(
+        &manager, &infrastructure::mcp::McpClientManager::notificationReceived);
+    manager.startServer(config.serverId);
+    QSignalSpy initializedSpy(
+        &manager, &infrastructure::mcp::McpClientManager::serverInitialized);
+    QVERIFY(!manager.initialize(config.serverId).isEmpty());
+    QTRY_COMPARE_WITH_TIMEOUT(initializedSpy.count(), 1, 2'000);
+    QTRY_VERIFY_WITH_TIMEOUT(notificationSpy.count() >= 1, 2'000);
+
+    auto foundRoots = false;
+    for (const auto& arguments : notificationSpy)
+    {
+        if (arguments.at(1).toString() != QLatin1String("test/roots_received"))
+            continue;
+        const auto roots = arguments.at(2)
+                               .toJsonObject()
+                               .value(QStringLiteral("roots"))
+                               .toArray();
+        QCOMPARE(roots.size(), 1);
+        QCOMPARE(roots.at(0).toObject().value(QStringLiteral("uri")).toString(),
+                 manager.roots(config.serverId).constFirst().uri);
+        foundRoots = true;
+    }
+    QVERIFY(foundRoots);
 }
 
 void StdioMcpTransportTest::builtInFilesystemWritesCppFile()

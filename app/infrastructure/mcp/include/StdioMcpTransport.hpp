@@ -29,6 +29,10 @@ class StdioMcpTransport final : public McpTransport
     void cancelAll() override;
 
     bool notify(const QString& method, const QJsonObject& params = {}) override;
+    bool respond(const QJsonValue& requestId,
+                 const QJsonObject& result) override;
+    bool respondError(const QJsonValue& requestId, int code,
+                      const QString& message) override;
 
    private slots:
     void onReadyReadStandardOutput();
@@ -45,6 +49,7 @@ class StdioMcpTransport final : public McpTransport
 
     QString writeRequest(const QJsonObject& object, const QString& method,
                          int timeoutMs);
+    bool writeMessage(const QJsonObject& object);
     void processLine(const QByteArray& line);
     void failPending(const QString& requestId, const QString& code,
                      const QString& message);

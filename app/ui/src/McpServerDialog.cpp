@@ -85,12 +85,16 @@ McpServerDialog::McpServerDialog(QStringList existingServerIds, QWidget* parent)
         style()->standardIcon(QStyle::SP_DialogOpenButton));
     ui_->workingDirectoryBrowseButton->setIcon(
         style()->standardIcon(QStyle::SP_DirOpenIcon));
+    ui_->authorizedRootBrowseButton->setIcon(
+        style()->standardIcon(QStyle::SP_DirOpenIcon));
     connect(ui_->fastMcpFolderBrowseButton, &QToolButton::clicked, this,
             &McpServerDialog::browseFastMcpFolder);
     connect(ui_->programBrowseButton, &QToolButton::clicked, this,
             &McpServerDialog::browseProgram);
     connect(ui_->workingDirectoryBrowseButton, &QToolButton::clicked, this,
             &McpServerDialog::browseWorkingDirectory);
+    connect(ui_->authorizedRootBrowseButton, &QToolButton::clicked, this,
+            &McpServerDialog::browseAuthorizedRoot);
     connect(ui_->buttonBox, &QDialogButtonBox::accepted, this,
             &McpServerDialog::accept);
     connect(ui_->buttonBox, &QDialogButtonBox::rejected, this,
@@ -113,7 +117,7 @@ void McpServerDialog::accept()
         ui_->configurationTabs->currentWidget() == ui_->fastMcpTab
             ? configureFastMcpPackage()
             : configureCustomServer();
-    if (!configured) return;
+    if (!configured || !configureAuthorizedRoots()) return;
 
     configuration_.enabled = true;
     QDialog::accept();
@@ -191,6 +195,26 @@ bool McpServerDialog::configureCustomServer()
     return true;
 }
 
+bool McpServerDialog::configureAuthorizedRoots()
+{
+    const auto values = ui_->authorizedRootsEdit->text().split(
+        QLatin1Char(';'), Qt::SkipEmptyParts);
+    for (const auto& value : values)
+    {
+        const QFileInfo rootInfo(value.trimmed());
+        const auto canonical = rootInfo.canonicalFilePath();
+        if (!rootInfo.isAbsolute() || !rootInfo.isDir() || canonical.isEmpty())
+        {
+            showValidationError(
+                tr("Each authorized root must be an existing directory."));
+            return false;
+        }
+        configuration_.authorizedRoots.append(canonical);
+    }
+    configuration_.authorizedRoots.removeDuplicates();
+    return true;
+}
+
 bool McpServerDialog::validateServerId(const QString& serverId)
 {
     static const QRegularExpression validServerId(
@@ -253,6 +277,22 @@ void McpServerDialog::browseWorkingDirectory()
     if (!selected.isEmpty())
         ui_->workingDirectoryEdit->setText(
             QFileInfo(selected).absoluteFilePath());
+}
+
+void McpServerDialog::browseAuthorizedRoot()
+{
+    const auto selected = QFileDialog::getExistingDirectory(
+        this, tr("Select authorized MCP root"), QDir::homePath(),
+        QFileDialog::ShowDirsOnly | QFileDialog::DontResolveSymlinks);
+    if (selected.isEmpty()) return;
+
+    auto roots = ui_->authorizedRootsEdit->text().split(QLatin1Char(';'),
+                                                        Qt::SkipEmptyParts);
+    roots.append(QFileInfo(selected).canonicalFilePath());
+    for (auto& root : roots)
+        root = root.trimmed();
+    roots.removeDuplicates();
+    ui_->authorizedRootsEdit->setText(roots.join(QLatin1Char(';')));
 }
 
 void McpServerDialog::showValidationError(const QString& message)

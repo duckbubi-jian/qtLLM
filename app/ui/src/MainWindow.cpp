@@ -319,7 +319,17 @@ MainWindow::MainWindow(QWidget* parent)
                 appendMcpDiagnostic(serverId, tr("Protocol"),
                                     tr("Initialized"));
                 refreshMcpServerMenu();
-                mcpManager_.listTools(serverId);
+                const auto snapshot = mcpManager_.serverSnapshot(serverId);
+                if (!snapshot) return;
+                if (snapshot->capabilities.tools)
+                    mcpManager_.listTools(serverId);
+                if (snapshot->capabilities.resources)
+                {
+                    mcpManager_.listResources(serverId);
+                    mcpManager_.listResourceTemplates(serverId);
+                }
+                if (snapshot->capabilities.prompts)
+                    mcpManager_.listPrompts(serverId);
             });
     connect(&mcpManager_, &infrastructure::mcp::McpClientManager::toolsChanged,
             this,
@@ -341,6 +351,86 @@ MainWindow::MainWindow(QWidget* parent)
                     toolPolicy_.setRule(tool.qualifiedName, rule);
                 }
                 refreshMcpServerMenu();
+            });
+    connect(
+        &mcpManager_, &infrastructure::mcp::McpClientManager::resourcesChanged,
+        this,
+        [this](
+            const QString& serverId,
+            const QList<infrastructure::mcp::McpResourceDefinition>& resources)
+        {
+            appendMcpDiagnostic(
+                serverId, tr("Resources"),
+                tr("Catalog updated: %n resources", nullptr, resources.size()));
+            refreshMcpServerMenu();
+        });
+    connect(
+        &mcpManager_,
+        &infrastructure::mcp::McpClientManager::resourceTemplatesChanged, this,
+        [this](const QString& serverId,
+               const QList<infrastructure::mcp::McpResourceTemplateDefinition>&
+                   templates)
+        {
+            appendMcpDiagnostic(
+                serverId, tr("Resources"),
+                tr("Catalog updated: %n templates", nullptr, templates.size()));
+            refreshMcpServerMenu();
+        });
+    connect(
+        &mcpManager_, &infrastructure::mcp::McpClientManager::promptsChanged,
+        this,
+        [this](const QString& serverId,
+               const QList<infrastructure::mcp::McpPromptDefinition>& prompts)
+        {
+            appendMcpDiagnostic(
+                serverId, tr("Prompts"),
+                tr("Catalog updated: %n prompts", nullptr, prompts.size()));
+            refreshMcpServerMenu();
+        });
+    connect(&mcpManager_,
+            &infrastructure::mcp::McpClientManager::resourceReadReady, this,
+            [this](const infrastructure::mcp::McpResourceReadResult& result)
+            {
+                appendMcpDiagnostic(result.serverId, tr("Resources"),
+                                    tr("Read %1").arg(result.requestedUri));
+                if (mcpControlPanel_ != nullptr)
+                    mcpControlPanel_->showResourceResult(result);
+            });
+    connect(&mcpManager_, &infrastructure::mcp::McpClientManager::promptReady,
+            this,
+            [this](const infrastructure::mcp::McpPromptResult& result)
+            {
+                appendMcpDiagnostic(result.serverId, tr("Prompts"),
+                                    tr("Loaded %1").arg(result.promptName));
+                if (mcpControlPanel_ != nullptr)
+                    mcpControlPanel_->showPromptResult(result);
+            });
+    connect(&mcpManager_,
+            &infrastructure::mcp::McpClientManager::resourceUpdated, this,
+            [this](const QString& serverId, const QString& uri)
+            {
+                appendMcpDiagnostic(serverId, tr("Resources"),
+                                    tr("Updated %1").arg(uri));
+            });
+    connect(&mcpManager_,
+            &infrastructure::mcp::McpClientManager::resourceSubscriptionChanged,
+            this,
+            [this](const QString& serverId, const QString& uri, bool subscribed)
+            {
+                appendMcpDiagnostic(serverId, tr("Resources"),
+                                    subscribed
+                                        ? tr("Subscribed to %1").arg(uri)
+                                        : tr("Unsubscribed from %1").arg(uri));
+                refreshMcpServerMenu();
+            });
+    connect(&mcpManager_,
+            &infrastructure::mcp::McpClientManager::rootsRequested, this,
+            [this](const QString& serverId,
+                   const QList<infrastructure::mcp::McpRoot>& roots)
+            {
+                appendMcpDiagnostic(
+                    serverId, tr("Roots"),
+                    tr("Returned %n authorized roots", nullptr, roots.size()));
             });
     connect(&mcpManager_, &infrastructure::mcp::McpClientManager::serverError,
             this,
@@ -725,6 +815,12 @@ void MainWindow::showMcpControlPanel()
             &MainWindow::restartMcpServer);
     connect(mcpControlPanel_, &McpControlPanel::refreshToolsRequested, this,
             &MainWindow::refreshMcpTools);
+    connect(mcpControlPanel_, &McpControlPanel::readResourceRequested, this,
+            &MainWindow::readMcpResource);
+    connect(mcpControlPanel_, &McpControlPanel::resourceSubscriptionRequested,
+            this, &MainWindow::setMcpResourceSubscribed);
+    connect(mcpControlPanel_, &McpControlPanel::getPromptRequested, this,
+            &MainWindow::getMcpPrompt);
     refreshMcpControlPanel();
     mcpControlPanel_->show();
 }
@@ -775,11 +871,40 @@ void MainWindow::refreshMcpTools(const QString& serverId)
 {
     if (agentRunActive_ || chatController_.isGenerating()) return;
     const auto snapshot = mcpManager_.serverSnapshot(serverId);
-    if (!snapshot || !snapshot->capabilities.tools ||
+    if (!snapshot ||
         (snapshot->state != infrastructure::mcp::McpServerState::Ready &&
          snapshot->state != infrastructure::mcp::McpServerState::Degraded))
         return;
-    mcpManager_.listTools(serverId);
+    if (snapshot->capabilities.tools) mcpManager_.listTools(serverId);
+    if (snapshot->capabilities.resources)
+    {
+        mcpManager_.listResources(serverId);
+        mcpManager_.listResourceTemplates(serverId);
+    }
+    if (snapshot->capabilities.prompts) mcpManager_.listPrompts(serverId);
+}
+
+void MainWindow::readMcpResource(const QString& serverId, const QString& uri)
+{
+    if (agentRunActive_ || chatController_.isGenerating()) return;
+    mcpManager_.readResource(serverId, uri);
+}
+
+void MainWindow::setMcpResourceSubscribed(const QString& serverId,
+                                          const QString& uri, bool subscribe)
+{
+    if (agentRunActive_ || chatController_.isGenerating()) return;
+    if (subscribe)
+        mcpManager_.subscribeResource(serverId, uri);
+    else
+        mcpManager_.unsubscribeResource(serverId, uri);
+}
+
+void MainWindow::getMcpPrompt(const QString& serverId, const QString& name,
+                              const QJsonObject& arguments)
+{
+    if (agentRunActive_ || chatController_.isGenerating()) return;
+    mcpManager_.getPrompt(serverId, name, arguments);
 }
 
 void MainWindow::loadSelectedModel()
@@ -1478,30 +1603,9 @@ void MainWindow::refreshMcpControlPanel()
     const auto controlsEnabled =
         !agentRunActive_ && !chatController_.isGenerating();
     const auto allTools = mcpManager_.tools();
-    const auto rootSummary =
-        [](const infrastructure::mcp::McpServerConfig& config)
-    {
-        QStringList roots;
-        for (auto index = 0; index < config.arguments.size(); ++index)
-        {
-            const auto argument = config.arguments.at(index);
-            if ((argument == QLatin1String("--write-root") ||
-                 argument == QLatin1String("--read-root")) &&
-                index + 1 < config.arguments.size())
-            {
-                roots.append(
-                    QDir::toNativeSeparators(config.arguments.at(++index)));
-                continue;
-            }
-            for (const auto& prefix : {QStringLiteral("--write-root="),
-                                       QStringLiteral("--read-root=")})
-                if (argument.startsWith(prefix))
-                    roots.append(
-                        QDir::toNativeSeparators(argument.mid(prefix.size())));
-        }
-        roots.removeDuplicates();
-        return roots;
-    };
+    const auto allResources = mcpManager_.resources();
+    const auto allTemplates = mcpManager_.resourceTemplates();
+    const auto allPrompts = mcpManager_.prompts();
     const auto riskText = [this](infrastructure::mcp::ToolRisk risk)
     {
         switch (risk)
@@ -1550,7 +1654,8 @@ void MainWindow::refreshMcpControlPanel()
     };
 
     const auto makePresentation =
-        [this, controlsEnabled, &allTools, &rootSummary, &policyText,
+        [this, controlsEnabled, &allTools, &allResources, &allTemplates,
+         &allPrompts, &policyText,
          &hintsText](const infrastructure::mcp::McpServerConfig& config,
                      const QString& displayName, bool builtIn, bool available,
                      bool enabled)
@@ -1599,7 +1704,14 @@ void MainWindow::refreshMcpControlPanel()
             config.toolAllowlist.isEmpty()
                 ? tr("All advertised tools")
                 : config.toolAllowlist.join(QStringLiteral(", "));
-        const auto roots = rootSummary(config);
+        QStringList roots;
+        const auto registeredRoots = mcpManager_.roots(config.serverId);
+        if (!registeredRoots.isEmpty())
+            for (const auto& root : registeredRoots)
+                roots.append(QDir::toNativeSeparators(root.canonicalPath));
+        else
+            for (const auto& root : config.authorizedRoots)
+                roots.append(QDir::toNativeSeparators(root));
         presentation.authorizedRoots = roots.isEmpty()
                                            ? tr("None configured by the Host")
                                            : roots.join(QLatin1Char('\n'));
@@ -1610,6 +1722,21 @@ void MainWindow::refreshMcpControlPanel()
                                        policyText(tool.qualifiedName),
                                        hintsText(tool.annotations)});
         }
+        for (const auto& resource : allResources)
+            if (resource.serverId == config.serverId)
+                presentation.resources.append(
+                    {resource.uri, resource.name, resource.mimeType, false,
+                     mcpManager_.isResourceSubscribed(config.serverId,
+                                                      resource.uri)});
+        for (const auto& resourceTemplate : allTemplates)
+            if (resourceTemplate.serverId == config.serverId)
+                presentation.resources.append(
+                    {resourceTemplate.uriTemplate, resourceTemplate.name,
+                     resourceTemplate.mimeType, true, false});
+        for (const auto& prompt : allPrompts)
+            if (prompt.serverId == config.serverId)
+                presentation.prompts.append(
+                    {prompt.name, prompt.description, prompt.arguments});
         presentation.diagnostics = mcpDiagnostics_.value(config.serverId);
         return presentation;
     };
@@ -1622,6 +1749,7 @@ void MainWindow::refreshMcpControlPanel()
         config.program = tr("Built-in executable");
         config.workingDirectory = workspacePath_;
         config.arguments = {QStringLiteral("--write-root"), workspacePath_};
+        config.authorizedRoots = {workspacePath_};
         presentations.append(
             makePresentation(config, tr("Built-in filesystem"), true, true,
                              settingsStore_.builtInFilesystemMcpEnabled()));

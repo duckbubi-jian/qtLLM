@@ -1,5 +1,6 @@
 #pragma once
 
+#include "McpCatalog.hpp"
 #include "McpServerProcess.hpp"
 #include "McpServerRegistry.hpp"
 #include "McpTransport.hpp"
@@ -36,6 +37,15 @@ class McpHostRuntime final : public QObject
     [[nodiscard]] QStringList serverIds() const;
     [[nodiscard]] McpTransport* transport(const QString& serverId) const;
     [[nodiscard]] QList<agent::ToolDefinition> tools() const;
+    [[nodiscard]] QList<McpResourceDefinition> resources(
+        const QString& serverId = {}) const;
+    [[nodiscard]] QList<McpResourceTemplateDefinition> resourceTemplates(
+        const QString& serverId = {}) const;
+    [[nodiscard]] QList<McpPromptDefinition> prompts(
+        const QString& serverId = {}) const;
+    [[nodiscard]] QList<McpRoot> roots(const QString& serverId) const;
+    [[nodiscard]] bool isResourceSubscribed(const QString& serverId,
+                                            const QString& uri) const;
     [[nodiscard]] QString agentInstructions() const;
     [[nodiscard]] const ToolRegistry& registry() const;
     [[nodiscard]] std::optional<McpServerSnapshot> serverSnapshot(
@@ -46,6 +56,14 @@ class McpHostRuntime final : public QObject
     void stopServer(const QString& serverId);
     QString initialize(const QString& serverId);
     QString listTools(const QString& serverId);
+    QString listResources(const QString& serverId);
+    QString listResourceTemplates(const QString& serverId);
+    QString readResource(const QString& serverId, const QString& uri);
+    QString subscribeResource(const QString& serverId, const QString& uri);
+    QString unsubscribeResource(const QString& serverId, const QString& uri);
+    QString listPrompts(const QString& serverId);
+    QString getPrompt(const QString& serverId, const QString& name,
+                      const QJsonObject& arguments = {});
     QString callTool(const QString& qualifiedToolName,
                      const QJsonObject& arguments);
     void cancel(const QString& requestId);
@@ -62,6 +80,26 @@ class McpHostRuntime final : public QObject
                            const QJsonObject& serverInfo);
     void toolsChanged(const QString& serverId,
                       const QList<qtllm::agent::ToolDefinition>& tools);
+    void resourcesChanged(
+        const QString& serverId,
+        const QList<qtllm::infrastructure::mcp::McpResourceDefinition>&
+            resources);
+    void resourceTemplatesChanged(
+        const QString& serverId,
+        const QList<qtllm::infrastructure::mcp::McpResourceTemplateDefinition>&
+            templates);
+    void resourceReadReady(
+        const qtllm::infrastructure::mcp::McpResourceReadResult& result);
+    void resourceSubscriptionChanged(const QString& serverId,
+                                     const QString& uri, bool subscribed);
+    void resourceUpdated(const QString& serverId, const QString& uri);
+    void promptsChanged(
+        const QString& serverId,
+        const QList<qtllm::infrastructure::mcp::McpPromptDefinition>& prompts);
+    void promptReady(const qtllm::infrastructure::mcp::McpPromptResult& result);
+    void rootsRequested(
+        const QString& serverId,
+        const QList<qtllm::infrastructure::mcp::McpRoot>& roots);
     void toolResultReady(const qtllm::agent::ToolResult& result);
     void requestFailed(const QString& serverId, const QString& requestId,
                        const QString& method, const QString& code,
@@ -82,7 +120,14 @@ class McpHostRuntime final : public QObject
     {
         Initialize,
         ListTools,
-        CallTool
+        CallTool,
+        ListResources,
+        ListResourceTemplates,
+        ReadResource,
+        SubscribeResource,
+        UnsubscribeResource,
+        ListPrompts,
+        GetPrompt
     };
     struct PendingRequest
     {
@@ -91,6 +136,10 @@ class McpHostRuntime final : public QObject
         QString toolName;
         QList<agent::ToolDefinition> tools;
         QSet<QString> cursors;
+        QList<McpResourceDefinition> resources;
+        QList<McpResourceTemplateDefinition> resourceTemplates;
+        QList<McpPromptDefinition> prompts;
+        QString subject;
     };
     struct ServerConnection
     {
@@ -105,10 +154,18 @@ class McpHostRuntime final : public QObject
         int accepted = 0;
         bool reported = false;
     };
+    struct CatalogError
+    {
+        QString code;
+        QString message;
+    };
 
     void connectTransport(const QString& serverId, McpTransport* transport);
     void handleNotification(const QString& serverId, const QString& method,
                             const QJsonObject& params);
+    void handleServerRequest(const QString& serverId,
+                             const QJsonValue& requestId, const QString& method,
+                             const QJsonObject& params);
     QString invalidRequest(const QString& serverId, const QString& method,
                            const QString& message);
     void handleResponse(const QString& serverId, const QString& requestId,
@@ -123,15 +180,29 @@ class McpHostRuntime final : public QObject
     void discardPendingRequests(const QString& serverId);
     [[nodiscard]] bool hasToolRefresh(const QString& serverId) const;
     void refreshQueuedTools(const QString& serverId);
+    [[nodiscard]] bool hasPendingOperation(const QString& serverId,
+                                           Operation operation) const;
+    void refreshQueuedResources(const QString& serverId);
+    void refreshQueuedPrompts(const QString& serverId);
+    void recordCatalogFailure(const QString& serverId, Operation operation,
+                              const QString& code, const QString& message);
+    void recordCatalogSuccess(const QString& serverId, Operation operation);
     [[nodiscard]] bool acceptNotification(const QString& serverId);
 
     TransportFactory transportFactory_;
     QHash<QString, ServerConnection> connections_;
     QHash<QString, PendingRequest> pending_;
     QSet<QString> queuedToolRefreshes_;
+    QSet<QString> queuedResourceRefreshes_;
+    QSet<QString> queuedPromptRefreshes_;
+    QHash<QString, QSet<QString>> resourceSubscriptions_;
+    QHash<QString, QHash<int, CatalogError>> catalogErrors_;
     QElapsedTimer notificationClock_;
     QHash<QString, NotificationWindow> notificationWindows_;
     McpServerRegistry serverRegistry_;
     ToolRegistry toolRegistry_;
+    McpResourceRegistry resourceRegistry_;
+    McpPromptRegistry promptRegistry_;
+    McpRootRegistry rootRegistry_;
 };
 }  // namespace qtllm::infrastructure::mcp

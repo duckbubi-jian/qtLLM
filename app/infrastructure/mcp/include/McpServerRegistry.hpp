@@ -34,6 +34,10 @@ struct McpServerSnapshot
     QJsonObject serverInfo;
     QString instructions;
     qsizetype toolCount = 0;
+    qsizetype resourceCount = 0;
+    qsizetype resourceTemplateCount = 0;
+    qsizetype promptCount = 0;
+    qsizetype rootCount = 0;
     QString lastErrorCode;
     QString lastErrorMessage;
 };
@@ -54,6 +58,10 @@ class McpServerRegistry final
     bool setInitialization(const QString& serverId,
                            const McpInitializeResult& initialization);
     bool replaceTools(const QString& serverId, qsizetype toolCount);
+    bool replaceResources(const QString& serverId, qsizetype resourceCount,
+                          qsizetype resourceTemplateCount);
+    bool replacePrompts(const QString& serverId, qsizetype promptCount);
+    bool replaceRoots(const QString& serverId, qsizetype rootCount);
     bool revokeCapabilities(const QString& serverId);
     bool setError(const QString& serverId, const QString& code,
                   const QString& message);

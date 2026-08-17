@@ -1,5 +1,6 @@
 #pragma once
 
+#include "McpCatalog.hpp"
 #include "McpServerRegistry.hpp"
 
 #include <QDialog>
@@ -24,6 +25,22 @@ struct McpToolPresentation
     QString serverHints;
 };
 
+struct McpResourcePresentation
+{
+    QString uri;
+    QString name;
+    QString mimeType;
+    bool resourceTemplate = false;
+    bool subscribed = false;
+};
+
+struct McpPromptPresentation
+{
+    QString name;
+    QString description;
+    QList<infrastructure::mcp::McpPromptArgument> arguments;
+};
+
 struct McpServerControlPresentation
 {
     QString serverId;
@@ -42,6 +59,8 @@ struct McpServerControlPresentation
     QString allowlist;
     QString authorizedRoots;
     QList<McpToolPresentation> tools;
+    QList<McpResourcePresentation> resources;
+    QList<McpPromptPresentation> prompts;
     QStringList diagnostics;
 };
 
@@ -53,6 +72,9 @@ class McpControlPanel final : public QDialog
     explicit McpControlPanel(QWidget* parent = nullptr);
 
     void setServers(const QList<McpServerControlPresentation>& servers);
+    void showResourceResult(
+        const infrastructure::mcp::McpResourceReadResult& result);
+    void showPromptResult(const infrastructure::mcp::McpPromptResult& result);
 
    signals:
     void addServerRequested();
@@ -63,10 +85,16 @@ class McpControlPanel final : public QDialog
     void stopServerRequested(const QString& serverId);
     void restartServerRequested(const QString& serverId);
     void refreshToolsRequested(const QString& serverId);
+    void readResourceRequested(const QString& serverId, const QString& uri);
+    void resourceSubscriptionRequested(const QString& serverId,
+                                       const QString& uri, bool subscribe);
+    void getPromptRequested(const QString& serverId, const QString& name,
+                            const QJsonObject& arguments);
 
    private:
     void selectServer(const QString& serverId);
     void updateDetails();
+    void updateCatalogActions();
     [[nodiscard]] const McpServerControlPresentation* selectedServer() const;
 
     QList<McpServerControlPresentation> servers_;
@@ -88,6 +116,14 @@ class McpControlPanel final : public QDialog
     QPlainTextEdit* instructionsEdit_ = nullptr;
     QLabel* lastErrorValue_ = nullptr;
     QTreeWidget* toolsList_ = nullptr;
+    QTreeWidget* resourcesList_ = nullptr;
+    QPlainTextEdit* resourceResultEdit_ = nullptr;
+    QToolButton* readResourceButton_ = nullptr;
+    QToolButton* subscribeResourceButton_ = nullptr;
+    QTreeWidget* promptsList_ = nullptr;
+    QLineEdit* promptArgumentsEdit_ = nullptr;
+    QPlainTextEdit* promptResultEdit_ = nullptr;
+    QToolButton* getPromptButton_ = nullptr;
     QPlainTextEdit* diagnosticsEdit_ = nullptr;
     QToolButton* startButton_ = nullptr;
     QToolButton* stopButton_ = nullptr;

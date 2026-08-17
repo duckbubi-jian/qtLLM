@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QObject>
 #include <QString>
 
@@ -24,6 +25,10 @@ class McpTransport : public QObject
     virtual void cancelAll() = 0;
     virtual bool notify(const QString& method,
                         const QJsonObject& params = {}) = 0;
+    virtual bool respond(const QJsonValue& requestId,
+                         const QJsonObject& result) = 0;
+    virtual bool respondError(const QJsonValue& requestId, int code,
+                              const QString& message) = 0;
 
    signals:
     void responseReceived(const QString& requestId, const QString& method,
@@ -31,6 +36,8 @@ class McpTransport : public QObject
     void requestFailed(const QString& requestId, const QString& method,
                        const QString& code, const QString& message);
     void notificationReceived(const QString& method, const QJsonObject& params);
+    void requestReceived(const QJsonValue& requestId, const QString& method,
+                         const QJsonObject& params);
     void diagnosticReceived(const QString& text);
     void started();
     void stopped();

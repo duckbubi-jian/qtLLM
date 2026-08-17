@@ -113,8 +113,29 @@ bool StdioMcpTransport::notify(const QString& method, const QJsonObject& params)
         QJsonObject{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
                     {QStringLiteral("method"), method},
                     {QStringLiteral("params"), params}};
-    return process_.write(QJsonDocument(object).toJson(QJsonDocument::Compact) +
-                          '\n') >= 0;
+    return writeMessage(object);
+}
+
+bool StdioMcpTransport::respond(const QJsonValue& requestId,
+                                const QJsonObject& result)
+{
+    if (!isRunning() || (!requestId.isString() && !requestId.isDouble()))
+        return false;
+    return writeMessage({{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+                         {QStringLiteral("id"), requestId},
+                         {QStringLiteral("result"), result}});
+}
+
+bool StdioMcpTransport::respondError(const QJsonValue& requestId, int code,
+                                     const QString& message)
+{
+    if (!isRunning() || (!requestId.isString() && !requestId.isDouble()))
+        return false;
+    return writeMessage({{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
+                         {QStringLiteral("id"), requestId},
+                         {QStringLiteral("error"),
+                          QJsonObject{{QStringLiteral("code"), code},
+                                      {QStringLiteral("message"), message}}}});
 }
 
 QString StdioMcpTransport::writeRequest(const QJsonObject& object,
@@ -142,6 +163,13 @@ QString StdioMcpTransport::writeRequest(const QJsonObject& object,
     pending_.insert(requestId, {method, timer});
     timer->start(boundedTimeout);
     return requestId;
+}
+
+bool StdioMcpTransport::writeMessage(const QJsonObject& object)
+{
+    const auto data =
+        QJsonDocument(object).toJson(QJsonDocument::Compact) + '\n';
+    return process_.write(data) == data.size();
 }
 
 void StdioMcpTransport::onReadyReadStandardOutput()
@@ -224,22 +252,41 @@ void StdioMcpTransport::processLine(const QByteArray& line)
     if (idValue.isUndefined() || idValue.isNull())
     {
         const auto method = object.value(QStringLiteral("method"));
+        const auto params = object.value(QStringLiteral("params"));
         if (!method.isString() ||
-            !object.value(QStringLiteral("params")).isObject())
+            (!params.isUndefined() && !params.isNull() && !params.isObject()))
         {
             emit transportError(QStringLiteral("invalid_message"),
                                 QStringLiteral("Invalid MCP notification."));
             return;
         }
-        emit notificationReceived(
-            method.toString(),
-            object.value(QStringLiteral("params")).toObject());
+        emit notificationReceived(method.toString(), params.toObject());
         return;
     }
     if (!idValue.isString() && !idValue.isDouble())
     {
         emit transportError(QStringLiteral("invalid_message"),
                             QStringLiteral("MCP response id is invalid."));
+        return;
+    }
+
+    const auto method = object.value(QStringLiteral("method"));
+    if (!method.isUndefined())
+    {
+        const auto params = object.value(QStringLiteral("params"));
+        if (!method.isString() || method.toString().trimmed().isEmpty())
+        {
+            emit transportError(QStringLiteral("invalid_message"),
+                                QStringLiteral("Invalid MCP request method."));
+            return;
+        }
+        if (!params.isUndefined() && !params.isNull() && !params.isObject())
+        {
+            respondError(idValue, -32602,
+                         QStringLiteral("Request params must be an object."));
+            return;
+        }
+        emit requestReceived(idValue, method.toString(), params.toObject());
         return;
     }
 

@@ -86,7 +86,7 @@ bool McpServerRegistry::addServer(const QString& serverId,
 
 bool McpServerRegistry::removeServer(const QString& serverId)
 {
-    return servers_.remove(serverId) > 0;
+    return servers_.remove(serverId);
 }
 
 bool McpServerRegistry::contains(const QString& serverId) const
@@ -166,6 +166,38 @@ bool McpServerRegistry::replaceTools(const QString& serverId,
     return true;
 }
 
+bool McpServerRegistry::replaceResources(const QString& serverId,
+                                         qsizetype resourceCount,
+                                         qsizetype resourceTemplateCount)
+{
+    const auto iterator = servers_.find(serverId);
+    if (iterator == servers_.end()) return false;
+    iterator->resourceCount = resourceCount;
+    iterator->resourceTemplateCount = resourceTemplateCount;
+    ++iterator->capabilityRevision;
+    return true;
+}
+
+bool McpServerRegistry::replacePrompts(const QString& serverId,
+                                       qsizetype promptCount)
+{
+    const auto iterator = servers_.find(serverId);
+    if (iterator == servers_.end()) return false;
+    iterator->promptCount = promptCount;
+    ++iterator->capabilityRevision;
+    return true;
+}
+
+bool McpServerRegistry::replaceRoots(const QString& serverId,
+                                     qsizetype rootCount)
+{
+    const auto iterator = servers_.find(serverId);
+    if (iterator == servers_.end()) return false;
+    iterator->rootCount = rootCount;
+    ++iterator->capabilityRevision;
+    return true;
+}
+
 bool McpServerRegistry::revokeCapabilities(const QString& serverId)
 {
     const auto iterator = servers_.find(serverId);
@@ -173,13 +205,17 @@ bool McpServerRegistry::revokeCapabilities(const QString& serverId)
     if (iterator->protocolVersion.isEmpty() &&
         iterator->capabilities.raw.isEmpty() &&
         iterator->serverInfo.isEmpty() && iterator->instructions.isEmpty() &&
-        iterator->toolCount == 0)
+        iterator->toolCount == 0 && iterator->resourceCount == 0 &&
+        iterator->resourceTemplateCount == 0 && iterator->promptCount == 0)
         return true;
     iterator->protocolVersion.clear();
     iterator->capabilities = {};
     iterator->serverInfo = {};
     iterator->instructions.clear();
     iterator->toolCount = 0;
+    iterator->resourceCount = 0;
+    iterator->resourceTemplateCount = 0;
+    iterator->promptCount = 0;
     ++iterator->capabilityRevision;
     return true;
 }

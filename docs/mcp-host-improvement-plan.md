@@ -2,7 +2,7 @@
 
 ## 1. 文档状态与目标
 
-- 状态：实施中；阶段 0 至阶段 2 已于 2026-08-17 完成，下一步为阶段 3。
+- 状态：实施中；阶段 0 至阶段 4 已于 2026-08-17 完成，下一步为阶段 5。
 - 基线日期：2026-08-17。
 - qtLLM 基线提交：`0432f45a0642aaafb9293d6d242c00907dfc9d3e`。
 - 参考实现：Pi Agent Harness，提交
@@ -55,7 +55,8 @@ Agent 的实际上限仍同时受本地模型的工具选择能力、上下文�
 ### 3.1 已具备
 
 - `McpClientManager` 已支持多个配置项，并完成 stdio Server 的启动和停止。
-- 已支持 `initialize`、`notifications/initialized`、`tools/list` 和 `tools/call`。
+- 已支持 `initialize`、`notifications/initialized`、Tools、Resources、Prompts 和
+  `roots/list`。
 - `ToolRegistry` 保存带 `serverId` 命名空间的工具，并在调用前校验参数。
 - `ToolPolicy` 独立于 Server，未知工具默认不自动信任。
 - `StdioMcpTransport` 已实现请求超时、本地取消、迟到响应忽略、stderr 诊断和
@@ -64,15 +65,17 @@ Agent 的实际上限仍同时受本地模型的工具选择能力、上下文�
 - Fake MCP Server 已覆盖基础发现、调用、远端错误、超时和取消。
 - `McpHostRuntime` 已通过抽象 transport 管理逐 Server 生命周期、pending request、
   状态和能力快照；`McpClientManager` 保留为兼容 facade。
-- Server 停止或失败时只撤销自身能力；目录刷新失败保留上一份有效工具快照并进入
-  `Degraded`。
+- Server 停止或失败时只撤销自身能力；目录刷新失败保留上一份有效快照并进入
+  `Degraded`，各类目录错误独立记账。
 - Tools 已支持 cursor 分页、动态目录合并刷新、output schema、annotations、丰富
   结果、类型化通知限流和协议取消。
+- Resources 已支持发现、模板、分页、读取、订阅和更新通知；Prompts 已支持发现、
+  参数校验和显式获取；Roots 按 Server 显式授权。
 
 ### 3.2 关键缺口
 
-1. Host 只能处理 Server response/notification，不能路由带 id 的 Server 发起请求，
-   因而无法支撑 Roots、sampling 或用户输入请求。
+1. Host 已能路由带 id 的 Server 请求并处理 `roots/list`，但 sampling 和用户输入
+   请求仍保持默认拒绝，尚未实现授权与预算控制。
 1. Server instructions 会进入 Agent 上下文，但缺少独立的来源标记、启用策略和
    prompt injection 边界。
 1. MCP 配置主要面向 stdio；尚无 Streamable HTTP、认证、凭据引用和网络域名
@@ -93,7 +96,7 @@ Agent 的实际上限仍同时受本地模型的工具选择能力、上下文�
 
 ### 4.2 分里程碑完成
 
-- Resources、Prompts 和 Roots。
+- Resources、Prompts 和 Roots（已完成）。
 - Streamable HTTP、认证和凭据管理。
 - Server 发起的 sampling、用户输入请求及其他需要反向请求的能力。
 
@@ -354,7 +357,7 @@ Server 崩溃不影响另一个 Server 或普通聊天。
 - runtime 可从进程仍存活的 `Failed` 状态执行受控重启，避免 transport no-op 后
   状态停留在 `Starting`；fake transport 回归覆盖该路径。
 
-### 阶段 4：Resources、Prompts 与 Roots（4 至 6 个工作日）
+### 阶段 4：Resources、Prompts 与 Roots（已完成，2026-08-17）
 
 - 实现三个独立 capability registry 和分页/更新语义。
 - 增加 Resource 查看器、Prompt 显式选择和逐 Server Roots 授权。
@@ -362,6 +365,19 @@ Server 崩溃不影响另一个 Server 或普通聊天。
 
 验收：第三方 Server 无需修改 qtLLM 即可提供资源和 Prompt；未授权 Server 不能
 获得 Roots；Prompt 不会静默提升为本地 system 指令。
+
+完成记录：
+
+- 新增独立 Resource、Resource Template、Prompt 和 Root registry；目录按 cursor
+  收集全部分页后原子替换，失败保留上一份有效快照。
+- 支持 `resources/list`、`resources/templates/list`、`resources/read`、订阅/退订、
+  `prompts/list`、`prompts/get` 及对应目录变化通知。
+- transport 区分 response、notification 和 Server 发起的带 id 请求；`roots/list`
+  只返回该 Server 的显式授权 roots，其他未实现请求返回标准错误。
+- 控制面提供 Resources、Prompts、读取结果、订阅状态和 Prompt 参数输入；Prompt
+  仅显式获取，不自动写入 Agent 或 system prompt。
+- Fake Server 和 UI 测试覆盖分页原子性、参数/内容校验、结果大小限制、订阅更新、
+  roots 往返、默认拒绝以及旧配置兼容。
 
 ### 阶段 5：Streamable HTTP 与认证（5 至 8 个工作日）
 
@@ -388,8 +404,8 @@ Server 权限；递归调用有确定性上限。
 验收：默认 CTest 不依赖真实模型或公网；安装升级保留 MCP 配置和权限；MCP、
 worker 任一单点故障不导致主窗口崩溃。
 
-核心交付阶段 0 至 3 已完成。完整完成阶段 0 至 7 原预计 26 至 42 个工作日；
-阶段 4、5 可在 Host Facade 稳定后并行开发。
+核心交付阶段 0 至 4 已完成。完整完成阶段 0 至 7 原预计 26 至 42 个工作日；
+后续从阶段 5 的 Streamable HTTP、认证和网络安全边界继续实施。
 
 ## 9. 测试矩阵
 

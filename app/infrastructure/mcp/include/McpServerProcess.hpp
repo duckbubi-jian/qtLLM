@@ -16,6 +16,7 @@ struct McpServerConfig
     QMap<QString, QString> environment;
     QString workingDirectory;
     QStringList toolAllowlist;
+    QStringList authorizedRoots;
     bool enabled = true;
     int initializeTimeoutMs = 10'000;
     int requestTimeoutMs = 30'000;

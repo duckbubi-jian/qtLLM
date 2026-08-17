@@ -186,6 +186,12 @@ McpHostRuntime::McpHostRuntime(TransportFactory transportFactory,
     qRegisterMetaType<agent::ToolFailureKind>();
     qRegisterMetaType<McpServerState>();
     qRegisterMetaType<McpServerSnapshot>();
+    qRegisterMetaType<McpResourceDefinition>();
+    qRegisterMetaType<McpResourceTemplateDefinition>();
+    qRegisterMetaType<McpResourceReadResult>();
+    qRegisterMetaType<McpPromptDefinition>();
+    qRegisterMetaType<McpPromptResult>();
+    qRegisterMetaType<McpRoot>();
     notificationClock_.start();
 }
 
@@ -221,6 +227,14 @@ bool McpHostRuntime::addServer(McpServerConfig config, QString& errorMessage)
         return false;
     }
     if (!serverRegistry_.addServer(config.serverId, errorMessage)) return false;
+    if (!rootRegistry_.replaceServerRoots(config.serverId,
+                                          config.authorizedRoots, errorMessage))
+    {
+        serverRegistry_.removeServer(config.serverId);
+        return false;
+    }
+    serverRegistry_.replaceRoots(config.serverId,
+                                 rootRegistry_.roots(config.serverId).size());
 
     const auto serverId = config.serverId;
     auto* transportPointer = transport.get();
@@ -261,6 +275,10 @@ bool McpHostRuntime::removeServer(const QString& serverId,
             ++pending;
     }
     toolRegistry_.removeServer(serverId);
+    resourceRegistry_.removeServer(serverId);
+    promptRegistry_.removeServer(serverId);
+    rootRegistry_.removeServer(serverId);
+    resourceSubscriptions_.remove(serverId);
     serverRegistry_.removeServer(serverId);
     connections_.erase(iterator);
     return true;
@@ -281,6 +299,35 @@ McpTransport* McpHostRuntime::transport(const QString& serverId) const
 QList<agent::ToolDefinition> McpHostRuntime::tools() const
 {
     return toolRegistry_.tools();
+}
+
+QList<McpResourceDefinition> McpHostRuntime::resources(
+    const QString& serverId) const
+{
+    return resourceRegistry_.resources(serverId);
+}
+
+QList<McpResourceTemplateDefinition> McpHostRuntime::resourceTemplates(
+    const QString& serverId) const
+{
+    return resourceRegistry_.templates(serverId);
+}
+
+QList<McpPromptDefinition> McpHostRuntime::prompts(
+    const QString& serverId) const
+{
+    return promptRegistry_.prompts(serverId);
+}
+
+QList<McpRoot> McpHostRuntime::roots(const QString& serverId) const
+{
+    return rootRegistry_.roots(serverId);
+}
+
+bool McpHostRuntime::isResourceSubscribed(const QString& serverId,
+                                          const QString& uri) const
+{
+    return resourceSubscriptions_.value(serverId).contains(uri);
 }
 
 QString McpHostRuntime::agentInstructions() const
@@ -352,6 +399,7 @@ void McpHostRuntime::startServer(const QString& serverId)
     }
 
     revokeCapabilities(serverId);
+    catalogErrors_.remove(serverId);
     serverRegistry_.clearError(serverId);
     iterator->stopRequested = false;
     iterator->restartRequested = false;
@@ -406,7 +454,9 @@ QString McpHostRuntime::initialize(const QString& serverId)
     const auto requestId = iterator->transport->request(
         QStringLiteral("initialize"),
         {{QStringLiteral("protocolVersion"), latestSupportedProtocolVersion()},
-         {QStringLiteral("capabilities"), QJsonObject{}},
+         {QStringLiteral("capabilities"),
+          QJsonObject{{QStringLiteral("roots"),
+                       QJsonObject{{QStringLiteral("listChanged"), false}}}}},
          {QStringLiteral("clientInfo"),
           QJsonObject{{QStringLiteral("name"), QString::fromLatin1(clientName)},
                       {QStringLiteral("version"),
@@ -447,6 +497,240 @@ QString McpHostRuntime::listTools(const QString& serverId)
         PendingRequest pending;
         pending.serverId = serverId;
         pending.operation = Operation::ListTools;
+        pending_.insert(requestId, std::move(pending));
+    }
+    return requestId;
+}
+
+QString McpHostRuntime::listResources(const QString& serverId)
+{
+    const auto iterator = connections_.find(serverId);
+    if (iterator == connections_.end())
+        return invalidRequest(serverId, QStringLiteral("resources/list"),
+                              QStringLiteral("Unknown MCP server."));
+    const auto snapshot = serverRegistry_.snapshot(serverId);
+    if (!snapshot || (snapshot->state != McpServerState::Ready &&
+                      snapshot->state != McpServerState::Degraded))
+        return invalidRequest(serverId, QStringLiteral("resources/list"),
+                              QStringLiteral("MCP server is not ready."));
+    if (!snapshot->capabilities.resources)
+        return invalidRequest(
+            serverId, QStringLiteral("resources/list"),
+            QStringLiteral("MCP server did not declare Resources."));
+    if (hasPendingOperation(serverId, Operation::ListResources))
+        return invalidRequest(
+            serverId, QStringLiteral("resources/list"),
+            QStringLiteral("MCP resource refresh is already in progress."));
+    const auto requestId =
+        iterator->transport->request(QStringLiteral("resources/list"), {},
+                                     iterator->config.requestTimeoutMs);
+    if (!requestId.isEmpty())
+    {
+        PendingRequest pending;
+        pending.serverId = serverId;
+        pending.operation = Operation::ListResources;
+        pending_.insert(requestId, std::move(pending));
+    }
+    return requestId;
+}
+
+QString McpHostRuntime::listResourceTemplates(const QString& serverId)
+{
+    const auto iterator = connections_.find(serverId);
+    if (iterator == connections_.end())
+        return invalidRequest(serverId,
+                              QStringLiteral("resources/templates/list"),
+                              QStringLiteral("Unknown MCP server."));
+    const auto snapshot = serverRegistry_.snapshot(serverId);
+    if (!snapshot || (snapshot->state != McpServerState::Ready &&
+                      snapshot->state != McpServerState::Degraded))
+        return invalidRequest(serverId,
+                              QStringLiteral("resources/templates/list"),
+                              QStringLiteral("MCP server is not ready."));
+    if (!snapshot->capabilities.resources)
+        return invalidRequest(
+            serverId, QStringLiteral("resources/templates/list"),
+            QStringLiteral("MCP server did not declare Resources."));
+    if (hasPendingOperation(serverId, Operation::ListResourceTemplates))
+        return invalidRequest(
+            serverId, QStringLiteral("resources/templates/list"),
+            QStringLiteral(
+                "MCP resource template refresh is already in progress."));
+    const auto requestId =
+        iterator->transport->request(QStringLiteral("resources/templates/list"),
+                                     {}, iterator->config.requestTimeoutMs);
+    if (!requestId.isEmpty())
+    {
+        PendingRequest pending;
+        pending.serverId = serverId;
+        pending.operation = Operation::ListResourceTemplates;
+        pending_.insert(requestId, std::move(pending));
+    }
+    return requestId;
+}
+
+QString McpHostRuntime::readResource(const QString& serverId,
+                                     const QString& uri)
+{
+    const auto iterator = connections_.find(serverId);
+    if (iterator == connections_.end())
+        return invalidRequest(serverId, QStringLiteral("resources/read"),
+                              QStringLiteral("Unknown MCP server."));
+    const auto snapshot = serverRegistry_.snapshot(serverId);
+    if (!snapshot || (snapshot->state != McpServerState::Ready &&
+                      snapshot->state != McpServerState::Degraded))
+        return invalidRequest(serverId, QStringLiteral("resources/read"),
+                              QStringLiteral("MCP server is not ready."));
+    if (!snapshot->capabilities.resources)
+        return invalidRequest(
+            serverId, QStringLiteral("resources/read"),
+            QStringLiteral("MCP server did not declare Resources."));
+    if (resourceRegistry_.find(serverId, uri) == nullptr)
+        return invalidRequest(serverId, QStringLiteral("resources/read"),
+                              QStringLiteral("Resource is not registered."));
+    const auto requestId = iterator->transport->request(
+        QStringLiteral("resources/read"), {{QStringLiteral("uri"), uri}},
+        iterator->config.requestTimeoutMs);
+    if (!requestId.isEmpty())
+    {
+        PendingRequest pending;
+        pending.serverId = serverId;
+        pending.operation = Operation::ReadResource;
+        pending.subject = uri;
+        pending_.insert(requestId, std::move(pending));
+    }
+    return requestId;
+}
+
+QString McpHostRuntime::subscribeResource(const QString& serverId,
+                                          const QString& uri)
+{
+    const auto iterator = connections_.find(serverId);
+    if (iterator == connections_.end())
+        return invalidRequest(serverId, QStringLiteral("resources/subscribe"),
+                              QStringLiteral("Unknown MCP server."));
+    const auto snapshot = serverRegistry_.snapshot(serverId);
+    if (!snapshot || (snapshot->state != McpServerState::Ready &&
+                      snapshot->state != McpServerState::Degraded))
+        return invalidRequest(serverId, QStringLiteral("resources/subscribe"),
+                              QStringLiteral("MCP server is not ready."));
+    if (!snapshot->capabilities.resourcesSubscribe)
+        return invalidRequest(
+            serverId, QStringLiteral("resources/subscribe"),
+            QStringLiteral("MCP server did not declare subscriptions."));
+    if (resourceRegistry_.find(serverId, uri) == nullptr)
+        return invalidRequest(serverId, QStringLiteral("resources/subscribe"),
+                              QStringLiteral("Resource is not registered."));
+    if (resourceSubscriptions_.value(serverId).contains(uri))
+        return invalidRequest(
+            serverId, QStringLiteral("resources/subscribe"),
+            QStringLiteral("Resource is already subscribed."));
+    const auto requestId = iterator->transport->request(
+        QStringLiteral("resources/subscribe"), {{QStringLiteral("uri"), uri}},
+        iterator->config.requestTimeoutMs);
+    if (!requestId.isEmpty())
+    {
+        PendingRequest pending;
+        pending.serverId = serverId;
+        pending.operation = Operation::SubscribeResource;
+        pending.subject = uri;
+        pending_.insert(requestId, std::move(pending));
+    }
+    return requestId;
+}
+
+QString McpHostRuntime::unsubscribeResource(const QString& serverId,
+                                            const QString& uri)
+{
+    const auto iterator = connections_.find(serverId);
+    if (iterator == connections_.end())
+        return invalidRequest(serverId, QStringLiteral("resources/unsubscribe"),
+                              QStringLiteral("Unknown MCP server."));
+    const auto snapshot = serverRegistry_.snapshot(serverId);
+    if (!snapshot || (snapshot->state != McpServerState::Ready &&
+                      snapshot->state != McpServerState::Degraded))
+        return invalidRequest(serverId, QStringLiteral("resources/unsubscribe"),
+                              QStringLiteral("MCP server is not ready."));
+    if (!resourceSubscriptions_.value(serverId).contains(uri))
+        return invalidRequest(serverId, QStringLiteral("resources/unsubscribe"),
+                              QStringLiteral("Resource is not subscribed."));
+    const auto requestId = iterator->transport->request(
+        QStringLiteral("resources/unsubscribe"), {{QStringLiteral("uri"), uri}},
+        iterator->config.requestTimeoutMs);
+    if (!requestId.isEmpty())
+    {
+        PendingRequest pending;
+        pending.serverId = serverId;
+        pending.operation = Operation::UnsubscribeResource;
+        pending.subject = uri;
+        pending_.insert(requestId, std::move(pending));
+    }
+    return requestId;
+}
+
+QString McpHostRuntime::listPrompts(const QString& serverId)
+{
+    const auto iterator = connections_.find(serverId);
+    if (iterator == connections_.end())
+        return invalidRequest(serverId, QStringLiteral("prompts/list"),
+                              QStringLiteral("Unknown MCP server."));
+    const auto snapshot = serverRegistry_.snapshot(serverId);
+    if (!snapshot || (snapshot->state != McpServerState::Ready &&
+                      snapshot->state != McpServerState::Degraded))
+        return invalidRequest(serverId, QStringLiteral("prompts/list"),
+                              QStringLiteral("MCP server is not ready."));
+    if (!snapshot->capabilities.prompts)
+        return invalidRequest(
+            serverId, QStringLiteral("prompts/list"),
+            QStringLiteral("MCP server did not declare Prompts."));
+    if (hasPendingOperation(serverId, Operation::ListPrompts))
+        return invalidRequest(
+            serverId, QStringLiteral("prompts/list"),
+            QStringLiteral("MCP prompt refresh is already in progress."));
+    const auto requestId = iterator->transport->request(
+        QStringLiteral("prompts/list"), {}, iterator->config.requestTimeoutMs);
+    if (!requestId.isEmpty())
+    {
+        PendingRequest pending;
+        pending.serverId = serverId;
+        pending.operation = Operation::ListPrompts;
+        pending_.insert(requestId, std::move(pending));
+    }
+    return requestId;
+}
+
+QString McpHostRuntime::getPrompt(const QString& serverId, const QString& name,
+                                  const QJsonObject& arguments)
+{
+    const auto iterator = connections_.find(serverId);
+    if (iterator == connections_.end())
+        return invalidRequest(serverId, QStringLiteral("prompts/get"),
+                              QStringLiteral("Unknown MCP server."));
+    const auto snapshot = serverRegistry_.snapshot(serverId);
+    if (!snapshot || (snapshot->state != McpServerState::Ready &&
+                      snapshot->state != McpServerState::Degraded))
+        return invalidRequest(serverId, QStringLiteral("prompts/get"),
+                              QStringLiteral("MCP server is not ready."));
+    if (!snapshot->capabilities.prompts)
+        return invalidRequest(
+            serverId, QStringLiteral("prompts/get"),
+            QStringLiteral("MCP server did not declare Prompts."));
+    QString validationError;
+    if (!promptRegistry_.validateArguments(serverId, name, arguments,
+                                           validationError))
+        return invalidRequest(serverId, QStringLiteral("prompts/get"),
+                              validationError);
+    const auto requestId =
+        iterator->transport->request(QStringLiteral("prompts/get"),
+                                     {{QStringLiteral("name"), name},
+                                      {QStringLiteral("arguments"), arguments}},
+                                     iterator->config.requestTimeoutMs);
+    if (!requestId.isEmpty())
+    {
+        PendingRequest pending;
+        pending.serverId = serverId;
+        pending.operation = Operation::GetPrompt;
+        pending.subject = name;
         pending_.insert(requestId, std::move(pending));
     }
     return requestId;
@@ -544,6 +828,10 @@ void McpHostRuntime::connectTransport(const QString& serverId,
     connect(transportPointer, &McpTransport::notificationReceived, this,
             [this, serverId](const QString& method, const QJsonObject& params)
             { handleNotification(serverId, method, params); });
+    connect(transportPointer, &McpTransport::requestReceived, this,
+            [this, serverId](const QJsonValue& requestId, const QString& method,
+                             const QJsonObject& params)
+            { handleServerRequest(serverId, requestId, method, params); });
     connect(transportPointer, &McpTransport::diagnosticReceived, this,
             [this, serverId](const QString& text)
             { emit diagnosticReceived(serverId, text); });
@@ -552,8 +840,9 @@ void McpHostRuntime::connectTransport(const QString& serverId,
             {
                 if (!connections_.contains(serverId)) return;
                 discardPendingRequests(serverId);
-                serverRegistry_.setError(serverId, code, message);
                 revokeCapabilities(serverId);
+                catalogErrors_.remove(serverId);
+                serverRegistry_.setError(serverId, code, message);
                 changeState(serverId, McpServerState::Failed);
                 publishSnapshot(serverId);
                 emit serverError(serverId, code, message);
@@ -575,6 +864,40 @@ void McpHostRuntime::handleNotification(const QString& serverId,
                 queuedToolRefreshes_.insert(serverId);
             else
                 listTools(serverId);
+        }
+        emit notificationReceived(serverId, method, params);
+        return;
+    }
+    if (method == QLatin1String("notifications/resources/list_changed"))
+    {
+        const auto snapshot = serverRegistry_.snapshot(serverId);
+        if (snapshot && snapshot->capabilities.resourcesListChanged &&
+            (snapshot->state == McpServerState::Ready ||
+             snapshot->state == McpServerState::Degraded))
+        {
+            if (hasPendingOperation(serverId, Operation::ListResources) ||
+                hasPendingOperation(serverId, Operation::ListResourceTemplates))
+                queuedResourceRefreshes_.insert(serverId);
+            else
+            {
+                listResources(serverId);
+                listResourceTemplates(serverId);
+            }
+        }
+        emit notificationReceived(serverId, method, params);
+        return;
+    }
+    if (method == QLatin1String("notifications/prompts/list_changed"))
+    {
+        const auto snapshot = serverRegistry_.snapshot(serverId);
+        if (snapshot && snapshot->capabilities.promptsListChanged &&
+            (snapshot->state == McpServerState::Ready ||
+             snapshot->state == McpServerState::Degraded))
+        {
+            if (hasPendingOperation(serverId, Operation::ListPrompts))
+                queuedPromptRefreshes_.insert(serverId);
+            else
+                listPrompts(serverId);
         }
         emit notificationReceived(serverId, method, params);
         return;
@@ -621,7 +944,50 @@ void McpHostRuntime::handleNotification(const QString& serverId,
                                         params.value(QStringLiteral("data")));
         }
     }
+    else if (method == QLatin1String("notifications/resources/updated"))
+    {
+        const auto uri = params.value(QStringLiteral("uri"));
+        if (!uri.isString() || uri.toString().trimmed().isEmpty() ||
+            !resourceSubscriptions_.value(serverId).contains(uri.toString()))
+            emit serverError(
+                serverId, QStringLiteral("invalid_notification"),
+                QStringLiteral("Invalid or unsolicited resource update."));
+        else
+            emit resourceUpdated(serverId, uri.toString());
+    }
     emit notificationReceived(serverId, method, params);
+}
+
+void McpHostRuntime::handleServerRequest(const QString& serverId,
+                                         const QJsonValue& requestId,
+                                         const QString& method,
+                                         const QJsonObject&)
+{
+    auto* serverTransport = transport(serverId);
+    if (serverTransport == nullptr) return;
+    const auto snapshot = serverRegistry_.snapshot(serverId);
+    if (!snapshot || (snapshot->state != McpServerState::Ready &&
+                      snapshot->state != McpServerState::Degraded))
+    {
+        serverTransport->respondError(
+            requestId, -32002,
+            QStringLiteral("MCP Host is not ready for Server requests."));
+        return;
+    }
+    if (method != QLatin1String("roots/list"))
+    {
+        serverTransport->respondError(requestId, -32601,
+                                      QStringLiteral("Method not found."));
+        return;
+    }
+
+    const auto configuredRoots = rootRegistry_.roots(serverId);
+    QJsonArray roots;
+    for (const auto& root : configuredRoots)
+        roots.append(QJsonObject{{QStringLiteral("uri"), root.uri},
+                                 {QStringLiteral("name"), root.name}});
+    serverTransport->respond(requestId, {{QStringLiteral("roots"), roots}});
+    emit rootsRequested(serverId, configuredRoots);
 }
 
 QString McpHostRuntime::invalidRequest(const QString& serverId,
@@ -703,12 +1069,10 @@ void McpHostRuntime::handleResponse(const QString& serverId,
                 connection->config.requestTimeoutMs);
             if (nextRequestId.isEmpty())
             {
-                serverRegistry_.setError(
-                    serverId, QStringLiteral("request_failed"),
+                recordCatalogFailure(
+                    serverId, Operation::ListTools,
+                    QStringLiteral("request_failed"),
                     QStringLiteral("Unable to request the next tools page."));
-                const auto snapshot = serverRegistry_.snapshot(serverId);
-                if (snapshot && snapshot->state == McpServerState::Ready)
-                    changeState(serverId, McpServerState::Degraded);
                 publishSnapshot(serverId);
                 refreshQueuedTools(serverId);
                 return;
@@ -733,13 +1097,270 @@ void McpHostRuntime::handleResponse(const QString& serverId,
             return;
         }
         serverRegistry_.replaceTools(serverId, definitions.size());
-        serverRegistry_.clearError(serverId);
-        const auto snapshot = serverRegistry_.snapshot(serverId);
-        if (snapshot && snapshot->state == McpServerState::Degraded)
-            changeState(serverId, McpServerState::Ready);
+        recordCatalogSuccess(serverId, Operation::ListTools);
         publishSnapshot(serverId);
         emit toolsChanged(serverId, definitions);
         refreshQueuedTools(serverId);
+        return;
+    }
+
+    if (pending.operation == Operation::ListResources)
+    {
+        const auto connection = connections_.constFind(serverId);
+        if (connection == connections_.constEnd()) return;
+        QList<McpResourceDefinition> definitions;
+        QString pageError;
+        if (!parseResourcePage(serverId, result, pending.resources, definitions,
+                               pageError))
+        {
+            handleFailure(serverId, requestId, method,
+                          QStringLiteral("invalid_response"), pageError,
+                          &pending);
+            return;
+        }
+        const auto nextCursorValue = result.value(QStringLiteral("nextCursor"));
+        if (!nextCursorValue.isUndefined() && !nextCursorValue.isNull())
+        {
+            const auto cursor = nextCursorValue.toString();
+            if (!nextCursorValue.isString() || cursor.isEmpty() ||
+                pending.cursors.contains(cursor))
+            {
+                handleFailure(
+                    serverId, requestId, method,
+                    QStringLiteral("invalid_response"),
+                    QStringLiteral("resources/list returned an invalid or "
+                                   "repeated nextCursor."),
+                    &pending);
+                return;
+            }
+            const auto nextRequestId = connection->transport->request(
+                QStringLiteral("resources/list"),
+                {{QStringLiteral("cursor"), cursor}},
+                connection->config.requestTimeoutMs);
+            if (nextRequestId.isEmpty())
+            {
+                handleFailure(serverId, requestId, method,
+                              QStringLiteral("request_failed"),
+                              QStringLiteral("Unable to request the next "
+                                             "resource page."),
+                              &pending);
+                return;
+            }
+            PendingRequest nextPending;
+            nextPending.serverId = serverId;
+            nextPending.operation = Operation::ListResources;
+            nextPending.resources = std::move(definitions);
+            nextPending.cursors = pending.cursors;
+            nextPending.cursors.insert(cursor);
+            pending_.insert(nextRequestId, std::move(nextPending));
+            return;
+        }
+        QString registryError;
+        if (!resourceRegistry_.replaceServerResources(serverId, definitions,
+                                                      registryError))
+        {
+            handleFailure(serverId, requestId, method,
+                          QStringLiteral("invalid_resources"), registryError,
+                          &pending);
+            return;
+        }
+        serverRegistry_.replaceResources(
+            serverId, definitions.size(),
+            resourceRegistry_.templates(serverId).size());
+        recordCatalogSuccess(serverId, Operation::ListResources);
+        publishSnapshot(serverId);
+        emit resourcesChanged(serverId, definitions);
+        refreshQueuedResources(serverId);
+        return;
+    }
+
+    if (pending.operation == Operation::ListResourceTemplates)
+    {
+        const auto connection = connections_.constFind(serverId);
+        if (connection == connections_.constEnd()) return;
+        QList<McpResourceTemplateDefinition> definitions;
+        QString pageError;
+        if (!parseResourceTemplatePage(serverId, result,
+                                       pending.resourceTemplates, definitions,
+                                       pageError))
+        {
+            handleFailure(serverId, requestId, method,
+                          QStringLiteral("invalid_response"), pageError,
+                          &pending);
+            return;
+        }
+        const auto nextCursorValue = result.value(QStringLiteral("nextCursor"));
+        if (!nextCursorValue.isUndefined() && !nextCursorValue.isNull())
+        {
+            const auto cursor = nextCursorValue.toString();
+            if (!nextCursorValue.isString() || cursor.isEmpty() ||
+                pending.cursors.contains(cursor))
+            {
+                handleFailure(
+                    serverId, requestId, method,
+                    QStringLiteral("invalid_response"),
+                    QStringLiteral("resources/templates/list returned an "
+                                   "invalid or repeated nextCursor."),
+                    &pending);
+                return;
+            }
+            const auto nextRequestId = connection->transport->request(
+                QStringLiteral("resources/templates/list"),
+                {{QStringLiteral("cursor"), cursor}},
+                connection->config.requestTimeoutMs);
+            if (nextRequestId.isEmpty())
+            {
+                handleFailure(serverId, requestId, method,
+                              QStringLiteral("request_failed"),
+                              QStringLiteral("Unable to request the next "
+                                             "resource template page."),
+                              &pending);
+                return;
+            }
+            PendingRequest nextPending;
+            nextPending.serverId = serverId;
+            nextPending.operation = Operation::ListResourceTemplates;
+            nextPending.resourceTemplates = std::move(definitions);
+            nextPending.cursors = pending.cursors;
+            nextPending.cursors.insert(cursor);
+            pending_.insert(nextRequestId, std::move(nextPending));
+            return;
+        }
+        QString registryError;
+        if (!resourceRegistry_.replaceServerTemplates(serverId, definitions,
+                                                      registryError))
+        {
+            handleFailure(serverId, requestId, method,
+                          QStringLiteral("invalid_resource_templates"),
+                          registryError, &pending);
+            return;
+        }
+        serverRegistry_.replaceResources(
+            serverId, resourceRegistry_.resources(serverId).size(),
+            definitions.size());
+        recordCatalogSuccess(serverId, Operation::ListResourceTemplates);
+        publishSnapshot(serverId);
+        emit resourceTemplatesChanged(serverId, definitions);
+        refreshQueuedResources(serverId);
+        return;
+    }
+
+    if (pending.operation == Operation::ReadResource)
+    {
+        const auto connection = connections_.constFind(serverId);
+        if (connection == connections_.constEnd()) return;
+        McpResourceReadResult resourceResult;
+        QString parseError;
+        if (!parseResourceReadResult(requestId, serverId, pending.subject,
+                                     result, connection->config.maxResultBytes,
+                                     resourceResult, parseError))
+        {
+            handleFailure(serverId, requestId, method,
+                          QStringLiteral("invalid_response"), parseError,
+                          &pending);
+            return;
+        }
+        emit resourceReadReady(resourceResult);
+        return;
+    }
+
+    if (pending.operation == Operation::SubscribeResource ||
+        pending.operation == Operation::UnsubscribeResource)
+    {
+        const auto subscribed =
+            pending.operation == Operation::SubscribeResource;
+        if (subscribed)
+            resourceSubscriptions_[serverId].insert(pending.subject);
+        else
+            resourceSubscriptions_[serverId].remove(pending.subject);
+        emit resourceSubscriptionChanged(serverId, pending.subject, subscribed);
+        return;
+    }
+
+    if (pending.operation == Operation::ListPrompts)
+    {
+        const auto connection = connections_.constFind(serverId);
+        if (connection == connections_.constEnd()) return;
+        QList<McpPromptDefinition> definitions;
+        QString pageError;
+        if (!parsePromptPage(serverId, result, pending.prompts, definitions,
+                             pageError))
+        {
+            handleFailure(serverId, requestId, method,
+                          QStringLiteral("invalid_response"), pageError,
+                          &pending);
+            return;
+        }
+        const auto nextCursorValue = result.value(QStringLiteral("nextCursor"));
+        if (!nextCursorValue.isUndefined() && !nextCursorValue.isNull())
+        {
+            const auto cursor = nextCursorValue.toString();
+            if (!nextCursorValue.isString() || cursor.isEmpty() ||
+                pending.cursors.contains(cursor))
+            {
+                handleFailure(
+                    serverId, requestId, method,
+                    QStringLiteral("invalid_response"),
+                    QStringLiteral("prompts/list returned an invalid or "
+                                   "repeated nextCursor."),
+                    &pending);
+                return;
+            }
+            const auto nextRequestId = connection->transport->request(
+                QStringLiteral("prompts/list"),
+                {{QStringLiteral("cursor"), cursor}},
+                connection->config.requestTimeoutMs);
+            if (nextRequestId.isEmpty())
+            {
+                handleFailure(serverId, requestId, method,
+                              QStringLiteral("request_failed"),
+                              QStringLiteral("Unable to request the next "
+                                             "prompt page."),
+                              &pending);
+                return;
+            }
+            PendingRequest nextPending;
+            nextPending.serverId = serverId;
+            nextPending.operation = Operation::ListPrompts;
+            nextPending.prompts = std::move(definitions);
+            nextPending.cursors = pending.cursors;
+            nextPending.cursors.insert(cursor);
+            pending_.insert(nextRequestId, std::move(nextPending));
+            return;
+        }
+        QString registryError;
+        if (!promptRegistry_.replaceServerPrompts(serverId, definitions,
+                                                  registryError))
+        {
+            handleFailure(serverId, requestId, method,
+                          QStringLiteral("invalid_prompts"), registryError,
+                          &pending);
+            return;
+        }
+        serverRegistry_.replacePrompts(serverId, definitions.size());
+        recordCatalogSuccess(serverId, Operation::ListPrompts);
+        publishSnapshot(serverId);
+        emit promptsChanged(serverId, definitions);
+        refreshQueuedPrompts(serverId);
+        return;
+    }
+
+    if (pending.operation == Operation::GetPrompt)
+    {
+        const auto connection = connections_.constFind(serverId);
+        if (connection == connections_.constEnd()) return;
+        McpPromptResult promptResult;
+        QString parseError;
+        if (!parsePromptResult(requestId, serverId, pending.subject, result,
+                               connection->config.maxResultBytes, promptResult,
+                               parseError))
+        {
+            handleFailure(serverId, requestId, method,
+                          QStringLiteral("invalid_response"), parseError,
+                          &pending);
+            return;
+        }
+        emit promptReady(promptResult);
         return;
     }
 
@@ -864,14 +1485,27 @@ void McpHostRuntime::handleFailure(const QString& serverId,
     }
     if (pending.operation == Operation::ListTools)
     {
-        serverRegistry_.setError(serverId, code, message);
-        const auto snapshot = serverRegistry_.snapshot(serverId);
-        if (snapshot && snapshot->state == McpServerState::Ready)
-            changeState(serverId, McpServerState::Degraded);
+        recordCatalogFailure(serverId, Operation::ListTools, code, message);
         publishSnapshot(serverId);
         refreshQueuedTools(serverId);
         return;
     }
+    if (pending.operation == Operation::ListResources ||
+        pending.operation == Operation::ListResourceTemplates)
+    {
+        recordCatalogFailure(serverId, pending.operation, code, message);
+        publishSnapshot(serverId);
+        refreshQueuedResources(serverId);
+        return;
+    }
+    if (pending.operation == Operation::ListPrompts)
+    {
+        recordCatalogFailure(serverId, Operation::ListPrompts, code, message);
+        publishSnapshot(serverId);
+        refreshQueuedPrompts(serverId);
+        return;
+    }
+    if (pending.operation != Operation::CallTool) return;
 
     agent::ToolResult result;
     result.requestId = requestId;
@@ -909,10 +1543,21 @@ void McpHostRuntime::revokeCapabilities(const QString& serverId)
 {
     const auto before = serverRegistry_.snapshot(serverId);
     queuedToolRefreshes_.remove(serverId);
+    queuedResourceRefreshes_.remove(serverId);
+    queuedPromptRefreshes_.remove(serverId);
     notificationWindows_.remove(serverId);
+    catalogErrors_.remove(serverId);
+    resourceSubscriptions_.remove(serverId);
     toolRegistry_.removeServer(serverId);
+    resourceRegistry_.removeServer(serverId);
+    promptRegistry_.removeServer(serverId);
     if (!serverRegistry_.revokeCapabilities(serverId)) return;
     if (before && before->toolCount > 0) emit toolsChanged(serverId, {});
+    if (before && before->resourceCount > 0)
+        emit resourcesChanged(serverId, {});
+    if (before && before->resourceTemplateCount > 0)
+        emit resourceTemplatesChanged(serverId, {});
+    if (before && before->promptCount > 0) emit promptsChanged(serverId, {});
     publishSnapshot(serverId);
 }
 
@@ -929,18 +1574,84 @@ void McpHostRuntime::discardPendingRequests(const QString& serverId)
 
 bool McpHostRuntime::hasToolRefresh(const QString& serverId) const
 {
-    for (auto iterator = pending_.constBegin(); iterator != pending_.constEnd();
-         ++iterator)
-        if (iterator->serverId == serverId &&
-            iterator->operation == Operation::ListTools)
-            return true;
-    return false;
+    return hasPendingOperation(serverId, Operation::ListTools);
 }
 
 void McpHostRuntime::refreshQueuedTools(const QString& serverId)
 {
     if (!queuedToolRefreshes_.remove(serverId)) return;
     listTools(serverId);
+}
+
+bool McpHostRuntime::hasPendingOperation(const QString& serverId,
+                                         Operation operation) const
+{
+    for (auto iterator = pending_.constBegin(); iterator != pending_.constEnd();
+         ++iterator)
+        if (iterator->serverId == serverId && iterator->operation == operation)
+            return true;
+    return false;
+}
+
+void McpHostRuntime::refreshQueuedResources(const QString& serverId)
+{
+    if (!queuedResourceRefreshes_.contains(serverId) ||
+        hasPendingOperation(serverId, Operation::ListResources) ||
+        hasPendingOperation(serverId, Operation::ListResourceTemplates))
+        return;
+    queuedResourceRefreshes_.remove(serverId);
+    listResources(serverId);
+    listResourceTemplates(serverId);
+}
+
+void McpHostRuntime::refreshQueuedPrompts(const QString& serverId)
+{
+    if (!queuedPromptRefreshes_.contains(serverId) ||
+        hasPendingOperation(serverId, Operation::ListPrompts))
+        return;
+    queuedPromptRefreshes_.remove(serverId);
+    listPrompts(serverId);
+}
+
+void McpHostRuntime::recordCatalogFailure(const QString& serverId,
+                                          Operation operation,
+                                          const QString& code,
+                                          const QString& message)
+{
+    catalogErrors_[serverId].insert(static_cast<int>(operation),
+                                    {code, message});
+    serverRegistry_.setError(serverId, code, message);
+    const auto snapshot = serverRegistry_.snapshot(serverId);
+    if (snapshot && snapshot->state == McpServerState::Ready)
+        changeState(serverId, McpServerState::Degraded);
+}
+
+void McpHostRuntime::recordCatalogSuccess(const QString& serverId,
+                                          Operation operation)
+{
+    auto serverErrors = catalogErrors_.find(serverId);
+    if (serverErrors != catalogErrors_.end())
+    {
+        serverErrors->remove(static_cast<int>(operation));
+        if (serverErrors->isEmpty())
+        {
+            catalogErrors_.erase(serverErrors);
+            serverRegistry_.clearError(serverId);
+        }
+        else
+        {
+            const auto error = serverErrors->constBegin().value();
+            serverRegistry_.setError(serverId, error.code, error.message);
+        }
+    }
+    else
+    {
+        serverRegistry_.clearError(serverId);
+    }
+    const auto snapshot = serverRegistry_.snapshot(serverId);
+    if (snapshot && snapshot->state == McpServerState::Degraded &&
+        !catalogErrors_.contains(serverId))
+        changeState(serverId, McpServerState::Ready);
 }
 
 bool McpHostRuntime::acceptNotification(const QString& serverId)

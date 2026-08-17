@@ -5,6 +5,8 @@
 #include "ToolDefinition.hpp"
 #include "ToolResult.hpp"
 
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QList>
 #include <QString>
 
@@ -19,9 +21,19 @@ class AgentPromptBuilder final
         const AssistantContext& context = {});
     [[nodiscard]] static bool requiresCompletionReview(
         const QString& userRequest);
-    static chat::Message toolResultMessage(const agent::ToolResult& result);
+    static chat::Message taskPlanMessage(const QString& originalRequest);
+    static chat::Message taskPlanAcceptedMessage(const QJsonArray& steps);
+    static chat::Message taskPlanCorrectionMessage(const QString& errorMessage);
+    static chat::Message toolResultMessage(const agent::ToolResult& result,
+                                           int evidenceSequence);
     static chat::Message completionReviewMessage(
-        const QString& originalRequest);
+        const QString& originalRequest, const QJsonArray& completionSteps,
+        const QList<QJsonObject>& toolEvidence);
+    static chat::Message completionReviewCorrectionMessage(
+        const QString& errorMessage);
+    static chat::Message completionContinuationMessage(
+        const QJsonArray& completionSteps, const QString& nextStep);
+    static chat::Message unfinishedFinalMessage(const QString& errorMessage);
     static chat::Message correctionMessage(const QString& errorMessage);
     static chat::Message noProgressMessage(const QString& errorMessage);
 };

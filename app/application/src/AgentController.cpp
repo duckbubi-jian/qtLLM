@@ -19,6 +19,7 @@ constexpr auto maximumDecisionBytes = 65'536;
 constexpr auto minimumDecisionTokens = 256;
 constexpr auto runTimeoutMilliseconds = 120'000;
 constexpr auto minimumPollIntervalMilliseconds = 1'000;
+constexpr auto maximumCompletionReviewsPerEvidenceRevision = 2;
 constexpr qsizetype maximumDetectedCycleLength = 4;
 constexpr qsizetype maximumLoggedEventDataBytes = 4'096;
 
@@ -83,6 +84,22 @@ QString singleLine(QString value)
         .trimmed();
 }
 
+QString unfinishedEvidenceReason(const QList<QJsonObject>& toolEvidence)
+{
+    if (toolEvidence.isEmpty()) return {};
+    const auto& latest = toolEvidence.constLast();
+    if (latest.value(QStringLiteral("outcome")).toString() ==
+        QLatin1String("error"))
+        return QStringLiteral(
+            "The most recent tool call failed, so the requested operation "
+            "does not yet have successful evidence.");
+    if (!latest.value(QStringLiteral("terminal")).toBool())
+        return QStringLiteral(
+            "The most recent tool result is still running or pending and is "
+            "not terminal evidence.");
+    return {};
+}
+
 qsizetype messageCharacters(const QList<chat::Message>& messages)
 {
     qsizetype total = 0;
@@ -134,6 +151,12 @@ bool AgentController::start(const QString& userRequest,
     run.inferenceMessages = AgentPromptBuilder::initialMessages(
         request, tools, conversationMessages_, context);
     run.requestMessageIndex = run.inferenceMessages.size() - 1;
+    run.taskPlanRequired =
+        !tools.isEmpty() &&
+        AgentPromptBuilder::requiresCompletionReview(request);
+    if (run.taskPlanRequired)
+        run.inferenceMessages.append(
+            AgentPromptBuilder::taskPlanMessage(request));
     activeRun_ = std::move(run);
     preset_ = preset;
     availableTools_ = tools;
@@ -305,9 +328,16 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
         pollableToolCallSignature_.clear();
         lastPollCompletedAtMs_ = 0;
     }
+    auto evidenceSequence = 0;
     if (completedToolAction.has_value())
+    {
+        evidenceSequence = static_cast<int>(toolEvidence_.size() + 1);
         toolEvidence_.append(AgentContextCompactor::toolEvidence(
-            toolEvidence_.size() + 1, *completedToolAction, result));
+            evidenceSequence, *completedToolAction, result));
+        ++activeRun_->evidenceRevision;
+        activeRun_->completionReviewsAtRevision = 0;
+        activeRun_->completionReviewFailures = 0;
+    }
     if (result.isError)
         lastFailedToolCallSignature_ = completedToolCallSignature;
     else
@@ -322,7 +352,7 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
                 result.serverId + QLatin1Char('.') + result.toolName,
                 result.result);
     activeRun_->inferenceMessages.append(
-        AgentPromptBuilder::toolResultMessage(result));
+        AgentPromptBuilder::toolResultMessage(result, evidenceSequence));
     requestDecision();
 }
 
@@ -364,10 +394,16 @@ void AgentController::compactContextIfNeeded()
     }
     if (!AgentContextCompactor::shouldCompact(estimatedPromptTokens, preset_))
         return;
+    const QJsonObject completionState{
+        {QStringLiteral("steps"), activeRun_->completionSteps},
+        {QStringLiteral("evidenceRevision"), activeRun_->evidenceRevision},
+        {QStringLiteral("lastReviewedEvidenceRevision"),
+         activeRun_->lastReviewedEvidenceRevision},
+        {QStringLiteral("awaitingReview"),
+         activeRun_->awaitingCompletionReview}};
     const auto result = AgentContextCompactor::compact(
         activeRun_->inferenceMessages, activeRun_->requestMessageIndex,
-        activeRun_->userRequest, toolEvidence_,
-        activeRun_->completionReviewPerformed, preset_);
+        activeRun_->userRequest, toolEvidence_, completionState, preset_);
     if (!result.compacted) return;
     ++activeRun_->contextCompactions;
     qInfo().noquote()
@@ -389,27 +425,73 @@ void AgentController::handleAction(const agent::Action& action,
                                    const QByteArray& rawAction)
 {
     if (!activeRun_) return;
-    if (action.type == agent::ActionType::Final)
+
+    if (activeRun_->taskPlanRequired)
     {
-        if (!activeRun_->completionReviewPerformed &&
-            AgentPromptBuilder::requiresCompletionReview(
-                activeRun_->userRequest))
+        if (action.type == agent::ActionType::TaskPlan)
+            acceptTaskPlan(action, rawAction);
+        else
+            retryTaskPlan(
+                rawAction,
+                QStringLiteral(
+                    "A task_plan is required before executing or completing "
+                    "this multi-step request."));
+        return;
+    }
+
+    if (action.type == agent::ActionType::TaskPlan)
+    {
+        retryInvalidAction(
+            rawAction,
+            QStringLiteral(
+                "task_plan is valid only when the controller requests it."));
+        return;
+    }
+
+    if (activeRun_->awaitingCompletionReview)
+    {
+        if (action.type == agent::ActionType::ReviewCompletion)
         {
-            activeRun_->completionReviewPerformed = true;
-            if (activeRun_->successfulToolResults > 0)
-                activeRun_->pendingReviewedFinal = action.content;
-            else
-                activeRun_->pendingReviewedFinal.clear();
-            activeRun_->inferenceMessages.append(
-                {chat::Role::Assistant, QString::fromUtf8(rawAction)});
-            activeRun_->inferenceMessages.append(
-                AgentPromptBuilder::completionReviewMessage(
-                    activeRun_->userRequest));
-            requestDecision();
+            handleCompletionReview(action, rawAction);
             return;
         }
-        activeRun_->pendingReviewedFinal.clear();
-        completeRun(action.content);
+        if (action.type == agent::ActionType::Final)
+        {
+            retryCompletionReview(
+                rawAction,
+                QStringLiteral(
+                    "A second final does not verify completion. Return "
+                    "review_completion with per-step evidence."));
+            return;
+        }
+
+        activeRun_->awaitingCompletionReview = false;
+        activeRun_->pendingFinalCandidate.clear();
+        activeRun_->completionReviewFailures = 0;
+    }
+    else if (action.type == agent::ActionType::ReviewCompletion)
+    {
+        retryInvalidAction(
+            rawAction,
+            QStringLiteral(
+                "review_completion is valid only after the controller asks "
+                "to review a proposed final answer."));
+        return;
+    }
+
+    if (action.type == agent::ActionType::Final)
+    {
+        if (!activeRun_->completionSteps.isEmpty())
+            beginCompletionReview(action, rawAction);
+        else
+        {
+            const auto unfinishedReason =
+                unfinishedEvidenceReason(toolEvidence_);
+            if (unfinishedReason.isEmpty())
+                completeRun(action.content);
+            else
+                retryUnfinishedFinal(rawAction, unfinishedReason);
+        }
         return;
     }
 
@@ -459,7 +541,6 @@ void AgentController::handleAction(const agent::Action& action,
         retryInvalidAction(rawAction, validationError);
         return;
     }
-    activeRun_->pendingReviewedFinal.clear();
     activeRun_->inferenceMessages.append(
         {chat::Role::Assistant, QString::fromUtf8(rawAction)});
     const auto decision = dependencies_.toolPolicy(action.toolName);
@@ -481,6 +562,186 @@ void AgentController::handleAction(const agent::Action& action,
         return;
     }
     executeTool(action);
+}
+
+void AgentController::acceptTaskPlan(const agent::Action& action,
+                                     const QByteArray& rawAction)
+{
+    if (!activeRun_) return;
+    activeRun_->completionSteps = action.completionSteps;
+    activeRun_->taskPlanRequired = false;
+    activeRun_->taskPlanFailures = 0;
+    qInfo().noquote() << QStringLiteral(
+                             "Agent task plan accepted: run=%1 steps=%2")
+                             .arg(activeRun_->id)
+                             .arg(activeRun_->completionSteps.size());
+    activeRun_->inferenceMessages.append(
+        {chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    activeRun_->inferenceMessages.append(
+        AgentPromptBuilder::taskPlanAcceptedMessage(
+            activeRun_->completionSteps));
+    requestDecision();
+}
+
+void AgentController::beginCompletionReview(const agent::Action& action,
+                                            const QByteArray& rawAction)
+{
+    if (!activeRun_) return;
+    if (activeRun_->lastReviewedEvidenceRevision ==
+        activeRun_->evidenceRevision)
+        ++activeRun_->completionReviewsAtRevision;
+    else
+    {
+        activeRun_->lastReviewedEvidenceRevision = activeRun_->evidenceRevision;
+        activeRun_->completionReviewsAtRevision = 1;
+    }
+
+    if (activeRun_->completionReviewsAtRevision >
+        maximumCompletionReviewsPerEvidenceRevision)
+    {
+        failRun(QStringLiteral("completion_unverified"),
+                QStringLiteral(
+                    "The Agent proposed completion repeatedly without new tool "
+                    "evidence after an unfinished completion review."));
+        return;
+    }
+
+    activeRun_->pendingFinalCandidate = action.content;
+    activeRun_->awaitingCompletionReview = true;
+    activeRun_->completionReviewFailures = 0;
+    qInfo().noquote()
+        << QStringLiteral(
+               "Agent completion review started: run=%1 evidenceRevision=%2 "
+               "attemptAtRevision=%3 steps=%4")
+               .arg(activeRun_->id)
+               .arg(activeRun_->evidenceRevision)
+               .arg(activeRun_->completionReviewsAtRevision)
+               .arg(activeRun_->completionSteps.size());
+    activeRun_->inferenceMessages.append(
+        {chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    activeRun_->inferenceMessages.append(
+        AgentPromptBuilder::completionReviewMessage(activeRun_->userRequest,
+                                                    activeRun_->completionSteps,
+                                                    toolEvidence_));
+    requestDecision();
+}
+
+QString AgentController::validateCompletionReview(
+    const agent::Action& action) const
+{
+    if (!activeRun_ || !activeRun_->awaitingCompletionReview ||
+        activeRun_->pendingFinalCandidate.isEmpty())
+        return QStringLiteral("No proposed final answer is awaiting review.");
+
+    for (const auto& plannedValue : activeRun_->completionSteps)
+    {
+        const auto planned = plannedValue.toObject();
+        const auto plannedId = planned.value(QStringLiteral("id")).toString();
+        auto found = false;
+        for (const auto& reviewedValue : action.completionSteps)
+        {
+            const auto reviewed = reviewedValue.toObject();
+            if (reviewed.value(QStringLiteral("id")).toString() != plannedId)
+                continue;
+            found = true;
+            if (reviewed.value(QStringLiteral("description")) !=
+                    planned.value(QStringLiteral("description")) ||
+                reviewed.value(QStringLiteral("requires_tool")) !=
+                    planned.value(QStringLiteral("requires_tool")))
+                return QStringLiteral(
+                           "Completion step %1 changed its recorded "
+                           "description or requires_tool value.")
+                    .arg(plannedId);
+            break;
+        }
+        if (!found)
+            return QStringLiteral("Completion review omitted recorded step %1.")
+                .arg(plannedId);
+    }
+
+    for (const auto& reviewedValue : action.completionSteps)
+    {
+        const auto reviewed = reviewedValue.toObject();
+        const auto id = reviewed.value(QStringLiteral("id")).toString();
+        const auto status = reviewed.value(QStringLiteral("status")).toString();
+        const auto requiresTool =
+            reviewed.value(QStringLiteral("requires_tool")).toBool();
+        const auto sequences =
+            reviewed.value(QStringLiteral("evidence")).toArray();
+        auto hasTerminalSuccess = false;
+        for (const auto& sequenceValue : sequences)
+        {
+            const auto sequence = sequenceValue.toInt();
+            auto found = false;
+            for (const auto& evidence : toolEvidence_)
+            {
+                if (evidence.value(QStringLiteral("sequence")).toInt() !=
+                    sequence)
+                    continue;
+                found = true;
+                hasTerminalSuccess =
+                    hasTerminalSuccess ||
+                    (evidence.value(QStringLiteral("outcome")).toString() ==
+                         QLatin1String("success") &&
+                     evidence.value(QStringLiteral("terminal")).toBool());
+                break;
+            }
+            if (!found)
+                return QStringLiteral(
+                           "Completion step %1 cites unknown tool evidence "
+                           "sequence %2.")
+                    .arg(id)
+                    .arg(sequence);
+        }
+        if (status == QLatin1String("satisfied") && requiresTool &&
+            !hasTerminalSuccess)
+            return QStringLiteral(
+                       "Completion step %1 requires successful terminal tool "
+                       "evidence.")
+                .arg(id);
+    }
+    return {};
+}
+
+void AgentController::handleCompletionReview(const agent::Action& action,
+                                             const QByteArray& rawAction)
+{
+    if (!activeRun_) return;
+    const auto validationError = validateCompletionReview(action);
+    if (!validationError.isEmpty())
+    {
+        retryCompletionReview(rawAction, validationError);
+        return;
+    }
+
+    activeRun_->completionSteps = action.completionSteps;
+    activeRun_->awaitingCompletionReview = false;
+    activeRun_->completionReviewFailures = 0;
+    qInfo().noquote()
+        << QStringLiteral(
+               "Agent completion review accepted: run=%1 verdict=%2 steps=%3")
+               .arg(activeRun_->id, action.completionVerdict)
+               .arg(activeRun_->completionSteps.size());
+    if (action.completionVerdict == QLatin1String("complete"))
+    {
+        const auto content =
+            std::exchange(activeRun_->pendingFinalCandidate, QString{});
+        completeRun(content);
+        return;
+    }
+    activeRun_->pendingFinalCandidate.clear();
+    if (action.completionVerdict == QLatin1String("blocked"))
+    {
+        completeRun(action.completionDetail);
+        return;
+    }
+
+    activeRun_->inferenceMessages.append(
+        {chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    activeRun_->inferenceMessages.append(
+        AgentPromptBuilder::completionContinuationMessage(
+            activeRun_->completionSteps, action.completionDetail));
+    requestDecision();
 }
 
 void AgentController::executeTool(const agent::Action& action)
@@ -521,11 +782,111 @@ void AgentController::executePendingPoll()
     executeTool(*action);
 }
 
+void AgentController::retryTaskPlan(const QByteArray& rawAction,
+                                    const QString& errorMessage)
+{
+    if (!activeRun_) return;
+    if (activeRun_->taskPlanFailures >= 1)
+    {
+        qWarning().noquote()
+            << QStringLiteral(
+                   "Agent task plan failed: run=%1 reason=%2 action=%3")
+                   .arg(activeRun_->id, singleLine(errorMessage),
+                        singleLine(QString::fromUtf8(rawAction)).left(2'048));
+        failRun(QStringLiteral("task_plan_failed"), errorMessage);
+        return;
+    }
+    ++activeRun_->taskPlanFailures;
+    qWarning().noquote()
+        << QStringLiteral(
+               "Agent task plan correction: run=%1 attempt=%2 reason=%3 "
+               "action=%4")
+               .arg(activeRun_->id)
+               .arg(activeRun_->taskPlanFailures)
+               .arg(singleLine(errorMessage),
+                    singleLine(QString::fromUtf8(rawAction)).left(2'048));
+    activeRun_->inferenceMessages.append(
+        {chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    activeRun_->inferenceMessages.append(
+        AgentPromptBuilder::taskPlanCorrectionMessage(errorMessage));
+    requestDecision();
+}
+
+void AgentController::retryCompletionReview(const QByteArray& rawAction,
+                                            const QString& errorMessage)
+{
+    if (!activeRun_) return;
+    if (activeRun_->completionReviewFailures >= 1)
+    {
+        qWarning().noquote()
+            << QStringLiteral(
+                   "Agent completion review failed: run=%1 reason=%2 "
+                   "action=%3")
+                   .arg(activeRun_->id, singleLine(errorMessage),
+                        singleLine(QString::fromUtf8(rawAction)).left(2'048));
+        failRun(QStringLiteral("completion_unverified"), errorMessage);
+        return;
+    }
+    ++activeRun_->completionReviewFailures;
+    qWarning().noquote()
+        << QStringLiteral(
+               "Agent completion review correction: run=%1 attempt=%2 "
+               "reason=%3 action=%4")
+               .arg(activeRun_->id)
+               .arg(activeRun_->completionReviewFailures)
+               .arg(singleLine(errorMessage),
+                    singleLine(QString::fromUtf8(rawAction)).left(2'048));
+    activeRun_->inferenceMessages.append(
+        {chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    activeRun_->inferenceMessages.append(
+        AgentPromptBuilder::completionReviewCorrectionMessage(errorMessage));
+    requestDecision();
+}
+
+void AgentController::retryUnfinishedFinal(const QByteArray& rawAction,
+                                           const QString& errorMessage)
+{
+    if (!activeRun_) return;
+    if (activeRun_->completionReviewFailures >= 1)
+    {
+        qWarning().noquote()
+            << QStringLiteral(
+                   "Agent unfinished final failed: run=%1 reason=%2 action=%3")
+                   .arg(activeRun_->id, singleLine(errorMessage),
+                        singleLine(QString::fromUtf8(rawAction)).left(2'048));
+        failRun(QStringLiteral("completion_unverified"), errorMessage);
+        return;
+    }
+    ++activeRun_->completionReviewFailures;
+    qWarning().noquote()
+        << QStringLiteral(
+               "Agent unfinished final correction: run=%1 attempt=%2 "
+               "reason=%3 action=%4")
+               .arg(activeRun_->id)
+               .arg(activeRun_->completionReviewFailures)
+               .arg(singleLine(errorMessage),
+                    singleLine(QString::fromUtf8(rawAction)).left(2'048));
+    activeRun_->inferenceMessages.append(
+        {chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    activeRun_->inferenceMessages.append(
+        AgentPromptBuilder::unfinishedFinalMessage(errorMessage));
+    requestDecision();
+}
+
 void AgentController::retryInvalidAction(const QByteArray& rawAction,
                                          const QString& errorMessage)
 {
     if (!activeRun_) return;
-    if (completePendingReviewedFinal(errorMessage)) return;
+    if (activeRun_->taskPlanRequired)
+    {
+        retryTaskPlan(rawAction, errorMessage);
+        return;
+    }
+    if (activeRun_->awaitingCompletionReview)
+    {
+        retryCompletionReview(rawAction, errorMessage);
+        return;
+    }
     if (activeRun_->repairAttempts >= 1)
     {
         failRun(QStringLiteral("invalid_agent_action"), errorMessage);
@@ -551,7 +912,6 @@ void AgentController::retryNoProgressAction(const QByteArray& rawAction,
                                             const QString& errorMessage)
 {
     if (!activeRun_) return;
-    if (completePendingReviewedFinal(errorMessage)) return;
     if (activeRun_->stagnationRecoveries >= 1)
     {
         failRun(QStringLiteral("agent_stalled"), errorMessage);
@@ -571,21 +931,6 @@ void AgentController::retryNoProgressAction(const QByteArray& rawAction,
     activeRun_->inferenceMessages.append(
         AgentPromptBuilder::noProgressMessage(errorMessage));
     requestDecision();
-}
-
-bool AgentController::completePendingReviewedFinal(const QString& reason)
-{
-    if (!activeRun_ || activeRun_->pendingReviewedFinal.isEmpty()) return false;
-    const auto content =
-        std::exchange(activeRun_->pendingReviewedFinal, QString{});
-    recordEvent(
-        agent::EventType::Warning,
-        QStringLiteral(
-            "Completion review made no safe progress; using the already "
-            "prepared final answer. Review detail: %1")
-            .arg(reason));
-    completeRun(content);
-    return true;
 }
 
 void AgentController::setState(AgentRun::State state)

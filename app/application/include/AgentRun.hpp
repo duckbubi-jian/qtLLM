@@ -4,6 +4,7 @@
 #include "ChatMessage.hpp"
 
 #include <QDateTime>
+#include <QJsonArray>
 #include <QList>
 #include <QMetaType>
 #include <QString>
@@ -31,8 +32,15 @@ struct AgentRun
     int repairAttempts = 0;
     int stagnationRecoveries = 0;
     int successfulToolResults = 0;
-    bool completionReviewPerformed = false;
-    QString pendingReviewedFinal;
+    int evidenceRevision = 0;
+    int lastReviewedEvidenceRevision = -1;
+    int completionReviewsAtRevision = 0;
+    int taskPlanFailures = 0;
+    int completionReviewFailures = 0;
+    bool taskPlanRequired = false;
+    bool awaitingCompletionReview = false;
+    QJsonArray completionSteps;
+    QString pendingFinalCandidate;
     int lastPromptTokens = 0;
     int contextCompactions = 0;
     qsizetype lastSubmittedCharacters = 0;

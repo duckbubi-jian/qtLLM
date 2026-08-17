@@ -2,17 +2,67 @@
 #include "ToolCatalogBuilder.hpp"
 #include "ToolResultStatus.hpp"
 
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QRegularExpression>
 #include <QStringList>
 
 #include <algorithm>
+#include <utility>
 
 namespace qtllm::application
 {
 namespace
 {
+constexpr qsizetype maximumReviewEvidenceBytes = 8'192;
+
+qsizetype serializedSize(const QJsonArray& values)
+{
+    return QJsonDocument(values).toJson(QJsonDocument::Compact).size();
+}
+
+QJsonArray completionEvidenceSummary(const QList<QJsonObject>& toolEvidence)
+{
+    QJsonArray calls;
+    for (const auto& evidence : toolEvidence)
+    {
+        calls.append(QJsonObject{
+            {QStringLiteral("sequence"),
+             evidence.value(QStringLiteral("sequence"))},
+            {QStringLiteral("tool"), evidence.value(QStringLiteral("tool"))},
+            {QStringLiteral("outcome"),
+             evidence.value(QStringLiteral("outcome"))},
+            {QStringLiteral("terminal"),
+             evidence.value(QStringLiteral("terminal"))}});
+    }
+
+    for (const auto& field :
+         {QStringLiteral("arguments"), QStringLiteral("result")})
+    {
+        for (qsizetype index = 0; index < toolEvidence.size(); ++index)
+        {
+            if (!toolEvidence.at(index).contains(field)) continue;
+            auto enriched = calls.at(index).toObject();
+            enriched.insert(field, toolEvidence.at(index).value(field));
+            auto candidate = calls;
+            candidate.replace(index, enriched);
+            if (serializedSize(candidate) <= maximumReviewEvidenceBytes)
+                calls = std::move(candidate);
+        }
+    }
+    while (serializedSize(calls) > maximumReviewEvidenceBytes &&
+           calls.size() > 2)
+        calls.removeAt(calls.size() / 2);
+    return calls;
+}
+
+QString compactJson(const QJsonArray& values)
+{
+    return QString::fromUtf8(
+        QJsonDocument(values).toJson(QJsonDocument::Compact));
+}
+
 QString contextInstructions(const AssistantContext& context)
 {
     const auto json = assistantContextJson(context);
@@ -43,45 +93,48 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools,
                      const AssistantContext& context)
 {
     const auto catalog = ToolCatalogBuilder::build(tools);
-    const auto actionInstructions = catalog.includedToolCount == 0
-                                        ? QStringLiteral(
-                                              "No tools are available. You "
-                                              "must return a final action and "
-                                              "must not call a tool. ")
-                                        : QStringLiteral(
-                                              "To request a tool, return a "
-                                              "call_tool action whose tool "
-                                              "value exactly copies one name "
-                                              "from Available tools and whose "
-                                              "arguments match inputSchema. "
-                                              "Never invent or emit a "
-                                              "placeholder tool name. After "
-                                              "a tool result, use the result "
-                                              "and never repeat an identical "
-                                              "call unless its structured "
-                                              "result explicitly reports "
-                                              "running, pending, or queued. "
-                                              "Only then may you repeat the "
-                                              "same status call until it "
-                                              "reports a terminal state or "
-                                              "the user stops the run. A "
-                                              "successful tool result "
-                                              "completes only that operation, "
-                                              "not the whole user request. "
-                                              "Before final, verify every "
-                                              "requested outcome and numbered "
-                                              "step is complete. After an "
-                                              "error, change the arguments or "
-                                              "choose another action. For a "
-                                              "multi-step request, form a "
-                                              "short internal checklist in "
-                                              "the user's order and execute "
-                                              "one necessary operation at a "
-                                              "time. Preserve active cases "
-                                              "and sessions between steps; "
-                                              "do not close and reopen the "
-                                              "same resource merely to "
-                                              "inspect or verify it. ");
+    const auto actionInstructions =
+        catalog.includedToolCount == 0 ? QStringLiteral(
+                                             "No tools are available. You "
+                                             "must return a final action and "
+                                             "must not call a tool. ")
+                                       : QStringLiteral(
+                                             "To request a tool, return a "
+                                             "call_tool action whose tool "
+                                             "value exactly copies one name "
+                                             "from Available tools and whose "
+                                             "arguments match inputSchema. "
+                                             "Never invent or emit a "
+                                             "placeholder tool name. After "
+                                             "a tool result, use the result "
+                                             "and never repeat an identical "
+                                             "call unless its structured "
+                                             "result explicitly reports "
+                                             "running, pending, or queued. "
+                                             "Only then may you repeat the "
+                                             "same status call until it "
+                                             "reports a terminal state or "
+                                             "the user stops the run. A "
+                                             "successful tool result "
+                                             "completes only that operation, "
+                                             "not the whole user request. "
+                                             "Before final, verify every "
+                                             "requested outcome and numbered "
+                                             "step is complete. After an "
+                                             "error, change the arguments or "
+                                             "choose another action. For a "
+                                             "multi-step request, form a "
+                                             "checklist in the user's order. "
+                                             "When the controller explicitly "
+                                             "requests task_plan, return that "
+                                             "structured action before any "
+                                             "tool call. Execute one necessary "
+                                             "operation at a time. Preserve "
+                                             "active cases "
+                                             "and sessions between steps; "
+                                             "do not close and reopen the "
+                                             "same resource merely to "
+                                             "inspect or verify it. ");
     const auto omissionNotice =
         catalog.omittedToolCount == 0
             ? QString{}
@@ -109,7 +162,10 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools,
                "internal reasoning, a plan, or statements about operations "
                "you still need to perform as final. A tool action has action "
                "set to call_tool, an exact listed tool name, and an arguments "
-               "object. When the user requests an external operation and a "
+               "object. task_plan and review_completion are controller-only "
+               "actions; return either one only when the latest controller "
+               "message explicitly requests it. When the user requests an "
+               "external operation and a "
                "matching tool is available, execute it before final. When the "
                "user asks to create or replace a file and a write_file tool "
                "is available, use that tool instead of only describing the "
@@ -158,8 +214,51 @@ bool AgentPromptBuilder::requiresCompletionReview(const QString& userRequest)
                        { return padded.contains(marker); });
 }
 
+chat::Message AgentPromptBuilder::taskPlanMessage(
+    const QString& originalRequest)
+{
+    return {
+        chat::Role::User,
+        QStringLiteral(
+            "Before executing this multi-step request, return exactly one "
+            "task_plan action. Include every explicit requested outcome and "
+            "ordered operation once. Each step needs a stable short id, a "
+            "concrete description, and requires_tool=true when satisfying it "
+            "requires an external operation or MCP result. Do not call a tool "
+            "or return final in this decision. Use this shape: "
+            "{\"action\":\"task_plan\",\"steps\":[{\"id\":\"step-1\","
+            "\"description\":\"...\",\"requires_tool\":true}]}.\n"
+            "<original_request>%1</original_request>")
+            .arg(originalRequest.trimmed())};
+}
+
+chat::Message AgentPromptBuilder::taskPlanAcceptedMessage(
+    const QJsonArray& steps)
+{
+    return {
+        chat::Role::User,
+        QStringLiteral(
+            "The local controller recorded this task checklist: "
+            "<task_plan>%1</task_plan> Execute the first unfinished step now. "
+            "Return one call_tool action when a tool is required. Do not "
+            "repeat task_plan. Return final only after every checklist item "
+            "is satisfied or a real blocker must be reported.")
+            .arg(compactJson(steps))};
+}
+
+chat::Message AgentPromptBuilder::taskPlanCorrectionMessage(
+    const QString& errorMessage)
+{
+    return {chat::Role::User,
+            QStringLiteral(
+                "The task plan was rejected by the local controller: %1 Return "
+                "one corrected task_plan action with every requested step. Do "
+                "not call a tool or return final yet.")
+                .arg(errorMessage)};
+}
+
 chat::Message AgentPromptBuilder::toolResultMessage(
-    const agent::ToolResult& result)
+    const agent::ToolResult& result, int evidenceSequence)
 {
     const auto rawStructured =
         result.result.value(QStringLiteral("structuredContent"));
@@ -200,32 +299,87 @@ chat::Message AgentPromptBuilder::toolResultMessage(
             "Re-read the original user request and continue with the next "
             "necessary call if any requested outcome or numbered step "
             "remains. Return final only when all requested work is complete.");
-    return {chat::Role::User,
-            QStringLiteral("<tool_result name=\"%1\">%2</tool_result>\n%3")
-                .arg(result.serverId + QLatin1Char('.') + result.toolName, json,
-                     guidance)};
+    return {
+        chat::Role::User,
+        QStringLiteral("<tool_result name=\"%1\" evidence_sequence=\"%2\">%3"
+                       "</tool_result>\n%4")
+            .arg(result.serverId + QLatin1Char('.') + result.toolName)
+            .arg(evidenceSequence)
+            .arg(json, guidance)};
 }
 
 chat::Message AgentPromptBuilder::completionReviewMessage(
-    const QString& originalRequest)
+    const QString& originalRequest, const QJsonArray& completionSteps,
+    const QList<QJsonObject>& toolEvidence)
+{
+    const auto plan = completionSteps.isEmpty() ? QStringLiteral("[]")
+                                                : compactJson(completionSteps);
+    const auto evidence = compactJson(completionEvidenceSummary(toolEvidence));
+    return {
+        chat::Role::User,
+        QStringLiteral(
+            "Completion review required. Do not return another final action. "
+            "Compare the proposed answer with every explicit outcome and step "
+            "in the original request. Preserve every existing task_plan step "
+            "with the same id, description, and requires_tool value; add a "
+            "missing requested step rather than omitting one. For each step, "
+            "set status to satisfied, pending, or blocked and cite actual "
+            "tool-call sequence numbers in evidence. A requires_tool step is "
+            "satisfied only with successful terminal evidence. Running or "
+            "pending evidence is not terminal. Use verdict=complete only when "
+            "all steps are satisfied, continue when work remains, or blocked "
+            "only for a real blocker. detail must be a completion summary, "
+            "the next concrete step, or a user-facing blocker. Return a valid "
+            "action in this shape, using one allowed verdict and status: "
+            "{\"action\":\"review_completion\",\"verdict\":\"continue\","
+            "\"steps\":[{\"id\":\"step-1\","
+            "\"description\":\"...\",\"requires_tool\":true,"
+            "\"status\":\"pending\",\"evidence\":[1]}],"
+            "\"detail\":\"...\"}. If an unfinished tool call is already "
+            "obvious, you may instead return that call_tool action now.\n"
+            "<original_request>%1</original_request>\n"
+            "<task_plan>%2</task_plan>\n"
+            "<tool_evidence>%3</tool_evidence>")
+            .arg(originalRequest.trimmed(), plan, evidence)};
+}
+
+chat::Message AgentPromptBuilder::completionReviewCorrectionMessage(
+    const QString& errorMessage)
 {
     return {
         chat::Role::User,
         QStringLiteral(
-            "Completion review required. A successful tool call proves only "
-            "that one operation succeeded, not that the whole task is "
-            "complete. Compare the proposed final answer with every requested "
-            "outcome and numbered step in the original request below. A "
-            "statement about what you plan, intend, or still need to do is "
-            "not a completed result. If no successful tool evidence exists "
-            "and the request requires an available tool, call that tool now. "
-            "If anything remains, return the next necessary call_tool action "
-            "without repeating completed calls. Return final only if all "
-            "requested work is complete, genuinely blocked, or requires "
-            "specific information from the user. Do not claim completed work "
-            "without a successful tool "
-            "result.\n<original_request>%1</original_request>")
-            .arg(originalRequest.trimmed())};
+            "The completion review was rejected by the local controller: %1 "
+            "Do not return final. Return one corrected review_completion "
+            "action, or a valid call_tool action for an unfinished step.")
+            .arg(errorMessage)};
+}
+
+chat::Message AgentPromptBuilder::completionContinuationMessage(
+    const QJsonArray& completionSteps, const QString& nextStep)
+{
+    return {
+        chat::Role::User,
+        QStringLiteral(
+            "The completion review found unfinished work. Preserve this "
+            "checklist: <task_plan>%1</task_plan> Execute this next step now: "
+            "%2 Return one necessary call_tool action, or final only when a "
+            "new proposed answer is ready for another completion review.")
+            .arg(compactJson(completionSteps), nextStep)};
+}
+
+chat::Message AgentPromptBuilder::unfinishedFinalMessage(
+    const QString& errorMessage)
+{
+    return {
+        chat::Role::User,
+        QStringLiteral(
+            "The proposed final answer was rejected because the latest "
+            "operation is unfinished: %1 Return a call_tool action that "
+            "recovers the failed operation or checks the running operation. "
+            "Do not return final until a successful terminal tool result "
+            "supports the requested outcome.")
+            .arg(errorMessage)};
 }
 
 chat::Message AgentPromptBuilder::correctionMessage(const QString& errorMessage)

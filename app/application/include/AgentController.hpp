@@ -90,12 +90,25 @@ class AgentController final : public QObject
     void requestDecision();
     void compactContextIfNeeded();
     void handleAction(const agent::Action& action, const QByteArray& rawAction);
+    void acceptTaskPlan(const agent::Action& action,
+                        const QByteArray& rawAction);
+    void beginCompletionReview(const agent::Action& action,
+                               const QByteArray& rawAction);
+    void handleCompletionReview(const agent::Action& action,
+                                const QByteArray& rawAction);
+    void retryTaskPlan(const QByteArray& rawAction,
+                       const QString& errorMessage);
+    void retryCompletionReview(const QByteArray& rawAction,
+                               const QString& errorMessage);
+    void retryUnfinishedFinal(const QByteArray& rawAction,
+                              const QString& errorMessage);
+    [[nodiscard]] QString validateCompletionReview(
+        const agent::Action& action) const;
     void executeTool(const agent::Action& action);
     void retryInvalidAction(const QByteArray& rawAction,
                             const QString& errorMessage);
     void retryNoProgressAction(const QByteArray& rawAction,
                                const QString& errorMessage);
-    bool completePendingReviewedFinal(const QString& reason);
     void setState(AgentRun::State state);
     void recordEvent(agent::EventType type, const QString& message = {},
                      const QString& toolName = {},

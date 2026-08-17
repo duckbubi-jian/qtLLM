@@ -29,7 +29,7 @@ class AgentContextCompactor final
                                         qsizetype& requestMessageIndex,
                                         const QString& originalRequest,
                                         const QList<QJsonObject>& toolEvidence,
-                                        bool completionReviewPerformed,
+                                        const QJsonObject& completionState,
                                         const models::InferencePreset& preset);
 };
 }  // namespace qtllm::application

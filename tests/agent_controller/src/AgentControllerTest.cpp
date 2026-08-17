@@ -1,6 +1,7 @@
 #include "AgentController.hpp"
 #include "ToolCatalogBuilder.hpp"
 
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QSignalSpy>
 #include <QtTest>
@@ -14,6 +15,7 @@ class AgentControllerTest final : public QObject
    private slots:
     void completesMultiStepToolRun();
     void simpleToolRunCompletesWithoutReview();
+    void simpleTaskRecoversFromFailureWithoutStructuredReview();
     void waitsForApprovalAndHonorsRejection();
     void repairsOnlyOneInvalidAction();
     void cancelsAndIgnoresLateResponses();
@@ -29,8 +31,10 @@ class AgentControllerTest final : public QObject
     void cancelsPendingStatusPoll();
     void rejectsAlternatingCompletedToolCycle();
     void reviewsPrematureFinalBeforeAnyToolCall();
-    void reviewsCompletionOnlyOnce();
-    void reviewUsesPreparedFinalWhenToolCallRepeats();
+    void reviewsCompletionAfterEachEvidenceRevision();
+    void rejectsRepeatedFinalDuringCompletionReview();
+    void completionReviewRejectsNonTerminalEvidence();
+    void doesNotUsePreparedFinalWhenReviewStalls();
     void stagnationRecoveryIsIndependentFromActionRepair();
     void compactsLongAgentContextAndPreservesEvidence();
     void hasNoToolCallCountLimit();
@@ -57,6 +61,45 @@ agent::ToolDefinition namedTool(const QString& name, const QString& description)
               QJsonObject{{QStringLiteral("value"),
                            QJsonObject{{QStringLiteral("type"),
                                         QStringLiteral("string")}}}}}}};
+}
+
+QJsonObject planStep(const QString& id, const QString& description,
+                     bool requiresTool)
+{
+    return {{QStringLiteral("id"), id},
+            {QStringLiteral("description"), description},
+            {QStringLiteral("requires_tool"), requiresTool}};
+}
+
+QJsonObject reviewedStep(const QString& id, const QString& description,
+                         bool requiresTool, const QString& status,
+                         const QJsonArray& evidence = {})
+{
+    return {{QStringLiteral("id"), id},
+            {QStringLiteral("description"), description},
+            {QStringLiteral("requires_tool"), requiresTool},
+            {QStringLiteral("status"), status},
+            {QStringLiteral("evidence"), evidence}};
+}
+
+QByteArray taskPlanAction(const QJsonArray& steps)
+{
+    return QJsonDocument(QJsonObject{{QStringLiteral("action"),
+                                      QStringLiteral("task_plan")},
+                                     {QStringLiteral("steps"), steps}})
+        .toJson(QJsonDocument::Compact);
+}
+
+QByteArray completionReviewAction(const QString& verdict,
+                                  const QJsonArray& steps,
+                                  const QString& detail)
+{
+    return QJsonDocument(QJsonObject{{QStringLiteral("action"),
+                                      QStringLiteral("review_completion")},
+                                     {QStringLiteral("verdict"), verdict},
+                                     {QStringLiteral("steps"), steps},
+                                     {QStringLiteral("detail"), detail}})
+        .toJson(QJsonDocument::Compact);
 }
 
 void AgentControllerTest::toolCatalogIsStableAndValid()
@@ -175,6 +218,17 @@ void AgentControllerTest::completesMultiStepToolRun()
     QCOMPARE(generationCount, 1);
     QVERIFY(lastMessages.constFirst().content.contains(
         QStringLiteral("fake.echo")));
+    QVERIFY(
+        lastMessages.constLast().content.contains(QStringLiteral("task_plan")));
+
+    const QJsonArray plan{
+        planStep(QStringLiteral("step-1"), QStringLiteral("Use a tool"), true),
+        planStep(QStringLiteral("step-2"), QStringLiteral("Report the result"),
+                 false)};
+    controller.receiveToken(taskPlanAction(plan));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(generationCount, 2);
 
     controller.receiveToken(QByteArrayLiteral(
         R"({"action":"call_tool","tool":"fake.echo","arguments":{"value":"hello"}})"));
@@ -193,7 +247,7 @@ void AgentControllerTest::completesMultiStepToolRun()
          QJsonObject{{QStringLiteral("value"), QStringLiteral("hello")}}}};
     controller.receiveToolResult(result);
     QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
-    QCOMPARE(generationCount, 2);
+    QCOMPARE(generationCount, 3);
     QVERIFY(lastMessages.constLast().content.contains(
         QStringLiteral("tool_result")));
     QVERIFY(lastMessages.constLast().content.contains(
@@ -208,14 +262,21 @@ void AgentControllerTest::completesMultiStepToolRun()
         QByteArrayLiteral(R"({"action":"final","content":"Task complete"})"));
     controller.completeGeneration(false);
     QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
-    QCOMPARE(generationCount, 3);
+    QCOMPARE(generationCount, 4);
     QCOMPARE(finalSpy.count(), 0);
     QVERIFY(lastMessages.constLast().content.contains(
         QStringLiteral("Completion review required")));
     QVERIFY(lastMessages.constLast().content.contains(request));
 
-    controller.receiveToken(
-        QByteArrayLiteral(R"({"action":"final","content":"Task complete"})"));
+    const QJsonArray completedSteps{
+        reviewedStep(QStringLiteral("step-1"), QStringLiteral("Use a tool"),
+                     true, QStringLiteral("satisfied"), QJsonArray{1}),
+        reviewedStep(QStringLiteral("step-2"),
+                     QStringLiteral("Report the result"), false,
+                     QStringLiteral("satisfied"), QJsonArray{1})};
+    controller.receiveToken(completionReviewAction(
+        QStringLiteral("complete"), completedSteps,
+        QStringLiteral("All requested work is complete.")));
     controller.completeGeneration(false);
     QCOMPARE(controller.state(), application::AgentRun::State::Completed);
     QCOMPARE(finalSpy.count(), 1);
@@ -258,6 +319,79 @@ void AgentControllerTest::simpleToolRunCompletesWithoutReview()
     QCOMPARE(controller.state(), application::AgentRun::State::Completed);
     QCOMPARE(generationCount, 2);
     QCOMPARE(finalSpy.count(), 1);
+}
+
+void AgentControllerTest::simpleTaskRecoversFromFailureWithoutStructuredReview()
+{
+    auto generationCount = 0;
+    auto toolCallCount = 0;
+    QList<chat::Message> generatedMessages;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>& messages,
+                const models::InferencePreset&, int)
+            {
+                ++generationCount;
+                generatedMessages = messages;
+            },
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-%1").arg(toolCallCount);
+            },
+            [](const QString&) {},
+            [](const QString&, const QJsonObject&, QString&) { return true; },
+            [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+    QSignalSpy finalSpy(&controller,
+                        &application::AgentController::finalAnswerReady);
+
+    QVERIFY(controller.start(QStringLiteral("Set the inlet flow rate."), {},
+                             {echoTool()}));
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.echo","arguments":{"value":1}})"));
+    controller.completeGeneration(false);
+    agent::ToolResult failedResult;
+    failedResult.requestId = QStringLiteral("tool-request-1");
+    failedResult.serverId = QStringLiteral("fake");
+    failedResult.toolName = QStringLiteral("echo");
+    failedResult.isError = true;
+    failedResult.errorMessage = QStringLiteral("Invalid value.");
+    controller.receiveToolResult(failedResult);
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"final","content":"The flow rate is set."})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(finalSpy.count(), 0);
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("latest operation is unfinished")));
+
+    const auto completeSuccessfulCall = [&](int value, const QString& requestId)
+    {
+        controller.receiveToken(
+            QStringLiteral(
+                R"({"action":"call_tool","tool":"fake.echo","arguments":{"value":%1}})")
+                .arg(value)
+                .toUtf8());
+        controller.completeGeneration(false);
+        agent::ToolResult result;
+        result.requestId = requestId;
+        result.serverId = QStringLiteral("fake");
+        result.toolName = QStringLiteral("echo");
+        controller.receiveToolResult(result);
+    };
+    completeSuccessfulCall(2, QStringLiteral("tool-request-2"));
+    completeSuccessfulCall(3, QStringLiteral("tool-request-3"));
+    QCOMPARE(controller.activeRun()->successfulToolResults, 2);
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"final","content":"The flow rate is set and verified."})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Completed);
+    QCOMPARE(finalSpy.count(), 1);
+    QCOMPARE(generationCount, 5);
 }
 
 void AgentControllerTest::waitsForApprovalAndHonorsRejection()
@@ -811,21 +945,28 @@ void AgentControllerTest::reviewsPrematureFinalBeforeAnyToolCall()
     QVERIFY(controller.start(
         QStringLiteral("1. Create the case.\n2. Run the simulation."), {},
         {echoTool()}));
+    const QJsonArray plan{planStep(QStringLiteral("create"),
+                                   QStringLiteral("Create the case"), true),
+                          planStep(QStringLiteral("simulate"),
+                                   QStringLiteral("Run the simulation"), true)};
+    controller.receiveToken(taskPlanAction(plan));
+    controller.completeGeneration(false);
     controller.receiveToken(QByteArrayLiteral(
         R"({"action":"final","content":"I still need to inspect the files and create the case."})"));
     controller.completeGeneration(false);
 
     QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
-    QCOMPARE(generationCount, 2);
+    QCOMPARE(generationCount, 3);
     QCOMPARE(toolCallCount, 0);
     QCOMPARE(finalSpy.count(), 0);
     QCOMPARE(controller.activeRun()->successfulToolResults, 0);
-    QVERIFY(controller.activeRun()->completionReviewPerformed);
-    QVERIFY(controller.activeRun()->pendingReviewedFinal.isEmpty());
+    QVERIFY(controller.activeRun()->awaitingCompletionReview);
+    QVERIFY(!controller.activeRun()->pendingFinalCandidate.isEmpty());
+    QCOMPARE(controller.activeRun()->completionSteps, plan);
     QVERIFY(generatedMessages.constLast().content.contains(
-        QStringLiteral("still need to do is not a completed result")));
+        QStringLiteral("Do not return another final action")));
     QVERIFY(generatedMessages.constLast().content.contains(
-        QStringLiteral("call that tool now")));
+        QStringLiteral("successful terminal evidence")));
 
     controller.receiveToken(QByteArrayLiteral(
         R"({"action":"call_tool","tool":"fake.echo","arguments":{}})"));
@@ -842,11 +983,24 @@ void AgentControllerTest::reviewsPrematureFinalBeforeAnyToolCall()
     controller.receiveToken(QByteArrayLiteral(
         R"({"action":"final","content":"The requested work is complete."})"));
     controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+
+    const QJsonArray completedSteps{
+        reviewedStep(QStringLiteral("create"),
+                     QStringLiteral("Create the case"), true,
+                     QStringLiteral("satisfied"), QJsonArray{1}),
+        reviewedStep(QStringLiteral("simulate"),
+                     QStringLiteral("Run the simulation"), true,
+                     QStringLiteral("satisfied"), QJsonArray{1})};
+    controller.receiveToken(
+        completionReviewAction(QStringLiteral("complete"), completedSteps,
+                               QStringLiteral("All work is complete.")));
+    controller.completeGeneration(false);
     QCOMPARE(controller.state(), application::AgentRun::State::Completed);
     QCOMPARE(finalSpy.count(), 1);
 }
 
-void AgentControllerTest::reviewsCompletionOnlyOnce()
+void AgentControllerTest::reviewsCompletionAfterEachEvidenceRevision()
 {
     auto generationCount = 0;
     auto toolCallCount = 0;
@@ -870,6 +1024,13 @@ void AgentControllerTest::reviewsCompletionOnlyOnce()
     QVERIFY(controller.start(QStringLiteral("1. Do the first operation.\n"
                                             "2. Do the second operation."),
                              {}, {echoTool()}));
+    const QJsonArray plan{
+        planStep(QStringLiteral("first"),
+                 QStringLiteral("Do the first operation"), true),
+        planStep(QStringLiteral("second"),
+                 QStringLiteral("Do the second operation"), true)};
+    controller.receiveToken(taskPlanAction(plan));
+    controller.completeGeneration(false);
     controller.receiveToken(QByteArrayLiteral(
         R"({"action":"call_tool","tool":"fake.echo","arguments":{"value":1}})"));
     controller.completeGeneration(false);
@@ -883,7 +1044,8 @@ void AgentControllerTest::reviewsCompletionOnlyOnce()
         QByteArrayLiteral(R"({"action":"final","content":"Done"})"));
     controller.completeGeneration(false);
     QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
-    QCOMPARE(generationCount, 3);
+    QCOMPARE(generationCount, 4);
+    QCOMPARE(controller.activeRun()->lastReviewedEvidenceRevision, 1);
 
     controller.receiveToken(QByteArrayLiteral(
         R"({"action":"call_tool","tool":"fake.echo","arguments":{"value":2}})"));
@@ -893,17 +1055,155 @@ void AgentControllerTest::reviewsCompletionOnlyOnce()
     secondResult.serverId = QStringLiteral("fake");
     secondResult.toolName = QStringLiteral("echo");
     controller.receiveToolResult(secondResult);
-    QCOMPARE(generationCount, 4);
+    QCOMPARE(generationCount, 5);
 
     controller.receiveToken(
         QByteArrayLiteral(R"({"action":"final","content":"Done"})"));
     controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(generationCount, 6);
+    QCOMPARE(controller.activeRun()->lastReviewedEvidenceRevision, 2);
+
+    const QJsonArray completedSteps{
+        reviewedStep(QStringLiteral("first"),
+                     QStringLiteral("Do the first operation"), true,
+                     QStringLiteral("satisfied"), QJsonArray{1}),
+        reviewedStep(QStringLiteral("second"),
+                     QStringLiteral("Do the second operation"), true,
+                     QStringLiteral("satisfied"), QJsonArray{2})};
+    controller.receiveToken(completionReviewAction(
+        QStringLiteral("complete"), completedSteps,
+        QStringLiteral("Both operations are complete.")));
+    controller.completeGeneration(false);
     QCOMPARE(controller.state(), application::AgentRun::State::Completed);
-    QCOMPARE(generationCount, 4);
+    QCOMPARE(generationCount, 6);
     QCOMPARE(finalSpy.count(), 1);
 }
 
-void AgentControllerTest::reviewUsesPreparedFinalWhenToolCallRepeats()
+void AgentControllerTest::rejectsRepeatedFinalDuringCompletionReview()
+{
+    auto generationCount = 0;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>&, const models::InferencePreset&,
+                int) { ++generationCount; },
+            [] {}, [](const QString&, const QJsonObject&)
+            { return QStringLiteral("unused"); }, [](const QString&) {},
+            [](const QString&, const QJsonObject&, QString&) { return true; },
+            [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+    QSignalSpy finalSpy(&controller,
+                        &application::AgentController::finalAnswerReady);
+    QSignalSpy finishedSpy(&controller,
+                           &application::AgentController::runFinished);
+
+    QVERIFY(controller.start(
+        QStringLiteral("1. Create the case.\n2. Run the simulation."), {},
+        {echoTool()}));
+    const QJsonArray plan{planStep(QStringLiteral("create"),
+                                   QStringLiteral("Create the case"), true),
+                          planStep(QStringLiteral("simulate"),
+                                   QStringLiteral("Run the simulation"), true)};
+    controller.receiveToken(taskPlanAction(plan));
+    controller.completeGeneration(false);
+
+    const auto final = QByteArrayLiteral(
+        R"({"action":"final","content":"Everything is complete."})");
+    controller.receiveToken(final);
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(generationCount, 3);
+
+    controller.receiveToken(final);
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(generationCount, 4);
+    QCOMPARE(finalSpy.count(), 0);
+    QVERIFY(controller.activeRun()->awaitingCompletionReview);
+
+    controller.receiveToken(final);
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Failed);
+    QCOMPARE(finalSpy.count(), 0);
+    QCOMPARE(finishedSpy.constFirst().at(2).toString(),
+             QStringLiteral("completion_unverified"));
+}
+
+void AgentControllerTest::completionReviewRejectsNonTerminalEvidence()
+{
+    auto generationCount = 0;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>&, const models::InferencePreset&,
+                int) { ++generationCount; },
+            [] {}, [](const QString&, const QJsonObject&)
+            { return QStringLiteral("tool-request-1"); }, [](const QString&) {},
+            [](const QString&, const QJsonObject&, QString&) { return true; },
+            [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+    QSignalSpy finalSpy(&controller,
+                        &application::AgentController::finalAnswerReady);
+
+    QVERIFY(controller.start(
+        QStringLiteral("1. Wait for completion.\n2. Report the result."), {},
+        {echoTool()}));
+    const QJsonArray plan{planStep(QStringLiteral("wait"),
+                                   QStringLiteral("Wait for completion"), true),
+                          planStep(QStringLiteral("report"),
+                                   QStringLiteral("Report the result"), false)};
+    controller.receiveToken(taskPlanAction(plan));
+    controller.completeGeneration(false);
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.echo","arguments":{}})"));
+    controller.completeGeneration(false);
+
+    agent::ToolResult runningResult;
+    runningResult.requestId = QStringLiteral("tool-request-1");
+    runningResult.serverId = QStringLiteral("fake");
+    runningResult.toolName = QStringLiteral("echo");
+    runningResult.structuredContent =
+        QJsonObject{{QStringLiteral("isRunning"), true},
+                    {QStringLiteral("progress"), 50.0}};
+    controller.receiveToolResult(runningResult);
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"final","content":"The operation completed."})"));
+    controller.completeGeneration(false);
+    const QJsonArray invalidCompletedSteps{
+        reviewedStep(QStringLiteral("wait"),
+                     QStringLiteral("Wait for completion"), true,
+                     QStringLiteral("satisfied"), QJsonArray{1}),
+        reviewedStep(QStringLiteral("report"),
+                     QStringLiteral("Report the result"), false,
+                     QStringLiteral("satisfied"), QJsonArray{1})};
+    controller.receiveToken(completionReviewAction(
+        QStringLiteral("complete"), invalidCompletedSteps,
+        QStringLiteral("The operation completed.")));
+    controller.completeGeneration(false);
+
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(finalSpy.count(), 0);
+    QCOMPARE(controller.activeRun()->completionReviewFailures, 1);
+    QCOMPARE(generationCount, 5);
+
+    const QJsonArray pendingSteps{
+        reviewedStep(QStringLiteral("wait"),
+                     QStringLiteral("Wait for completion"), true,
+                     QStringLiteral("pending"), QJsonArray{1}),
+        reviewedStep(QStringLiteral("report"),
+                     QStringLiteral("Report the result"), false,
+                     QStringLiteral("pending"), QJsonArray{})};
+    controller.receiveToken(completionReviewAction(
+        QStringLiteral("continue"), pendingSteps,
+        QStringLiteral(
+            "Poll the operation until it reaches a terminal state.")));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(finalSpy.count(), 0);
+    controller.cancel();
+}
+
+void AgentControllerTest::doesNotUsePreparedFinalWhenReviewStalls()
 {
     auto generationCount = 0;
     auto toolCallCount = 0;
@@ -929,6 +1229,13 @@ void AgentControllerTest::reviewUsesPreparedFinalWhenToolCallRepeats()
     QVERIFY(controller.start(
         QStringLiteral("1. Read controlData.json.\n2. Report its state."), {},
         {echoTool()}));
+    const QJsonArray plan{
+        planStep(QStringLiteral("read"),
+                 QStringLiteral("Read controlData.json"), true),
+        planStep(QStringLiteral("report"), QStringLiteral("Report its state"),
+                 false)};
+    controller.receiveToken(taskPlanAction(plan));
+    controller.completeGeneration(false);
     controller.receiveToken(repeatedAction);
     controller.completeGeneration(false);
     agent::ToolResult result;
@@ -941,16 +1248,20 @@ void AgentControllerTest::reviewUsesPreparedFinalWhenToolCallRepeats()
         QByteArrayLiteral(R"({"action":"final","content":"Prepared answer"})"));
     controller.completeGeneration(false);
     QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
-    QCOMPARE(generationCount, 3);
+    QCOMPARE(generationCount, 4);
 
     controller.receiveToken(repeatedAction);
     controller.completeGeneration(false);
-    QCOMPARE(controller.state(), application::AgentRun::State::Completed);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
     QCOMPARE(toolCallCount, 1);
-    QCOMPARE(generationCount, 3);
-    QCOMPARE(finalSpy.count(), 1);
-    QCOMPARE(finalSpy.constFirst().at(1).toString(),
-             QStringLiteral("Prepared answer"));
+    QCOMPARE(generationCount, 5);
+    QCOMPARE(finalSpy.count(), 0);
+
+    controller.receiveToken(repeatedAction);
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Failed);
+    QCOMPARE(toolCallCount, 1);
+    QCOMPARE(finalSpy.count(), 0);
 }
 
 void AgentControllerTest::stagnationRecoveryIsIndependentFromActionRepair()
@@ -1031,9 +1342,18 @@ void AgentControllerTest::compactsLongAgentContextAndPreservesEvidence()
     models::InferencePreset preset;
     preset.contextSize = 4'096;
     preset.maxOutputTokens = 512;
-    const auto request =
-        QStringLiteral("Create case1 and preserve every real path and UUID.");
+    const auto request = QStringLiteral(
+        "1. Create case1 and preserve every real path and UUID.\n"
+        "2. Create the shaft region.");
     QVERIFY(controller.start(request, preset, {echoTool()}));
+    const QJsonArray plan{
+        planStep(QStringLiteral("case"),
+                 QStringLiteral("Create case1 and preserve its path and UUID"),
+                 true),
+        planStep(QStringLiteral("shaft"),
+                 QStringLiteral("Create the shaft region"), true)};
+    controller.receiveToken(taskPlanAction(plan));
+    controller.completeGeneration(false);
     controller.receiveToken(QByteArrayLiteral(
         R"({"action":"call_tool","tool":"fake.echo","arguments":{"case_path":"E:/stl_case1/case1"}})"));
     controller.completeGeneration(false,
@@ -1054,7 +1374,7 @@ void AgentControllerTest::compactsLongAgentContextAndPreservesEvidence()
                       QStringLiteral("mesh-data-").repeated(2'000)}}}};
     controller.receiveToolResult(result);
 
-    QCOMPARE(generationCount, 2);
+    QCOMPARE(generationCount, 3);
     QVERIFY(controller.activeRun().has_value());
     QCOMPARE(controller.activeRun()->contextCompactions, 1);
     QCOMPARE(generatedMessages.constFirst().role, chat::Role::System);
@@ -1062,6 +1382,8 @@ void AgentControllerTest::compactsLongAgentContextAndPreservesEvidence()
     const auto compactedTask = generatedMessages.constLast().content;
     QVERIFY(compactedTask.contains(request));
     QVERIFY(compactedTask.contains(QStringLiteral("<agent_progress>")));
+    QVERIFY(compactedTask.contains(QStringLiteral("qtllm-agent-progress-v2")));
+    QVERIFY(compactedTask.contains(QStringLiteral("Create the shaft region")));
     QVERIFY(compactedTask.contains(uuid));
     QVERIFY(compactedTask.contains(path));
     QVERIFY(compactedTask.size() < 5'000);
@@ -1087,7 +1409,7 @@ void AgentControllerTest::compactsLongAgentContextAndPreservesEvidence()
                       QStringLiteral("region-data-").repeated(2'000)}}}};
     controller.receiveToolResult(secondResult);
 
-    QCOMPARE(generationCount, 3);
+    QCOMPARE(generationCount, 4);
     QCOMPARE(controller.activeRun()->contextCompactions, 2);
     const auto twiceCompactedTask = generatedMessages.constLast().content;
     QCOMPARE(twiceCompactedTask.count(QStringLiteral("<agent_progress>")), 1);
@@ -1122,6 +1444,13 @@ void AgentControllerTest::hasNoToolCallCountLimit()
     QVERIFY(controller.start(
         QStringLiteral("1. Perform all operations.\n2. Report completion."), {},
         {echoTool()}));
+    const QJsonArray plan{
+        planStep(QStringLiteral("operate"),
+                 QStringLiteral("Perform all operations"), true),
+        planStep(QStringLiteral("report"), QStringLiteral("Report completion"),
+                 false)};
+    controller.receiveToken(taskPlanAction(plan));
+    controller.completeGeneration(false);
     for (auto index = 0; index < 20; ++index)
     {
         controller.receiveToken(
@@ -1149,8 +1478,19 @@ void AgentControllerTest::hasNoToolCallCountLimit()
     QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
     QCOMPARE(finalSpy.count(), 0);
 
-    controller.receiveToken(QByteArrayLiteral(
-        R"({"action":"final","content":"All operations completed"})"));
+    QJsonArray allEvidence;
+    for (auto sequence = 1; sequence <= 20; ++sequence)
+        allEvidence.append(sequence);
+    const QJsonArray completedSteps{
+        reviewedStep(QStringLiteral("operate"),
+                     QStringLiteral("Perform all operations"), true,
+                     QStringLiteral("satisfied"), allEvidence),
+        reviewedStep(QStringLiteral("report"),
+                     QStringLiteral("Report completion"), false,
+                     QStringLiteral("satisfied"), QJsonArray{20})};
+    controller.receiveToken(
+        completionReviewAction(QStringLiteral("complete"), completedSteps,
+                               QStringLiteral("All operations completed.")));
     controller.completeGeneration(false);
     QCOMPARE(controller.state(), application::AgentRun::State::Completed);
     QCOMPARE(toolCallCount, 20);

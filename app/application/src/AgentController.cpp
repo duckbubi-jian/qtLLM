@@ -391,13 +391,15 @@ void AgentController::handleAction(const agent::Action& action,
     if (!activeRun_) return;
     if (action.type == agent::ActionType::Final)
     {
-        if (activeRun_->successfulToolResults > 0 &&
-            !activeRun_->completionReviewPerformed &&
+        if (!activeRun_->completionReviewPerformed &&
             AgentPromptBuilder::requiresCompletionReview(
                 activeRun_->userRequest))
         {
             activeRun_->completionReviewPerformed = true;
-            activeRun_->pendingReviewedFinal = action.content;
+            if (activeRun_->successfulToolResults > 0)
+                activeRun_->pendingReviewedFinal = action.content;
+            else
+                activeRun_->pendingReviewedFinal.clear();
             activeRun_->inferenceMessages.append(
                 {chat::Role::Assistant, QString::fromUtf8(rawAction)});
             activeRun_->inferenceMessages.append(

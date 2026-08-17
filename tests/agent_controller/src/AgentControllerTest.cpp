@@ -28,6 +28,7 @@ class AgentControllerTest final : public QObject
     void allowsRepeatedPollingUntilTerminalStatus();
     void cancelsPendingStatusPoll();
     void rejectsAlternatingCompletedToolCycle();
+    void reviewsPrematureFinalBeforeAnyToolCall();
     void reviewsCompletionOnlyOnce();
     void reviewUsesPreparedFinalWhenToolCallRepeats();
     void stagnationRecoveryIsIndependentFromActionRepair();
@@ -779,6 +780,70 @@ void AgentControllerTest::rejectsAlternatingCompletedToolCycle()
         QStringLiteral("repeated cycle of completed calls")));
     QVERIFY(generatedMessages.constLast().content.contains(
         QStringLiteral("toggle resources open and closed")));
+}
+
+void AgentControllerTest::reviewsPrematureFinalBeforeAnyToolCall()
+{
+    auto generationCount = 0;
+    auto toolCallCount = 0;
+    QList<chat::Message> generatedMessages;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>& messages,
+                const models::InferencePreset&, int)
+            {
+                ++generationCount;
+                generatedMessages = messages;
+            },
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-1");
+            },
+            [](const QString&) {},
+            [](const QString&, const QJsonObject&, QString&) { return true; },
+            [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+    QSignalSpy finalSpy(&controller,
+                        &application::AgentController::finalAnswerReady);
+
+    QVERIFY(controller.start(
+        QStringLiteral("1. Create the case.\n2. Run the simulation."), {},
+        {echoTool()}));
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"final","content":"I still need to inspect the files and create the case."})"));
+    controller.completeGeneration(false);
+
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(generationCount, 2);
+    QCOMPARE(toolCallCount, 0);
+    QCOMPARE(finalSpy.count(), 0);
+    QCOMPARE(controller.activeRun()->successfulToolResults, 0);
+    QVERIFY(controller.activeRun()->completionReviewPerformed);
+    QVERIFY(controller.activeRun()->pendingReviewedFinal.isEmpty());
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("still need to do is not a completed result")));
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("call that tool now")));
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.echo","arguments":{}})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::ExecutingTool);
+    QCOMPARE(toolCallCount, 1);
+
+    agent::ToolResult result;
+    result.requestId = QStringLiteral("tool-request-1");
+    result.serverId = QStringLiteral("fake");
+    result.toolName = QStringLiteral("echo");
+    controller.receiveToolResult(result);
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"final","content":"The requested work is complete."})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Completed);
+    QCOMPARE(finalSpy.count(), 1);
 }
 
 void AgentControllerTest::reviewsCompletionOnlyOnce()

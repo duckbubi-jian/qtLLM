@@ -1,29 +1,38 @@
 #pragma once
 
-#include "McpHostRuntime.hpp"
 #include "McpServerProcess.hpp"
-#include "StdioMcpTransport.hpp"
+#include "McpServerRegistry.hpp"
+#include "McpTransport.hpp"
 #include "ToolDefinition.hpp"
 #include "ToolRegistry.hpp"
 #include "ToolResult.hpp"
 
+#include <QHash>
 #include <QList>
 #include <QObject>
+#include <QSharedPointer>
+
+#include <functional>
 
 namespace qtllm::infrastructure::mcp
 {
-class McpClientManager final : public QObject
+class McpHostRuntime final : public QObject
 {
     Q_OBJECT
 
    public:
-    explicit McpClientManager(QObject* parent = nullptr);
-    ~McpClientManager() override;
+    using TransportFactory = std::function<QSharedPointer<McpTransport>(
+        const McpServerConfig& config)>;
+
+    explicit McpHostRuntime(QObject* parent = nullptr);
+    explicit McpHostRuntime(TransportFactory transportFactory,
+                            QObject* parent = nullptr);
+    ~McpHostRuntime() override;
 
     bool addServer(McpServerConfig config, QString& errorMessage);
     bool removeServer(const QString& serverId, QString& errorMessage);
     [[nodiscard]] QStringList serverIds() const;
-    [[nodiscard]] StdioMcpTransport* transport(const QString& serverId) const;
+    [[nodiscard]] McpTransport* transport(const QString& serverId) const;
     [[nodiscard]] QList<agent::ToolDefinition> tools() const;
     [[nodiscard]] QString agentInstructions() const;
     [[nodiscard]] const ToolRegistry& registry() const;
@@ -62,6 +71,43 @@ class McpClientManager final : public QObject
                      const QString& message);
 
    private:
-    McpHostRuntime runtime_;
+    enum class Operation
+    {
+        Initialize,
+        ListTools,
+        CallTool
+    };
+    struct PendingRequest
+    {
+        QString serverId;
+        Operation operation = Operation::Initialize;
+        QString toolName;
+    };
+    struct ServerConnection
+    {
+        McpServerConfig config;
+        QSharedPointer<McpTransport> transport;
+        bool stopRequested = false;
+    };
+
+    void connectTransport(const QString& serverId, McpTransport* transport);
+    QString invalidRequest(const QString& serverId, const QString& method,
+                           const QString& message);
+    void handleResponse(const QString& serverId, const QString& requestId,
+                        const QString& method, const QJsonObject& result);
+    void handleFailure(const QString& serverId, const QString& requestId,
+                       const QString& method, const QString& code,
+                       const QString& message,
+                       const PendingRequest* knownPending = nullptr);
+    bool changeState(const QString& serverId, McpServerState state);
+    void publishSnapshot(const QString& serverId);
+    void revokeCapabilities(const QString& serverId);
+    void discardPendingRequests(const QString& serverId);
+
+    TransportFactory transportFactory_;
+    QHash<QString, ServerConnection> connections_;
+    QHash<QString, PendingRequest> pending_;
+    McpServerRegistry serverRegistry_;
+    ToolRegistry toolRegistry_;
 };
 }  // namespace qtllm::infrastructure::mcp

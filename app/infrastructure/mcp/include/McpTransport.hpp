@@ -13,6 +13,7 @@ class McpTransport : public QObject
    public:
     using QObject::QObject;
     ~McpTransport() override = default;
+    [[nodiscard]] virtual bool isRunning() const = 0;
 
    public slots:
     virtual void start() = 0;
@@ -21,6 +22,8 @@ class McpTransport : public QObject
                             int timeoutMs = 30'000) = 0;
     virtual void cancel(const QString& requestId) = 0;
     virtual void cancelAll() = 0;
+    virtual bool notify(const QString& method,
+                        const QJsonObject& params = {}) = 0;
 
    signals:
     void responseReceived(const QString& requestId, const QString& method,

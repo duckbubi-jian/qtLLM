@@ -2,7 +2,7 @@
 
 ## 1. 文档状态与目标
 
-- 状态：实施中；阶段 0 已于 2026-08-17 完成，下一步为阶段 1。
+- 状态：实施中；阶段 0、阶段 1 已于 2026-08-17 完成，下一步为阶段 2。
 - 基线日期：2026-08-17。
 - qtLLM 基线提交：`0432f45a0642aaafb9293d6d242c00907dfc9d3e`。
 - 参考实现：Pi Agent Harness，提交
@@ -62,19 +62,17 @@ Agent 的实际上限仍同时受本地模型的工具选择能力、上下文�
   1 MiB 单消息保护。
 - 内置 filesystem Server 以独立 C++20 子进程运行，并限制授权根目录。
 - Fake MCP Server 已覆盖基础发现、调用、远端错误、超时和取消。
+- `McpHostRuntime` 已通过抽象 transport 管理逐 Server 生命周期、pending request、
+  状态和能力快照；`McpClientManager` 保留为兼容 facade。
+- Server 停止或失败时只撤销自身能力；目录刷新失败保留上一份有效工具快照并进入
+  `Degraded`。
 
 ### 3.2 关键缺口
 
-1. 协议版本硬编码为 `2024-11-05`，initialize 返回版本未按兼容矩阵校验，也没有
-   保存完整 Server capabilities。
-1. Server 只有 `initialized` 布尔值，不能表达 Starting、Ready、Degraded、Failed
-   和重启中的状态。
-1. `McpClientManager` 依赖具体 `StdioMcpTransport`，现有 transport 接口尚未形成
-   可替换的运行时边界。
 1. `tools/list` 不支持 cursor 分页；工具目录更新不是面向多页和失败恢复设计的原子
    快照。
-1. transport 已发出 `notificationReceived`，Manager 尚未接入动态工具、progress
-   和 logging notification。
+1. transport notification 已经穿过 Host facade，但尚未接入动态工具、progress
+   和 logging 的类型化处理。
 1. `ToolDefinition` 只保存 input schema，没有 output schema、annotations 和
    Server 元数据。
 1. `structuredContent` 当前只提取 JSON object，不接受 array；图片、嵌入资源、
@@ -113,7 +111,8 @@ Agent 的实际上限仍同时受本地模型的工具选择能力、上下文�
 - 多 Agent、子 Agent、分支会话、skills 或代码生成专用工作流。
 - SQLite 对话持久化、会话 UI 重构和模型推理算法升级。
 
-这些功能可以独立规划，但不能阻塞 MCP Host 的协议兼容性。
+这些功能可以独立规划，但不能阻塞 MCP Host 的协议兼容性。根据当前产品决策，
+记忆功能、SQLite 对话持久化和会话恢复均暂停，不纳入本计划后续版本。
 
 ## 5. 目标架构
 
@@ -295,15 +294,25 @@ Server 自报 read-only、idempotent 或 safe 不能自动获得执行权。第�
 - Fake Server 已支持协议版本和 Tools capability 开关；MCP 与 Agent Controller
   定向测试通过。
 
-### 阶段 1：Host Runtime 与多 Server 生命周期（3 至 5 个工作日）
+### 阶段 1：Host Runtime 与多 Server 生命周期（已完成，2026-08-17）
 
-- 新增 `McpHostFacade`、`McpHostRuntime`、`ServerRegistry` 和 Server 状态机。
+- 以 `McpClientManager` 作为兼容 facade，新增 `McpHostRuntime`、
+  `McpServerRegistry` 和 Server 状态机。
 - 将 Manager 对 `StdioMcpTransport` 的具体依赖收敛到 transport factory。
 - 严格校验 initialize 协商结果，保存完整 capabilities 和来源信息。
 - 实现每 Server pending request、故障隔离、受控重启和原子能力撤销。
 
 验收：两个 Server 可独立启动、失败和恢复；未 Ready 的 Server 不可调用；一个
 Server 崩溃不影响另一个 Server 或普通聊天。
+
+完成记录：
+
+- runtime 只依赖 `McpTransport` 和 transport factory，stdio 实现已收敛到默认工厂。
+- 状态快照包含协议版本、capabilities、Server 信息、instructions、工具数、revision
+  和最近错误，并通过 facade 对外发布。
+- 停止、失败和移除会撤销对应 Server 的工具和能力；失败刷新保留上一份有效目录。
+- fake transport 回归覆盖正常状态序列、停止撤销、重启、多 Server 同名工具隔离、
+  单 Server 崩溃隔离和非法状态跳转。
 
 ### 阶段 2：Tools conformance（4 至 6 个工作日）
 
@@ -336,7 +345,7 @@ Server 崩溃不影响另一个 Server 或普通聊天。
 
 ### 阶段 5：Streamable HTTP 与认证（5 至 8 个工作日）
 
-- 实现 transport、连接状态、会话恢复、认证和安全凭据引用。
+- 实现 transport、连接状态、认证和安全凭据引用；会话恢复按当前产品决策暂停。
 - 增加 TLS、域名、重定向、代理、离线和限流故障矩阵。
 
 验收：同一套 Host conformance 用例可运行于 stdio 和 HTTP；网络凭据不进入普通

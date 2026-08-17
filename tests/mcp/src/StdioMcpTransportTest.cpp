@@ -1,6 +1,8 @@
 #include "BuiltInMcpServer.hpp"
 #include "McpClientManager.hpp"
+#include "McpHostRuntime.hpp"
 #include "McpProtocol.hpp"
+#include "McpServerRegistry.hpp"
 #include "ToolPolicy.hpp"
 
 #include <QCoreApplication>
@@ -13,6 +15,120 @@
 
 namespace qtllm::tests
 {
+namespace
+{
+class FakeMcpTransport final : public infrastructure::mcp::McpTransport
+{
+   public:
+    using McpTransport::McpTransport;
+
+    [[nodiscard]] bool isRunning() const override
+    {
+        return running_;
+    }
+
+    void start() override
+    {
+        running_ = true;
+        emit started();
+    }
+
+    void stop() override
+    {
+        if (!running_) return;
+        running_ = false;
+        emit stopped();
+    }
+
+    QString request(const QString& method, const QJsonObject&, int) override
+    {
+        if (!running_) return {};
+        const auto requestId = QString::number(++nextRequestId_);
+        requests_.insert(requestId, method);
+        return requestId;
+    }
+
+    void cancel(const QString& requestId) override
+    {
+        const auto method = requests_.take(requestId);
+        if (!method.isEmpty())
+            emit requestFailed(requestId, method, QStringLiteral("cancelled"),
+                               QStringLiteral("Request cancelled."));
+    }
+
+    void cancelAll() override
+    {
+        const auto requestIds = requests_.keys();
+        for (const auto& requestId : requestIds)
+            cancel(requestId);
+    }
+
+    bool notify(const QString& method, const QJsonObject&) override
+    {
+        notifications_.append(method);
+        return running_;
+    }
+
+    void respond(const QString& requestId, const QJsonObject& result)
+    {
+        const auto method = requests_.take(requestId);
+        if (!method.isEmpty()) emit responseReceived(requestId, method, result);
+    }
+
+    void fail(const QString& requestId, const QString& code,
+              const QString& message)
+    {
+        const auto method = requests_.take(requestId);
+        if (!method.isEmpty())
+            emit requestFailed(requestId, method, code, message);
+    }
+
+    void crash()
+    {
+        running_ = false;
+        emit transportError(QStringLiteral("crashed"),
+                            QStringLiteral("Fake transport crashed."));
+        emit stopped();
+    }
+
+   private:
+    bool running_ = false;
+    int nextRequestId_ = 0;
+    QHash<QString, QString> requests_;
+    QStringList notifications_;
+};
+
+infrastructure::mcp::McpServerConfig runtimeTestConfig(const QString& serverId)
+{
+    infrastructure::mcp::McpServerConfig config;
+    config.serverId = serverId;
+    config.program = QDir::root().filePath(QStringLiteral("fake-mcp-server"));
+    return config;
+}
+
+QJsonObject initializeResult()
+{
+    return {{QStringLiteral("protocolVersion"),
+             infrastructure::mcp::latestSupportedProtocolVersion()},
+            {QStringLiteral("capabilities"),
+             QJsonObject{{QStringLiteral("tools"), QJsonObject{}}}},
+            {QStringLiteral("serverInfo"),
+             QJsonObject{{QStringLiteral("name"), QStringLiteral("fake")},
+                         {QStringLiteral("version"), QStringLiteral("1")}}}};
+}
+
+QJsonObject toolsResult(const QString& name = QStringLiteral("echo"))
+{
+    return {{QStringLiteral("tools"),
+             QJsonArray{QJsonObject{
+                 {QStringLiteral("name"), name},
+                 {QStringLiteral("description"), QStringLiteral("Echo")},
+                 {QStringLiteral("inputSchema"),
+                  QJsonObject{
+                      {QStringLiteral("type"), QStringLiteral("object")}}}}}}};
+}
+}  // namespace
+
 class StdioMcpTransportTest final : public QObject
 {
     Q_OBJECT
@@ -29,6 +145,9 @@ class StdioMcpTransportTest final : public QObject
     void roundTripsServerConfiguration();
     void rejectsInvalidServerIds();
     void builtInFilesystemWritesCppFile();
+    void tracksServerLifecycleAndRevokesCapabilities();
+    void isolatesMultipleServerFailures();
+    void rejectsInvalidServerStateTransitions();
 };
 
 infrastructure::mcp::McpServerConfig testConfig()
@@ -353,6 +472,140 @@ void StdioMcpTransportTest::rejectsInvalidServerIds()
     QVERIFY(!manager.addServer(config, errorMessage));
     QVERIFY(errorMessage.contains(QStringLiteral("serverId")));
     QVERIFY(manager.serverIds().isEmpty());
+}
+
+void StdioMcpTransportTest::tracksServerLifecycleAndRevokesCapabilities()
+{
+    using infrastructure::mcp::McpHostRuntime;
+    using infrastructure::mcp::McpServerState;
+
+    QHash<QString, QSharedPointer<FakeMcpTransport>> transports;
+    McpHostRuntime runtime(
+        [&transports](const infrastructure::mcp::McpServerConfig& config)
+            -> QSharedPointer<infrastructure::mcp::McpTransport>
+        {
+            auto transport = QSharedPointer<FakeMcpTransport>::create();
+            transports.insert(config.serverId, transport);
+            return transport;
+        });
+    QString errorMessage;
+    QVERIFY2(runtime.addServer(runtimeTestConfig(QStringLiteral("alpha")),
+                               errorMessage),
+             qPrintable(errorMessage));
+    QCOMPARE(runtime.serverSnapshot(QStringLiteral("alpha"))->state,
+             McpServerState::Stopped);
+
+    QSignalSpy stateSpy(&runtime, &McpHostRuntime::serverStateChanged);
+    runtime.startServer(QStringLiteral("alpha"));
+    QCOMPARE(runtime.serverSnapshot(QStringLiteral("alpha"))->state,
+             McpServerState::Starting);
+    const auto initializeRequest = runtime.initialize(QStringLiteral("alpha"));
+    QVERIFY(!initializeRequest.isEmpty());
+    QCOMPARE(runtime.serverSnapshot(QStringLiteral("alpha"))->state,
+             McpServerState::Initializing);
+    transports.value(QStringLiteral("alpha"))
+        ->respond(initializeRequest, initializeResult());
+    QCOMPARE(runtime.serverSnapshot(QStringLiteral("alpha"))->state,
+             McpServerState::Ready);
+
+    const auto listRequest = runtime.listTools(QStringLiteral("alpha"));
+    QVERIFY(!listRequest.isEmpty());
+    transports.value(QStringLiteral("alpha"))
+        ->respond(listRequest, toolsResult());
+    QCOMPARE(runtime.tools().size(), 1);
+    QCOMPARE(runtime.serverSnapshot(QStringLiteral("alpha"))->toolCount, 1);
+
+    const auto failedRefresh = runtime.listTools(QStringLiteral("alpha"));
+    transports.value(QStringLiteral("alpha"))
+        ->fail(failedRefresh, QStringLiteral("refresh_failed"),
+               QStringLiteral("Refresh failed."));
+    QCOMPARE(runtime.serverSnapshot(QStringLiteral("alpha"))->state,
+             McpServerState::Degraded);
+    QCOMPARE(runtime.tools().size(), 1);
+
+    runtime.stopServer(QStringLiteral("alpha"));
+    QCOMPARE(runtime.serverSnapshot(QStringLiteral("alpha"))->state,
+             McpServerState::Stopped);
+    QVERIFY(runtime.tools().isEmpty());
+    const auto stoppedSnapshot =
+        runtime.serverSnapshot(QStringLiteral("alpha")).value();
+    QVERIFY(stoppedSnapshot.protocolVersion.isEmpty());
+    QVERIFY(!stoppedSnapshot.capabilities.tools);
+    QCOMPARE(stoppedSnapshot.toolCount, 0);
+
+    runtime.startServer(QStringLiteral("alpha"));
+    QCOMPARE(runtime.serverSnapshot(QStringLiteral("alpha"))->state,
+             McpServerState::Starting);
+    QVERIFY(stateSpy.count() >= 7);
+}
+
+void StdioMcpTransportTest::isolatesMultipleServerFailures()
+{
+    using infrastructure::mcp::McpHostRuntime;
+    using infrastructure::mcp::McpServerState;
+
+    QHash<QString, QSharedPointer<FakeMcpTransport>> transports;
+    McpHostRuntime runtime(
+        [&transports](const infrastructure::mcp::McpServerConfig& config)
+            -> QSharedPointer<infrastructure::mcp::McpTransport>
+        {
+            auto transport = QSharedPointer<FakeMcpTransport>::create();
+            transports.insert(config.serverId, transport);
+            return transport;
+        });
+    QString errorMessage;
+    for (const auto& serverId :
+         {QStringLiteral("alpha"), QStringLiteral("beta")})
+    {
+        QVERIFY2(runtime.addServer(runtimeTestConfig(serverId), errorMessage),
+                 qPrintable(errorMessage));
+        runtime.startServer(serverId);
+        const auto initializeRequest = runtime.initialize(serverId);
+        transports.value(serverId)->respond(initializeRequest,
+                                            initializeResult());
+        const auto listRequest = runtime.listTools(serverId);
+        transports.value(serverId)->respond(listRequest, toolsResult());
+    }
+    QCOMPARE(runtime.tools().size(), 2);
+    QVERIFY(runtime.registry().find(QStringLiteral("alpha.echo")) != nullptr);
+    QVERIFY(runtime.registry().find(QStringLiteral("beta.echo")) != nullptr);
+
+    transports.value(QStringLiteral("alpha"))->crash();
+    QCOMPARE(runtime.serverSnapshot(QStringLiteral("alpha"))->state,
+             McpServerState::Failed);
+    QCOMPARE(runtime.serverSnapshot(QStringLiteral("beta"))->state,
+             McpServerState::Ready);
+    QVERIFY(runtime.registry().find(QStringLiteral("alpha.echo")) == nullptr);
+    QVERIFY(runtime.registry().find(QStringLiteral("beta.echo")) != nullptr);
+
+    QSignalSpy resultSpy(&runtime, &McpHostRuntime::toolResultReady);
+    const auto callRequest =
+        runtime.callTool(QStringLiteral("beta.echo"), QJsonObject{});
+    QVERIFY(!callRequest.isEmpty());
+    transports.value(QStringLiteral("beta"))
+        ->respond(callRequest,
+                  {{QStringLiteral("content"),
+                    QJsonArray{QJsonObject{
+                        {QStringLiteral("type"), QStringLiteral("text")},
+                        {QStringLiteral("text"), QStringLiteral("ok")}}}}});
+    QCOMPARE(resultSpy.count(), 1);
+    const auto result =
+        qvariant_cast<agent::ToolResult>(resultSpy.constFirst().constFirst());
+    QCOMPARE(result.serverId, QStringLiteral("beta"));
+    QVERIFY(!result.isError);
+}
+
+void StdioMcpTransportTest::rejectsInvalidServerStateTransitions()
+{
+    infrastructure::mcp::McpServerRegistry registry;
+    QString errorMessage;
+    QVERIFY(registry.addServer(QStringLiteral("alpha"), errorMessage));
+    QVERIFY(!registry.transition(QStringLiteral("alpha"),
+                                 infrastructure::mcp::McpServerState::Ready,
+                                 errorMessage));
+    QVERIFY(errorMessage.contains(QStringLiteral("stopped -> ready")));
+    QCOMPARE(registry.snapshot(QStringLiteral("alpha"))->state,
+             infrastructure::mcp::McpServerState::Stopped);
 }
 
 void StdioMcpTransportTest::builtInFilesystemWritesCppFile()

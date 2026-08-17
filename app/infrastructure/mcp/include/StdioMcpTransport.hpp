@@ -18,7 +18,7 @@ class StdioMcpTransport final : public McpTransport
     ~StdioMcpTransport() override;
 
     [[nodiscard]] const McpServerConfig& config() const;
-    [[nodiscard]] bool isRunning() const;
+    [[nodiscard]] bool isRunning() const override;
 
    public slots:
     void start() override;
@@ -28,7 +28,7 @@ class StdioMcpTransport final : public McpTransport
     void cancel(const QString& requestId) override;
     void cancelAll() override;
 
-    bool notify(const QString& method, const QJsonObject& params = {});
+    bool notify(const QString& method, const QJsonObject& params = {}) override;
 
    private slots:
     void onReadyReadStandardOutput();

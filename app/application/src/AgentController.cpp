@@ -196,6 +196,8 @@ AgentController::AgentController(Dependencies dependencies, QObject* parent)
             &AgentController::executePendingPoll);
 }
 
+AgentController::~AgentController() = default;
+
 void AgentController::notifyLongRunning()
 {
     if (!hasActiveRun()) return;

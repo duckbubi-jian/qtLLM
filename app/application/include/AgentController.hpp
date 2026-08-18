@@ -51,6 +51,7 @@ class AgentController final : public QObject
 
     explicit AgentController(Dependencies dependencies = {},
                              QObject* parent = nullptr);
+    ~AgentController() override;
 
     bool start(const QString& userRequest,
                const models::InferencePreset& preset,

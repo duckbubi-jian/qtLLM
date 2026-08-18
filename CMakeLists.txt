@@ -33,6 +33,14 @@ if(MSVC AND (MSVC_VERSION LESS 1920 OR MSVC_VERSION GREATER_EQUAL 1930))
         "Select a Visual Studio 2019 toolchain and reset the CMake cache.")
 endif()
 
+if(MSVC AND CMAKE_GENERATOR MATCHES "^Ninja")
+    # Ninja matches /showIncludes output byte-for-byte. IDE terminals may use
+    # UTF-8 while CMake stores the localized prefix in the system code page,
+    # which otherwise leaves every object with an empty header dependency set.
+    set(CMAKE_CXX_COMPILER_LAUNCHER
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/msvc-dependency-launcher.cmd")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)

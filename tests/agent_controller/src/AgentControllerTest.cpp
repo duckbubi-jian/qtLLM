@@ -1142,10 +1142,20 @@ void AgentControllerTest::rejectsUnchangedRetryAfterToolError()
     QVERIFY(generatedMessages.constLast().content.contains(
         QStringLiteral("identical tool call already failed")));
 
-    controller.receiveToken(QByteArrayLiteral(
-        R"({"action":"final","content":"Unable to use that path."})"));
+    const auto unsupportedFinal = QByteArrayLiteral(
+        R"({"action":"final","content":"Unable to use that path."})");
+    controller.receiveToken(unsupportedFinal);
     controller.completeGeneration(false);
-    QCOMPARE(controller.state(), application::AgentRun::State::Completed);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(generationCount, 4);
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("successful evidence")));
+
+    controller.receiveToken(unsupportedFinal);
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Failed);
+    QCOMPARE(controller.activeRun()->finishCode,
+             QStringLiteral("completion_unverified"));
     QCOMPARE(toolCallCount, 1);
 }
 

@@ -49,6 +49,7 @@ feature differences have dedicated Fake Server coverage.
 | Results | General content-block preservation | Supported |
 | Results | Unknown content-block type reporting | Supported |
 | Results | `structuredContent` object, array, or scalar | Supported |
+| Results | Normalized Agent outcome and side-effect state | Supported |
 | Cancellation | Stop local wait and ignore late response | Supported |
 | Cancellation | Send protocol cancellation notification | Supported |
 | Notifications | Parse transport notifications | Supported at transport boundary |
@@ -108,6 +109,12 @@ feature differences have dedicated Fake Server coverage.
   relationships, asynchronous jobs, and mutation verification evidence. The
   ledger survives context compaction and unresolved verification prevents a
   completion claim.
+- Tool call responses and request failures expose normalized success,
+  progress, validation, cancellation, transport, protocol, Server, and domain
+  outcomes. Failures after dispatch explicitly mark the side effect uncertain.
+- The Agent never retries an uncertain side-effecting call. Read-only
+  transport failures have one exact retry; late results after cancellation are
+  ignored and terminal job results stop polling.
 - Tests run with the Fake MCP Server and do not require a model or network.
 - Two Servers can expose same-named tools independently; failure or restart of
   one Server does not revoke the other Server's capabilities.

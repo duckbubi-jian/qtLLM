@@ -175,6 +175,29 @@ agent::ToolFailureKind failureKind(const QString& code)
         return agent::ToolFailureKind::LocalValidation;
     return agent::ToolFailureKind::Transport;
 }
+
+agent::ToolOutcome failureOutcome(const QString& code)
+{
+    if (code == QLatin1String("cancelled") || code == QLatin1String("canceled"))
+        return agent::ToolOutcome::Cancelled;
+    switch (failureKind(code))
+    {
+        case agent::ToolFailureKind::LocalValidation:
+            return agent::ToolOutcome::ValidationFailed;
+        case agent::ToolFailureKind::Authorization:
+            return agent::ToolOutcome::Denied;
+        case agent::ToolFailureKind::Transport:
+            return agent::ToolOutcome::TransportFailed;
+        case agent::ToolFailureKind::Protocol:
+            return agent::ToolOutcome::ProtocolFailed;
+        case agent::ToolFailureKind::Server:
+            return agent::ToolOutcome::ServerFailed;
+        case agent::ToolFailureKind::Tool:
+        case agent::ToolFailureKind::None:
+            return agent::ToolOutcome::ToolFailed;
+    }
+    return agent::ToolOutcome::ToolFailed;
+}
 }  // namespace
 
 McpHostRuntime::McpHostRuntime(QObject* parent)
@@ -191,6 +214,8 @@ McpHostRuntime::McpHostRuntime(TransportFactory transportFactory,
     qRegisterMetaType<agent::ToolDefinition>();
     qRegisterMetaType<agent::ToolResult>();
     qRegisterMetaType<agent::ToolFailureKind>();
+    qRegisterMetaType<agent::ToolOutcome>();
+    qRegisterMetaType<agent::ToolSideEffectState>();
     qRegisterMetaType<McpServerState>();
     qRegisterMetaType<McpServerSnapshot>();
     qRegisterMetaType<McpResourceDefinition>();
@@ -1624,6 +1649,8 @@ void McpHostRuntime::handleResponse(const QString& serverId,
     if (toolResult.isError)
     {
         toolResult.failureKind = agent::ToolFailureKind::Tool;
+        toolResult.outcome = agent::ToolOutcome::ToolFailed;
+        toolResult.sideEffectState = agent::ToolSideEffectState::KnownFailed;
         const auto error = structuredResult.isObject()
                                ? structuredResult.toObject()
                                      .value(QStringLiteral("error"))
@@ -1639,6 +1666,10 @@ void McpHostRuntime::handleResponse(const QString& serverId,
         if (toolResult.errorMessage.isEmpty())
             toolResult.errorMessage =
                 QStringLiteral("MCP tool reported an error.");
+    }
+    else
+    {
+        toolResult.sideEffectState = agent::ToolSideEffectState::Succeeded;
     }
     const auto serialized =
         QJsonDocument(result).toJson(QJsonDocument::Compact);
@@ -1761,6 +1792,12 @@ void McpHostRuntime::handleFailure(const QString& serverId,
     result.errorCode = code;
     result.errorMessage = message;
     result.failureKind = failureKind(code);
+    result.outcome = failureOutcome(code);
+    result.sideEffectState =
+        requestId.isEmpty() ? agent::ToolSideEffectState::NotDispatched
+                            : (result.outcome == agent::ToolOutcome::ToolFailed
+                                   ? agent::ToolSideEffectState::KnownFailed
+                                   : agent::ToolSideEffectState::Uncertain);
     emit toolResultReady(result);
 }
 

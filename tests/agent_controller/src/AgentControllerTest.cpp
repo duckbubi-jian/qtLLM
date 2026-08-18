@@ -19,6 +19,9 @@ class AgentControllerTest final : public QObject
     void waitsForApprovalAndHonorsRejection();
     void repairsOnlyOneInvalidAction();
     void cancelsAndIgnoresLateResponses();
+    void cancellationRemainsTerminalAcrossApprovalAndToolResult();
+    void doesNotRetryUncertainMutationAfterTransportFailure();
+    void retriesReadOnlyTransportFailureOnce();
     void keepsConversationHistoryAndClearsIt();
     void emptyToolPromptForbidsToolCalls();
     void casualPromptPrefersFinalWithoutTools();
@@ -688,6 +691,176 @@ void AgentControllerTest::cancelsAndIgnoresLateResponses()
     controller.completeGeneration(false);
     QCOMPARE(controller.state(), application::AgentRun::State::Cancelled);
     QCOMPARE(finalSpy.count(), 0);
+}
+
+void AgentControllerTest::
+    cancellationRemainsTerminalAcrossApprovalAndToolResult()
+{
+    auto toolCallCount = 0;
+    auto toolCancellationCount = 0;
+    application::AgentController approvalController(
+        application::AgentController::Dependencies{
+            [](const QList<chat::Message>&, const models::InferencePreset&,
+               int) {},
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("approval-request");
+            },
+            [&](const QString&) { ++toolCancellationCount; },
+            acceptsToolArguments, [](const QString&)
+            { return infrastructure::mcp::ToolDecision::RequireApproval; }});
+
+    const auto action = QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.echo","arguments":{}})");
+    QVERIFY(
+        approvalController.start(QStringLiteral("Do work"), {}, {echoTool()}));
+    approvalController.receiveToken(action);
+    approvalController.completeGeneration(false);
+    QCOMPARE(approvalController.state(),
+             application::AgentRun::State::WaitingForApproval);
+    approvalController.cancel();
+    approvalController.resolveApproval(true);
+    QCOMPARE(approvalController.state(),
+             application::AgentRun::State::Cancelled);
+    QCOMPARE(toolCallCount, 0);
+
+    application::AgentController executionController(
+        application::AgentController::Dependencies{
+            [](const QList<chat::Message>&, const models::InferencePreset&,
+               int) {},
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-1");
+            },
+            [&](const QString&) { ++toolCancellationCount; },
+            acceptsToolArguments, [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+    QVERIFY(
+        executionController.start(QStringLiteral("Do work"), {}, {echoTool()}));
+    executionController.receiveToken(action);
+    executionController.completeGeneration(false);
+    QCOMPARE(executionController.state(),
+             application::AgentRun::State::ExecutingTool);
+    executionController.cancel();
+    QCOMPARE(toolCancellationCount, 1);
+
+    agent::ToolResult lateResult;
+    lateResult.requestId = QStringLiteral("tool-request-1");
+    lateResult.serverId = QStringLiteral("fake");
+    lateResult.toolName = QStringLiteral("echo");
+    executionController.receiveToolResult(lateResult);
+    QCOMPARE(executionController.state(),
+             application::AgentRun::State::Cancelled);
+    QCOMPARE(executionController.activeRun()->successfulToolResults, 0);
+}
+
+void AgentControllerTest::doesNotRetryUncertainMutationAfterTransportFailure()
+{
+    auto toolCallCount = 0;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [](const QList<chat::Message>&, const models::InferencePreset&,
+               int) {},
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-%1").arg(toolCallCount);
+            },
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+    QSignalSpy finishedSpy(&controller,
+                           &application::AgentController::runFinished);
+
+    const auto action = QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.mutate","arguments":{}})");
+    QVERIFY(controller.start(QStringLiteral("Change the remote value"), {},
+                             {ledgerTool(QStringLiteral("mutate"), false)}));
+    controller.receiveToken(action);
+    controller.completeGeneration(false);
+    QCOMPARE(toolCallCount, 1);
+
+    agent::ToolResult timeout;
+    timeout.requestId = QStringLiteral("tool-request-1");
+    timeout.serverId = QStringLiteral("fake");
+    timeout.toolName = QStringLiteral("mutate");
+    timeout.isError = true;
+    timeout.errorCode = QStringLiteral("timeout");
+    timeout.errorMessage = QStringLiteral("MCP request timed out.");
+    timeout.failureKind = agent::ToolFailureKind::Transport;
+    controller.receiveToolResult(timeout);
+
+    QCOMPARE(controller.state(), application::AgentRun::State::Failed);
+    QCOMPARE(toolCallCount, 1);
+    QCOMPARE(finishedSpy.count(), 1);
+    QCOMPARE(finishedSpy.constFirst().at(2).toString(),
+             QStringLiteral("tool_side_effect_uncertain"));
+    QCOMPARE(controller.activeRun()->successfulToolResults, 0);
+}
+
+void AgentControllerTest::retriesReadOnlyTransportFailureOnce()
+{
+    auto generationCount = 0;
+    auto toolCallCount = 0;
+    QList<chat::Message> generatedMessages;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>& messages,
+                const models::InferencePreset&, int)
+            {
+                ++generationCount;
+                generatedMessages = messages;
+            },
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-%1").arg(toolCallCount);
+            },
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+
+    const auto action = QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.inspect","arguments":{}})");
+    QVERIFY(controller.start(QStringLiteral("Inspect the remote value"), {},
+                             {ledgerTool(QStringLiteral("inspect"), true)}));
+    controller.receiveToken(action);
+    controller.completeGeneration(false);
+    QCOMPARE(toolCallCount, 1);
+
+    const auto deliverTimeout = [&](const QString& requestId)
+    {
+        agent::ToolResult timeout;
+        timeout.requestId = requestId;
+        timeout.serverId = QStringLiteral("fake");
+        timeout.toolName = QStringLiteral("inspect");
+        timeout.isError = true;
+        timeout.errorCode = QStringLiteral("timeout");
+        timeout.errorMessage = QStringLiteral("MCP request timed out.");
+        timeout.failureKind = agent::ToolFailureKind::Transport;
+        controller.receiveToolResult(timeout);
+    };
+    deliverTimeout(QStringLiteral("tool-request-1"));
+    QCOMPARE(controller.state(), application::AgentRun::State::ExecutingTool);
+    QCOMPARE(toolCallCount, 2);
+    QCOMPARE(generationCount, 1);
+
+    deliverTimeout(QStringLiteral("tool-request-2"));
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(toolCallCount, 2);
+    QCOMPARE(generationCount, 2);
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("side effect is unknown")));
+
+    controller.receiveToken(action);
+    controller.completeGeneration(false);
+    QCOMPARE(toolCallCount, 2);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    controller.cancel();
 }
 
 void AgentControllerTest::keepsConversationHistoryAndClearsIt()

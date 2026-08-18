@@ -315,19 +315,41 @@ chat::Message AgentPromptBuilder::toolResultMessage(
         payload.insert(QStringLiteral("errorMessage"), result.errorMessage);
     }
     payload.insert(QStringLiteral("isError"), result.isError);
+    const auto outcome = normalizedToolOutcome(result);
+    const auto sideEffectState = normalizedToolSideEffectState(result);
+    payload.insert(QStringLiteral("outcome"), toolOutcomeName(outcome));
+    payload.insert(QStringLiteral("sideEffectState"),
+                   toolSideEffectStateName(sideEffectState));
     const auto json = QString::fromUtf8(
         QJsonDocument(payload).toJson(QJsonDocument::Compact));
     QString guidance;
-    if (result.isError)
-        guidance = QStringLiteral(
-            "The tool reported an error. Do not repeat the same call "
-            "unchanged; correct its arguments or choose another action.");
-    else if (toolResultIndicatesInProgress(result))
+    if (outcome == agent::ToolOutcome::InProgress)
         guidance = QStringLiteral(
             "The structured tool result explicitly reports that the "
             "operation is still in progress. Repeat this exact status call "
             "as needed until it reports a terminal state, or stop if the "
             "user cancels. Do not claim the operation is complete yet.");
+    else if (outcome == agent::ToolOutcome::TransportFailed &&
+             sideEffectState == agent::ToolSideEffectState::Uncertain)
+        guidance = QStringLiteral(
+            "The request was dispatched but transport failed before a final "
+            "result arrived, so its side effect is unknown. Do not repeat a "
+            "mutating call blindly; use a read-back or status tool first. A "
+            "read-only call may be retried once by the controller.");
+    else if (outcome == agent::ToolOutcome::ProtocolFailed ||
+             outcome == agent::ToolOutcome::ServerFailed)
+        guidance = QStringLiteral(
+            "The tool request failed outside the tool's business result. "
+            "Preserve the Server identity and do not claim success. For a "
+            "possibly dispatched mutation, verify state before retrying.");
+    else if (outcome == agent::ToolOutcome::Denied)
+        guidance = QStringLiteral(
+            "The tool request was denied. Do not repeat it unchanged; choose "
+            "an authorized alternative or report the blocker.");
+    else if (result.isError)
+        guidance = QStringLiteral(
+            "The tool reported an error. Do not repeat the same call "
+            "unchanged; correct its arguments or choose another action.");
     else
         guidance = QStringLiteral(
             "This tool call completed successfully, but that proves only "

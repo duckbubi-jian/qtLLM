@@ -35,6 +35,7 @@ struct AgentRun
     int consecutiveValidationFailures = 0;
     int stagnationRecoveries = 0;
     int successfulToolResults = 0;
+    int readOnlyTransportRetries = 0;
     int evidenceRevision = 0;
     int lastReviewedEvidenceRevision = -1;
     int completionReviewsAtRevision = 0;

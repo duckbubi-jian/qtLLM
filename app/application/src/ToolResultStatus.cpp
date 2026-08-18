@@ -79,17 +79,127 @@ ProgressSignal progressSignal(const QJsonValue& value, int depth)
         signal = mergeSignal(signal, progressSignal(it.value(), depth + 1));
     return signal;
 }
-}  // namespace
 
-bool toolResultIndicatesInProgress(const agent::ToolResult& result)
+ProgressSignal resultProgressSignal(const agent::ToolResult& result)
 {
-    if (result.isError) return false;
     auto payload = result.structuredContent;
     if (payload.isUndefined() || payload.isNull())
     {
         payload = result.result.value(QStringLiteral("structuredContent"));
         if (payload.isUndefined() || payload.isNull()) payload = result.result;
     }
-    return progressSignal(payload, 0) == ProgressSignal::InProgress;
+    return progressSignal(payload, 0);
+}
+}  // namespace
+
+agent::ToolOutcome normalizedToolOutcome(const agent::ToolResult& result)
+{
+    if (result.outcome != agent::ToolOutcome::Succeeded) return result.outcome;
+    if (!result.isError)
+        return resultProgressSignal(result) == ProgressSignal::InProgress
+                   ? agent::ToolOutcome::InProgress
+                   : agent::ToolOutcome::Succeeded;
+
+    switch (result.failureKind)
+    {
+        case agent::ToolFailureKind::LocalValidation:
+            return agent::ToolOutcome::ValidationFailed;
+        case agent::ToolFailureKind::Authorization:
+            return agent::ToolOutcome::Denied;
+        case agent::ToolFailureKind::Transport:
+            return result.errorCode == QLatin1String("cancelled") ||
+                           result.errorCode == QLatin1String("canceled")
+                       ? agent::ToolOutcome::Cancelled
+                       : agent::ToolOutcome::TransportFailed;
+        case agent::ToolFailureKind::Protocol:
+            return agent::ToolOutcome::ProtocolFailed;
+        case agent::ToolFailureKind::Server:
+            return agent::ToolOutcome::ServerFailed;
+        case agent::ToolFailureKind::Tool:
+        case agent::ToolFailureKind::None:
+            return agent::ToolOutcome::ToolFailed;
+    }
+    return agent::ToolOutcome::ToolFailed;
+}
+
+agent::ToolSideEffectState normalizedToolSideEffectState(
+    const agent::ToolResult& result)
+{
+    const auto outcome = normalizedToolOutcome(result);
+    if (outcome == agent::ToolOutcome::InProgress)
+        return result.requestId.isEmpty()
+                   ? agent::ToolSideEffectState::NotDispatched
+                   : agent::ToolSideEffectState::Dispatched;
+    if (result.sideEffectState != agent::ToolSideEffectState::NotDispatched)
+        return result.sideEffectState;
+    if (result.requestId.isEmpty())
+        return agent::ToolSideEffectState::NotDispatched;
+
+    switch (outcome)
+    {
+        case agent::ToolOutcome::Succeeded:
+            return agent::ToolSideEffectState::Succeeded;
+        case agent::ToolOutcome::InProgress:
+            return agent::ToolSideEffectState::Dispatched;
+        case agent::ToolOutcome::ValidationFailed:
+        case agent::ToolOutcome::Denied:
+        case agent::ToolOutcome::ToolFailed:
+            return agent::ToolSideEffectState::KnownFailed;
+        case agent::ToolOutcome::Cancelled:
+        case agent::ToolOutcome::TransportFailed:
+        case agent::ToolOutcome::ProtocolFailed:
+        case agent::ToolOutcome::ServerFailed:
+            return agent::ToolSideEffectState::Uncertain;
+    }
+    return agent::ToolSideEffectState::Uncertain;
+}
+
+QString toolOutcomeName(agent::ToolOutcome outcome)
+{
+    switch (outcome)
+    {
+        case agent::ToolOutcome::Succeeded:
+            return QStringLiteral("succeeded");
+        case agent::ToolOutcome::InProgress:
+            return QStringLiteral("in_progress");
+        case agent::ToolOutcome::ValidationFailed:
+            return QStringLiteral("validation_failed");
+        case agent::ToolOutcome::Denied:
+            return QStringLiteral("denied");
+        case agent::ToolOutcome::TransportFailed:
+            return QStringLiteral("transport_failed");
+        case agent::ToolOutcome::ProtocolFailed:
+            return QStringLiteral("protocol_failed");
+        case agent::ToolOutcome::ServerFailed:
+            return QStringLiteral("server_failed");
+        case agent::ToolOutcome::ToolFailed:
+            return QStringLiteral("tool_failed");
+        case agent::ToolOutcome::Cancelled:
+            return QStringLiteral("cancelled");
+    }
+    return QStringLiteral("tool_failed");
+}
+
+QString toolSideEffectStateName(agent::ToolSideEffectState state)
+{
+    switch (state)
+    {
+        case agent::ToolSideEffectState::NotDispatched:
+            return QStringLiteral("not_dispatched");
+        case agent::ToolSideEffectState::Dispatched:
+            return QStringLiteral("dispatched");
+        case agent::ToolSideEffectState::Succeeded:
+            return QStringLiteral("succeeded");
+        case agent::ToolSideEffectState::KnownFailed:
+            return QStringLiteral("known_failed");
+        case agent::ToolSideEffectState::Uncertain:
+            return QStringLiteral("uncertain");
+    }
+    return QStringLiteral("uncertain");
+}
+
+bool toolResultIndicatesInProgress(const agent::ToolResult& result)
+{
+    return normalizedToolOutcome(result) == agent::ToolOutcome::InProgress;
 }
 }  // namespace qtllm::application

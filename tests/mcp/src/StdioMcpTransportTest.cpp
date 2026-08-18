@@ -626,6 +626,8 @@ void StdioMcpTransportTest::listsAndCallsTools()
     QCOMPARE(result.requestId, requestId);
     QCOMPARE(result.serverId, QStringLiteral("fake"));
     QVERIFY(!result.isError);
+    QCOMPARE(result.outcome, agent::ToolOutcome::Succeeded);
+    QCOMPARE(result.sideEffectState, agent::ToolSideEffectState::Succeeded);
 
     manager.stopServer(QStringLiteral("fake"));
     QTRY_VERIFY_WITH_TIMEOUT(
@@ -657,6 +659,9 @@ void StdioMcpTransportTest::propagatesRemoteErrors()
         qvariant_cast<agent::ToolResult>(resultSpy.at(0).at(0));
     QVERIFY(remoteError.isError);
     QCOMPARE(remoteError.failureKind, agent::ToolFailureKind::Server);
+    QCOMPARE(remoteError.outcome, agent::ToolOutcome::ServerFailed);
+    QCOMPARE(remoteError.sideEffectState,
+             agent::ToolSideEffectState::Uncertain);
 
     QVERIFY(
         !manager.callTool(QStringLiteral("fake.business_error"), {}).isEmpty());
@@ -665,6 +670,9 @@ void StdioMcpTransportTest::propagatesRemoteErrors()
         qvariant_cast<agent::ToolResult>(resultSpy.at(1).at(0));
     QVERIFY(businessError.isError);
     QCOMPARE(businessError.failureKind, agent::ToolFailureKind::Tool);
+    QCOMPARE(businessError.outcome, agent::ToolOutcome::ToolFailed);
+    QCOMPARE(businessError.sideEffectState,
+             agent::ToolSideEffectState::KnownFailed);
     QCOMPARE(businessError.errorCode, QStringLiteral("CASE_PATH_EXISTS"));
     QCOMPARE(businessError.errorMessage,
              QStringLiteral("Case path already exists."));
@@ -689,17 +697,29 @@ void StdioMcpTransportTest::timesOutAndCanCancel()
 
     QSignalSpy failureSpy(
         &manager, &infrastructure::mcp::McpClientManager::requestFailed);
+    QSignalSpy resultSpy(
+        &manager, &infrastructure::mcp::McpClientManager::toolResultReady);
     const auto requestId = manager.callTool(QStringLiteral("fake.slow"), {});
     QVERIFY(!requestId.isEmpty());
     manager.cancel(requestId);
     QTRY_COMPARE_WITH_TIMEOUT(failureSpy.count(), 1, 1'000);
     QCOMPARE(failureSpy.at(0).at(3).toString(), QStringLiteral("cancelled"));
+    QTRY_COMPARE_WITH_TIMEOUT(resultSpy.count(), 1, 1'000);
+    const auto cancelled =
+        qvariant_cast<agent::ToolResult>(resultSpy.at(0).at(0));
+    QCOMPARE(cancelled.outcome, agent::ToolOutcome::Cancelled);
+    QCOMPARE(cancelled.sideEffectState, agent::ToolSideEffectState::Uncertain);
 
     const auto timeoutRequestId =
         manager.callTool(QStringLiteral("fake.slow"), {});
     QVERIFY(!timeoutRequestId.isEmpty());
     QTRY_COMPARE_WITH_TIMEOUT(failureSpy.count(), 2, 3'000);
     QCOMPARE(failureSpy.at(1).at(3).toString(), QStringLiteral("timeout"));
+    QTRY_COMPARE_WITH_TIMEOUT(resultSpy.count(), 2, 3'000);
+    const auto timedOut =
+        qvariant_cast<agent::ToolResult>(resultSpy.at(1).at(0));
+    QCOMPARE(timedOut.outcome, agent::ToolOutcome::TransportFailed);
+    QCOMPARE(timedOut.sideEffectState, agent::ToolSideEffectState::Uncertain);
 }
 
 void StdioMcpTransportTest::validatesArgumentsBeforeCallingServer()

@@ -375,13 +375,21 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
     if (!hasActiveRun() || state_ != AgentRun::State::ExecutingTool ||
         result.requestId != activeRun_->toolRequestId)
         return;
+    auto normalizedResult = result;
+    normalizedResult.outcome = normalizedToolOutcome(result);
+    normalizedResult.sideEffectState = normalizedToolSideEffectState(result);
+    normalizedResult.isError =
+        normalizedResult.outcome != agent::ToolOutcome::Succeeded &&
+        normalizedResult.outcome != agent::ToolOutcome::InProgress;
     activeRun_->toolRequestId.clear();
     const auto completedToolCallSignature =
         std::exchange(activeToolCallSignature_, QString{});
     const auto completedToolAction =
         std::exchange(activeToolAction_, std::nullopt);
     completedToolCallHistory_.append(completedToolCallSignature);
-    if (toolResultIndicatesInProgress(result))
+    const auto outcome = normalizedResult.outcome;
+    const auto inProgress = outcome == agent::ToolOutcome::InProgress;
+    if (inProgress)
     {
         pollableToolCallSignature_ = completedToolCallSignature;
         lastPollCompletedAtMs_ = QDateTime::currentMSecsSinceEpoch();
@@ -391,48 +399,109 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
         pollableToolCallSignature_.clear();
         lastPollCompletedAtMs_ = 0;
     }
-    auto evidenceSequence = 0;
+    auto completedOperationKind = ToolOperationKind::Unknown;
+    auto outputSchemaValidated = false;
     if (completedToolAction.has_value())
     {
-        evidenceSequence = static_cast<int>(toolEvidence_.size() + 1);
-        toolEvidence_.append(AgentContextCompactor::toolEvidence(
-            evidenceSequence, *completedToolAction, result));
         const auto definition = std::find_if(
             availableTools_.cbegin(), availableTools_.cend(),
             [&completedToolAction](const agent::ToolDefinition& candidate)
             {
                 return candidate.qualifiedName == completedToolAction->toolName;
             });
-        const auto kind =
+        completedOperationKind =
             definition == availableTools_.cend()
                 ? ToolOperationKind::Unknown
                 : operationKind(*definition, dependencies_.toolRisk);
-        const auto outputSchemaValidated =
-            definition != availableTools_.cend() &&
-            definition->hasOutputSchema && !definition->outputSchema.isEmpty();
-        activeRun_->ledger.recordToolResult(evidenceSequence,
-                                            *completedToolAction, result, kind,
-                                            outputSchemaValidated);
+        outputSchemaValidated = definition != availableTools_.cend() &&
+                                definition->hasOutputSchema &&
+                                !definition->outputSchema.isEmpty();
+    }
+    auto evidenceSequence = 0;
+    if (completedToolAction.has_value())
+    {
+        evidenceSequence = static_cast<int>(toolEvidence_.size() + 1);
+        toolEvidence_.append(AgentContextCompactor::toolEvidence(
+            evidenceSequence, *completedToolAction, normalizedResult));
+        activeRun_->ledger.recordToolResult(
+            evidenceSequence, *completedToolAction, normalizedResult,
+            completedOperationKind, outputSchemaValidated);
         ++activeRun_->evidenceRevision;
         activeRun_->completionReviewsAtRevision = 0;
         activeRun_->completionReviewFailures = 0;
     }
-    if (result.isError)
+    if (outcome != agent::ToolOutcome::Succeeded && !inProgress)
         lastFailedToolCallSignature_ = completedToolCallSignature;
     else
     {
         lastFailedToolCallSignature_.clear();
-        ++activeRun_->successfulToolResults;
+        if (outcome == agent::ToolOutcome::Succeeded)
+            ++activeRun_->successfulToolResults;
     }
     activeRun_->stagnationRecoveries = 0;
     recordEvent(agent::EventType::ToolFinished,
-                result.isError ? result.errorMessage
-                               : QStringLiteral("Tool call completed."),
-                result.serverId + QLatin1Char('.') + result.toolName,
-                result.result);
+                outcome == agent::ToolOutcome::Succeeded
+                    ? QStringLiteral("Tool call completed.")
+                : inProgress ? QStringLiteral("Tool call is still in progress.")
+                             : normalizedResult.errorMessage,
+                normalizedResult.serverId + QLatin1Char('.') +
+                    normalizedResult.toolName,
+                normalizedResult.result);
     activeRun_->inferenceMessages.append(AgentPromptBuilder::toolResultMessage(
-        result, evidenceSequence, activeRun_->ledger.snapshot(),
+        normalizedResult, evidenceSequence, activeRun_->ledger.snapshot(),
         activeRun_->ledger.unresolvedVerificationReason()));
+
+    const auto uncertainDispatch = normalizedResult.sideEffectState ==
+                                   agent::ToolSideEffectState::Uncertain;
+    const auto remoteFailure = outcome == agent::ToolOutcome::TransportFailed ||
+                               outcome == agent::ToolOutcome::ProtocolFailed ||
+                               outcome == agent::ToolOutcome::ServerFailed ||
+                               outcome == agent::ToolOutcome::Cancelled;
+    if (remoteFailure && uncertainDispatch &&
+        completedOperationKind != ToolOperationKind::ReadOnly)
+    {
+        failRun(QStringLiteral("tool_side_effect_uncertain"),
+                QStringLiteral(
+                    "The tool request was dispatched, but its final outcome "
+                    "is unknown. Verify the affected state before issuing "
+                    "another mutating call."));
+        return;
+    }
+    if (outcome == agent::ToolOutcome::Cancelled)
+    {
+        failRun(QStringLiteral("tool_cancelled"),
+                normalizedResult.errorMessage.isEmpty()
+                    ? QStringLiteral("The tool request was cancelled.")
+                    : normalizedResult.errorMessage);
+        return;
+    }
+    if (outcome == agent::ToolOutcome::TransportFailed &&
+        (normalizedResult.sideEffectState ==
+             agent::ToolSideEffectState::NotDispatched ||
+         completedOperationKind == ToolOperationKind::ReadOnly) &&
+        completedOperationKind == ToolOperationKind::ReadOnly &&
+        activeRun_->readOnlyTransportRetries < 1 && completedToolAction)
+    {
+        ++activeRun_->readOnlyTransportRetries;
+        const QJsonObject retryAction{
+            {QStringLiteral("action"), QStringLiteral("call_tool")},
+            {QStringLiteral("tool"), completedToolAction->toolName},
+            {QStringLiteral("arguments"), completedToolAction->arguments}};
+        activeRun_->inferenceMessages.append(
+            {chat::Role::Assistant,
+             QString::fromUtf8(
+                 QJsonDocument(retryAction).toJson(QJsonDocument::Compact))});
+        executeTool(*completedToolAction);
+        return;
+    }
+    if (outcome == agent::ToolOutcome::Denied)
+    {
+        failRun(QStringLiteral("tool_denied"),
+                normalizedResult.errorMessage.isEmpty()
+                    ? QStringLiteral("The tool request was denied.")
+                    : normalizedResult.errorMessage);
+        return;
+    }
     requestDecision();
 }
 

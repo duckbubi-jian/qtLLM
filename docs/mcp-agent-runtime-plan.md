@@ -90,10 +90,13 @@ The current implementation already provides most of the outer loop:
 - Local argument validation supports local `$ref`, `const`, type unions,
   `allOf`, `anyOf`, and `oneOf`; rejected calls receive a focused contract and
   use a retry counter independent from malformed Agent actions.
+- Tool results carry a normalized outcome and side-effect state. A dispatched
+  mutation with an uncertain remote result stops instead of being repeated,
+  while a read-only transport failure receives at most one exact retry.
 
-The first three implementation milestones close the largest gaps between tool
-discovery, execution, and verified state. Remaining work is to unify outcome
-and retry policy, then validate the loop against real local models.
+The first four implementation milestones close the largest gaps between tool
+discovery, execution, and verified state. Remaining work is to validate the
+loop against real local models.
 
 ## Failure Pattern To Fix
 
@@ -241,9 +244,10 @@ outcome:
 | `ToolFailed` | Preserve structured domain error details and require changed arguments or workflow. |
 | `Cancelled` | End local waiting and ignore late responses. |
 
-`ToolFailureKind` and `toolResultIndicatesInProgress` provide part of this model
-today. The remaining work is to expose one normalized result to the loop and to
-distinguish a known failure from an uncertain side effect.
+`ToolOutcome` is the controller-facing classification and
+`ToolSideEffectState` distinguishes not-dispatched, dispatched, succeeded,
+known-failed, and uncertain requests. `ToolFailureKind` remains available for
+transport diagnostics.
 
 ## Run-Scoped Resource And Workflow State
 
@@ -417,6 +421,8 @@ Acceptance:
 
 ### M4: Unified Outcome And Retry Policy
 
+Status: Implemented.
+
 Deliverables:
 
 - Normalize success, progress, cancellation, validation, authorization,
@@ -440,6 +446,19 @@ Acceptance:
 - Running jobs poll until one terminal result, then stop polling.
 - Cancellation during generation, approval, execution, or poll delay produces
   no later state transition from a stale response.
+
+Implemented policy:
+
+- Host request failures preserve Server/tool identity and classify validation,
+  cancellation, transport, protocol, Server, and tool outcomes.
+- A dispatched mutation or unknown-risk tool stops on an uncertain remote
+  failure. The user receives an explicit verification requirement instead of
+  another mutating call.
+- A read-only transport failure is retried once with the identical action. A
+  second failure returns to normal decision recovery, where unchanged calls
+  remain protected by the duplicate-failure rule.
+- Only the exact active in-progress call can bypass duplicate-call rejection;
+  polling waits at least one second and a terminal response clears poll state.
 
 ### M5: Real-Model Acceptance And Tuning
 

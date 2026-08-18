@@ -196,6 +196,10 @@ QJsonObject minimizedEvidence(const QJsonObject& evidence)
          evidence.value(QStringLiteral("sequence"))},
         {QStringLiteral("tool"), evidence.value(QStringLiteral("tool"))},
         {QStringLiteral("outcome"), evidence.value(QStringLiteral("outcome"))},
+        {QStringLiteral("outcomeStatus"),
+         evidence.value(QStringLiteral("outcomeStatus"))},
+        {QStringLiteral("sideEffectState"),
+         evidence.value(QStringLiteral("sideEffectState"))},
         {QStringLiteral("terminal"),
          evidence.value(QStringLiteral("terminal"))}};
     if (evidence.contains(QStringLiteral("arguments")))
@@ -314,13 +318,21 @@ QJsonObject AgentContextCompactor::toolEvidence(int sequence,
                                                 const agent::Action& action,
                                                 const agent::ToolResult& result)
 {
+    const auto outcome = normalizedToolOutcome(result);
+    const auto sideEffectState = normalizedToolSideEffectState(result);
     QJsonObject evidence{
         {QStringLiteral("sequence"), sequence},
         {QStringLiteral("tool"), action.toolName},
         {QStringLiteral("arguments"),
          compactJson(action.arguments, maximumArgumentBytes)},
         {QStringLiteral("outcome"),
-         result.isError ? QStringLiteral("error") : QStringLiteral("success")},
+         outcome == agent::ToolOutcome::Succeeded ||
+                 outcome == agent::ToolOutcome::InProgress
+             ? QStringLiteral("success")
+             : QStringLiteral("error")},
+        {QStringLiteral("outcomeStatus"), toolOutcomeName(outcome)},
+        {QStringLiteral("sideEffectState"),
+         toolSideEffectStateName(sideEffectState)},
         {QStringLiteral("terminal"), !toolResultIndicatesInProgress(result)},
         {QStringLiteral("result"),
          compactJson(resultPayload(result), maximumEvidenceBytes)}};

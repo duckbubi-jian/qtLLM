@@ -88,6 +88,8 @@ int identityKeyScore(const QString& key)
 {
     if (isParentIdentityKey(key) || isJobIdentityKey(key)) return -1;
     const auto normalized = normalizedKey(key);
+    if (normalized == QLatin1String("objectuuid")) return 120;
+    if (normalized == QLatin1String("resourceuuid")) return 110;
     if (normalized == QLatin1String("uuid")) return 100;
     if (normalized.endsWith(QStringLiteral("uuid"))) return 90;
     if (normalized == QLatin1String("id")) return 80;

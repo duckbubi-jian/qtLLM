@@ -11,6 +11,13 @@ ToolPolicyRule defaultToolPolicyRule(const QString& qualifiedToolName)
         separator > 0 ? qualifiedToolName.left(separator) : QString{};
     const auto toolName = separator > 0 ? qualifiedToolName.mid(separator + 1)
                                         : qualifiedToolName;
+    static const QSet<QString> contextResetTools{
+        QStringLiteral("close_case"), QStringLiteral("load_case"),
+        QStringLiteral("open_case"), QStringLiteral("switch_case")};
+    if (contextResetTools.contains(toolName.toLower()))
+        return {ToolRisk::Destructive, true, false};
+    if (toolName.compare(QStringLiteral("new_case"), Qt::CaseInsensitive) == 0)
+        return {ToolRisk::CreatesData, true, false};
     if (serverId != QLatin1String("filesystem")) return {};
 
     static const QSet<QString> readOnlyTools{

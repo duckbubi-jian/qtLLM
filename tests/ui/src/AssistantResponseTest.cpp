@@ -374,6 +374,7 @@ void AssistantResponseTest::showsInlineToolApprovalAndRedactsSecrets()
     QVERIFY(arguments != nullptr);
     QVERIFY(allow != nullptr);
     QVERIFY(alwaysAllow != nullptr);
+    QVERIFY(!alwaysAllow->isVisible());
     QVERIFY(
         arguments->toPlainText().contains(QStringLiteral("D:/safe/file.txt")));
     QVERIFY(arguments->toPlainText().contains(QStringLiteral("[redacted]")));

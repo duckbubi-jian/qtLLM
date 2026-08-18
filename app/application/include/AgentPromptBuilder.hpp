@@ -28,7 +28,8 @@ class AgentPromptBuilder final
     static chat::Message toolResultMessage(const agent::ToolResult& result,
                                            int evidenceSequence,
                                            const QJsonObject& ledgerState,
-                                           const QString& verificationReason);
+                                           const QString& verificationReason,
+                                           const QString& recoveryGuidance);
     static chat::Message completionReviewMessage(
         const QString& originalRequest, const QJsonArray& completionSteps,
         const QList<QJsonObject>& toolEvidence, const QJsonObject& ledgerState,

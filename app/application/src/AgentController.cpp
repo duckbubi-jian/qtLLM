@@ -22,8 +22,216 @@ constexpr auto minimumDecisionTokens = 256;
 constexpr auto runTimeoutMilliseconds = 120'000;
 constexpr auto minimumPollIntervalMilliseconds = 1'000;
 constexpr auto maximumCompletionReviewsPerEvidenceRevision = 2;
+constexpr auto maximumContractFailuresPerTarget = 2;
 constexpr qsizetype maximumDetectedCycleLength = 4;
 constexpr qsizetype maximumLoggedEventDataBytes = 4'096;
+constexpr qsizetype maximumInvalidatedResourceIds = 128;
+
+QString unqualifiedToolName(const QString& qualifiedToolName)
+{
+    return qualifiedToolName.section(QLatin1Char('.'), -1).toLower();
+}
+
+bool isContextResetToolName(const QString& qualifiedToolName)
+{
+    static const QStringList names{
+        QStringLiteral("close_case"), QStringLiteral("load_case"),
+        QStringLiteral("new_case"), QStringLiteral("open_case"),
+        QStringLiteral("switch_case")};
+    return names.contains(unqualifiedToolName(qualifiedToolName));
+}
+
+bool closesContext(const QString& qualifiedToolName)
+{
+    return unqualifiedToolName(qualifiedToolName) ==
+           QLatin1String("close_case");
+}
+
+QString stringArgument(const QJsonObject& arguments,
+                       const QStringList& candidateKeys)
+{
+    for (const auto& key : candidateKeys)
+    {
+        const auto value = arguments.value(key);
+        if (value.isString() && !value.toString().trimmed().isEmpty())
+            return value.toString().trimmed();
+    }
+    return {};
+}
+
+QString actionItemType(const agent::Action& action)
+{
+    return stringArgument(action.arguments, {QStringLiteral("item_type"),
+                                             QStringLiteral("object_type"),
+                                             QStringLiteral("model_type")});
+}
+
+QString actionSelector(const agent::Action& action)
+{
+    return stringArgument(
+        action.arguments,
+        {QStringLiteral("name_uuid"), QStringLiteral("object_uuid"),
+         QStringLiteral("resource_uuid"), QStringLiteral("uuid"),
+         QStringLiteral("id")});
+}
+
+QString contractFailureKey(const agent::Action& action)
+{
+    return action.toolName.toCaseFolded() + QLatin1Char('\n') +
+           actionItemType(action).toCaseFolded() + QLatin1Char('\n') +
+           actionSelector(action).toCaseFolded();
+}
+
+bool isContractFailure(const agent::ToolResult& result)
+{
+    auto code = result.errorCode.toLower();
+    code.remove(QLatin1Char('_'));
+    code.remove(QLatin1Char('-'));
+    return code == QLatin1String("invalidargument") ||
+           code == QLatin1String("invalidfield") ||
+           code == QLatin1String("invalidfieldvalue") ||
+           code == QLatin1String("invalidselector") ||
+           code == QLatin1String("invalidtype") ||
+           code == QLatin1String("unknownfield");
+}
+
+QJsonValue toolResultPayload(const agent::ToolResult& result)
+{
+    if (!result.structuredContent.isUndefined() &&
+        !result.structuredContent.isNull())
+        return result.structuredContent;
+    const auto structured =
+        result.result.value(QStringLiteral("structuredContent"));
+    return structured.isUndefined() || structured.isNull()
+               ? QJsonValue(result.result)
+               : structured;
+}
+
+QJsonObject selectedResultObject(const agent::ToolResult& result)
+{
+    auto payload = toolResultPayload(result);
+    if (!payload.isObject()) return {};
+    auto object = payload.toObject();
+    if (object.value(QStringLiteral("result")).isObject())
+        object = object.value(QStringLiteral("result")).toObject();
+    return object;
+}
+
+QString objectIdentityMismatch(const agent::Action& action,
+                               const agent::ToolResult& result)
+{
+    if (unqualifiedToolName(action.toolName) != QLatin1String("get_object"))
+        return {};
+    const auto selector = actionSelector(action);
+    if (selector.isEmpty()) return {};
+    const auto object = selectedResultObject(result);
+    const auto returnedName =
+        object.value(QStringLiteral("name")).toString().trimmed();
+    const auto returnedUuid = stringArgument(
+        object, {QStringLiteral("uuid"), QStringLiteral("object_uuid")});
+    const auto foldedSelector = selector.toCaseFolded();
+    if (returnedName.compare(QStringLiteral("template"), Qt::CaseInsensitive) ==
+            0 &&
+        !foldedSelector.contains(QStringLiteral("template")))
+        return QStringLiteral(
+                   "The tool returned a default template instead of the "
+                   "requested object selector %1.")
+            .arg(selector);
+    if (!returnedName.isEmpty() && !returnedUuid.isEmpty() &&
+        !foldedSelector.contains(returnedName.toCaseFolded()) &&
+        !foldedSelector.contains(returnedUuid.toCaseFolded()))
+        return QStringLiteral(
+                   "The returned object identity (%1, %2) does not match "
+                   "the requested selector %3.")
+            .arg(returnedName, returnedUuid, selector);
+    return {};
+}
+
+QString findStringField(const QJsonValue& value, const QString& field,
+                        qsizetype depth = 0)
+{
+    if (depth > 8) return {};
+    if (value.isArray())
+    {
+        for (const auto& item : value.toArray())
+        {
+            const auto found = findStringField(item, field, depth + 1);
+            if (!found.isEmpty()) return found;
+        }
+        return {};
+    }
+    if (!value.isObject()) return {};
+    const auto object = value.toObject();
+    const auto direct = object.value(field);
+    if (direct.isString() && !direct.toString().trimmed().isEmpty())
+        return direct.toString().trimmed();
+    for (auto item = object.constBegin(); item != object.constEnd(); ++item)
+    {
+        const auto found = findStringField(item.value(), field, depth + 1);
+        if (!found.isEmpty()) return found;
+    }
+    return {};
+}
+
+QString normalizedScope(QString value)
+{
+    value = value.trimmed();
+    value.replace(QLatin1Char('\\'), QLatin1Char('/'));
+    while (value.endsWith(QLatin1Char('/')))
+        value.chop(1);
+    return value.toCaseFolded();
+}
+
+QString contextScope(const agent::Action& action,
+                     const agent::ToolResult& result)
+{
+    auto scope =
+        findStringField(toolResultPayload(result), QStringLiteral("case_path"));
+    if (scope.isEmpty())
+        scope = stringArgument(action.arguments, {QStringLiteral("case_path")});
+    if (scope.isEmpty())
+    {
+        const auto parent = stringArgument(
+            action.arguments, {QStringLiteral("parent_directory")});
+        const auto name =
+            stringArgument(action.arguments, {QStringLiteral("case_name")});
+        if (!parent.isEmpty() && !name.isEmpty())
+            scope = parent + QLatin1Char('/') + name;
+    }
+    return normalizedScope(scope);
+}
+
+QString findReferencedId(const QJsonValue& value,
+                         const QStringList& invalidatedIds, qsizetype depth = 0)
+{
+    if (depth > 12) return {};
+    if (value.isString())
+    {
+        const auto text = value.toString().toCaseFolded();
+        for (const auto& id : invalidatedIds)
+            if (!id.isEmpty() && text.contains(id.toCaseFolded())) return id;
+        return {};
+    }
+    if (value.isArray())
+    {
+        for (const auto& item : value.toArray())
+        {
+            const auto found =
+                findReferencedId(item, invalidatedIds, depth + 1);
+            if (!found.isEmpty()) return found;
+        }
+        return {};
+    }
+    if (!value.isObject()) return {};
+    const auto object = value.toObject();
+    for (auto item = object.constBegin(); item != object.constEnd(); ++item)
+    {
+        const auto found =
+            findReferencedId(item.value(), invalidatedIds, depth + 1);
+        if (!found.isEmpty()) return found;
+    }
+    return {};
+}
 
 QJsonValue canonicalJsonValue(const QJsonValue& value)
 {
@@ -249,6 +457,12 @@ bool AgentController::start(const QString& userRequest,
     lastPollCompletedAtMs_ = 0;
     completedToolCallHistory_.clear();
     toolEvidence_.clear();
+    contractRecoveries_.clear();
+    contractFailureCounts_.clear();
+    activeContextScope_.clear();
+    invalidatedResourceIds_.clear();
+    contextEstablished_ = false;
+    hasStateChangesInContext_ = false;
     if (pollTimer_->isActive()) pollTimer_->stop();
     if (!runTimer_->isActive()) runTimer_->start();
 
@@ -406,19 +620,6 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
         std::exchange(activeToolCallSignature_, QString{});
     const auto completedToolAction =
         std::exchange(activeToolAction_, std::nullopt);
-    completedToolCallHistory_.append(completedToolCallSignature);
-    const auto outcome = normalizedResult.outcome;
-    const auto inProgress = outcome == agent::ToolOutcome::InProgress;
-    if (inProgress)
-    {
-        pollableToolCallSignature_ = completedToolCallSignature;
-        lastPollCompletedAtMs_ = QDateTime::currentMSecsSinceEpoch();
-    }
-    else
-    {
-        pollableToolCallSignature_.clear();
-        lastPollCompletedAtMs_ = 0;
-    }
     auto completedOperationKind = ToolOperationKind::Unknown;
     auto outputSchemaValidated = false;
     if (completedToolAction.has_value())
@@ -436,6 +637,64 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
         outputSchemaValidated = definition != availableTools_.cend() &&
                                 definition->hasOutputSchema &&
                                 !definition->outputSchema.isEmpty();
+    }
+
+    QString recoveryGuidance;
+    auto contractFailuresExhausted = false;
+    if (completedToolAction.has_value() &&
+        normalizedResult.outcome == agent::ToolOutcome::Succeeded)
+    {
+        const auto mismatch =
+            objectIdentityMismatch(*completedToolAction, normalizedResult);
+        if (!mismatch.isEmpty())
+        {
+            normalizedResult.isError = true;
+            normalizedResult.failureKind = agent::ToolFailureKind::Tool;
+            normalizedResult.outcome = agent::ToolOutcome::ToolFailed;
+            normalizedResult.sideEffectState =
+                agent::ToolSideEffectState::KnownFailed;
+            normalizedResult.errorCode =
+                QStringLiteral("object_identity_mismatch");
+            normalizedResult.errorMessage = mismatch;
+            recoveryGuidance = QStringLiteral(
+                "Do not use this result as object evidence. Reuse the "
+                "object identity returned by the creation or listing call; "
+                "do not substitute a geometry-resource identifier.");
+        }
+    }
+    if (completedToolAction.has_value() &&
+        normalizedResult.outcome == agent::ToolOutcome::Succeeded)
+    {
+        const auto contextGuidance = updateContextAfterSuccess(
+            *completedToolAction, normalizedResult, completedOperationKind);
+        if (!contextGuidance.isEmpty())
+            recoveryGuidance +=
+                (recoveryGuidance.isEmpty() ? QString{} : QStringLiteral(" ")) +
+                contextGuidance;
+        resolveContractRecovery(*completedToolAction);
+    }
+    if (completedToolAction.has_value() && isContractFailure(normalizedResult))
+    {
+        const auto contractGuidance = registerContractFailure(
+            *completedToolAction, normalizedResult, contractFailuresExhausted);
+        if (!contractGuidance.isEmpty())
+            recoveryGuidance +=
+                (recoveryGuidance.isEmpty() ? QString{} : QStringLiteral(" ")) +
+                contractGuidance;
+    }
+
+    completedToolCallHistory_.append(completedToolCallSignature);
+    const auto outcome = normalizedResult.outcome;
+    const auto inProgress = outcome == agent::ToolOutcome::InProgress;
+    if (inProgress)
+    {
+        pollableToolCallSignature_ = completedToolCallSignature;
+        lastPollCompletedAtMs_ = QDateTime::currentMSecsSinceEpoch();
+    }
+    else
+    {
+        pollableToolCallSignature_.clear();
+        lastPollCompletedAtMs_ = 0;
     }
     auto evidenceSequence = 0;
     if (completedToolAction.has_value())
@@ -469,7 +728,7 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
                 normalizedResult.result);
     activeRun_->inferenceMessages.append(AgentPromptBuilder::toolResultMessage(
         normalizedResult, evidenceSequence, activeRun_->ledger.snapshot(),
-        activeRun_->ledger.unresolvedVerificationReason()));
+        activeRun_->ledger.unresolvedVerificationReason(), recoveryGuidance));
 
     const auto uncertainDispatch = normalizedResult.sideEffectState ==
                                    agent::ToolSideEffectState::Uncertain;
@@ -520,6 +779,16 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
                 normalizedResult.errorMessage.isEmpty()
                     ? QStringLiteral("The tool request was denied.")
                     : normalizedResult.errorMessage);
+        return;
+    }
+    if (contractFailuresExhausted)
+    {
+        failRun(QStringLiteral("invalid_tool_arguments"),
+                QStringLiteral(
+                    "The same tool and target rejected corrected arguments %1 "
+                    "times. Stop guessing field paths and report the contract "
+                    "blocker.")
+                    .arg(maximumContractFailuresPerTarget));
         return;
     }
     requestDecision();
@@ -684,6 +953,28 @@ void AgentController::handleAction(const agent::Action& action,
             ++activeRun_->redundantDiscoveryCalls;
     };
 
+    const auto staleId = staleResourceReference(action.arguments);
+    if (!staleId.isEmpty())
+    {
+        recordDuplicateToolAction();
+        retryNoProgressAction(
+            rawAction,
+            QStringLiteral(
+                "The arguments reuse identifier %1 from an external context "
+                "that was closed or replaced. Use identifiers returned in "
+                "the current context only.")
+                .arg(staleId));
+        return;
+    }
+
+    const auto recoveryError = contractRecoveryError(action);
+    if (!recoveryError.isEmpty())
+    {
+        recordDuplicateToolAction();
+        retryNoProgressAction(rawAction, recoveryError);
+        return;
+    }
+
     const auto signature = toolCallSignature(action);
     if (!lastFailedToolCallSignature_.isEmpty() &&
         signature == lastFailedToolCallSignature_)
@@ -752,7 +1043,8 @@ void AgentController::handleAction(const agent::Action& action,
                 QStringLiteral("Local policy denied the tool call."));
         return;
     }
-    if (decision == infrastructure::mcp::ToolDecision::RequireApproval)
+    if (decision == infrastructure::mcp::ToolDecision::RequireApproval ||
+        requiresContextResetApproval(action))
     {
         pendingApproval_ = action;
         setState(AgentRun::State::WaitingForApproval);
@@ -1217,6 +1509,202 @@ void AgentController::retryNoProgressAction(const QByteArray& rawAction,
     activeRun_->inferenceMessages.append(
         AgentPromptBuilder::noProgressMessage(errorMessage));
     requestDecision();
+}
+
+QString AgentController::contractRecoveryError(
+    const agent::Action& action) const
+{
+    const auto recovery =
+        contractRecoveries_.constFind(contractFailureKey(action));
+    if (recovery == contractRecoveries_.cend()) return {};
+    if (recovery->discoveryTool.isEmpty())
+        return QStringLiteral(
+            "The same tool and target already returned an argument "
+            "contract error. No matching contract-discovery tool is "
+            "available, so do not try another field-path variation. "
+            "Use a different supported operation or report the "
+            "blocker.");
+    auto requirement = QStringLiteral(
+                           "The same tool and target already returned an "
+                           "argument contract error. Before retrying %1, call "
+                           "%2")
+                           .arg(recovery->failedTool, recovery->discoveryTool);
+    if (!recovery->itemType.isEmpty())
+        requirement +=
+            QStringLiteral(" with item_type=%1").arg(recovery->itemType);
+    if (!recovery->selector.isEmpty())
+        requirement += QStringLiteral(
+                           " and use the selector required by that model for "
+                           "the target previously identified as %1")
+                           .arg(recovery->selector);
+    return requirement + QStringLiteral(
+                             ". Do not guess another edit shape before the "
+                             "contract lookup succeeds.");
+}
+
+QString AgentController::registerContractFailure(
+    const agent::Action& action, const agent::ToolResult& result,
+    bool& exhausted)
+{
+    const auto key = contractFailureKey(action);
+    const auto failures = contractFailureCounts_.value(key) + 1;
+    contractFailureCounts_.insert(key, failures);
+    exhausted = failures >= maximumContractFailuresPerTarget;
+
+    QString serverId;
+    const auto failedDefinition =
+        std::find_if(availableTools_.cbegin(), availableTools_.cend(),
+                     [&action](const agent::ToolDefinition& candidate)
+                     { return candidate.qualifiedName == action.toolName; });
+    if (failedDefinition != availableTools_.cend())
+        serverId = failedDefinition->serverId;
+    QString discoveryTool;
+    const auto discovery =
+        std::find_if(availableTools_.cbegin(), availableTools_.cend(),
+                     [&serverId](const agent::ToolDefinition& candidate)
+                     {
+                         return candidate.serverId == serverId &&
+                                unqualifiedToolName(candidate.qualifiedName) ==
+                                    QLatin1String("describe_model");
+                     });
+    if (discovery != availableTools_.cend())
+        discoveryTool = discovery->qualifiedName;
+
+    const ContractRecovery recovery{action.toolName, discoveryTool,
+                                    actionItemType(action),
+                                    actionSelector(action)};
+    contractRecoveries_.insert(key, recovery);
+    if (exhausted)
+        return QStringLiteral(
+            "The argument contract failed again after recovery. The "
+            "controller will stop this run instead of allowing more "
+            "field-path guesses.");
+    if (discoveryTool.isEmpty())
+        return QStringLiteral(
+                   "Error %1 is an argument-contract failure. No matching "
+                   "describe_model tool is available. Do not retry the same "
+                   "tool and target with guessed field paths; use another "
+                   "supported operation or report the blocker.")
+            .arg(result.errorCode);
+    auto guidance =
+        QStringLiteral(
+            "Error %1 is an argument-contract failure. Before retrying %2, "
+            "call %3")
+            .arg(result.errorCode, action.toolName, discoveryTool);
+    if (!recovery.itemType.isEmpty())
+        guidance += QStringLiteral(" with item_type=%1").arg(recovery.itemType);
+    return guidance + QStringLiteral(
+                          ". Use the returned selector and exact JSON "
+                          "Pointer field paths; do not guess another edit "
+                          "shape.");
+}
+
+void AgentController::resolveContractRecovery(const agent::Action& action)
+{
+    const auto itemType = actionItemType(action);
+    for (auto recovery = contractRecoveries_.begin();
+         recovery != contractRecoveries_.end();)
+    {
+        const auto discoverySatisfied =
+            !recovery->discoveryTool.isEmpty() &&
+            action.toolName == recovery->discoveryTool &&
+            (recovery->itemType.isEmpty() ||
+             recovery->itemType.compare(itemType, Qt::CaseInsensitive) == 0);
+        if (discoverySatisfied)
+            recovery = contractRecoveries_.erase(recovery);
+        else
+            ++recovery;
+    }
+
+    const auto key = contractFailureKey(action);
+    if (contractFailureCounts_.contains(key))
+    {
+        contractRecoveries_.remove(key);
+        contractFailureCounts_.remove(key);
+    }
+}
+
+bool AgentController::requiresContextResetApproval(
+    const agent::Action& action) const
+{
+    return isContextResetToolName(action.toolName) &&
+           (contextEstablished_ || hasStateChangesInContext_);
+}
+
+QString AgentController::updateContextAfterSuccess(
+    const agent::Action& action, const agent::ToolResult& result,
+    ToolOperationKind completedOperationKind)
+{
+    if (!isContextResetToolName(action.toolName))
+    {
+        if (completedOperationKind == ToolOperationKind::Mutation)
+            hasStateChangesInContext_ = true;
+        return {};
+    }
+
+    const auto invalidatesPriorContext =
+        contextEstablished_ || hasStateChangesInContext_;
+    if (invalidatesPriorContext) invalidateContextEvidence();
+
+    if (closesContext(action.toolName))
+    {
+        activeContextScope_.clear();
+        contextEstablished_ = false;
+        hasStateChangesInContext_ = false;
+    }
+    else
+    {
+        activeContextScope_ = contextScope(action, result);
+        contextEstablished_ = true;
+        hasStateChangesInContext_ =
+            unqualifiedToolName(action.toolName) == QLatin1String("new_case");
+    }
+
+    if (!invalidatesPriorContext) return {};
+    recordEvent(
+        agent::EventType::Warning,
+        QStringLiteral(
+            "The active external context changed. Resources and evidence "
+            "from the previous context were invalidated."),
+        action.toolName);
+    return QStringLiteral(
+        "The active external context changed. The local controller removed "
+        "all prior resource identifiers and completion evidence. Do not "
+        "reuse identifiers from before this context transition.");
+}
+
+QString AgentController::staleResourceReference(
+    const QJsonObject& arguments) const
+{
+    return findReferencedId(arguments, invalidatedResourceIds_);
+}
+
+void AgentController::invalidateContextEvidence()
+{
+    if (!activeRun_) return;
+    for (const auto& resource : activeRun_->ledger.resources())
+    {
+        if (resource.stableId.isEmpty() ||
+            invalidatedResourceIds_.contains(resource.stableId,
+                                             Qt::CaseInsensitive))
+            continue;
+        invalidatedResourceIds_.append(resource.stableId);
+    }
+    while (invalidatedResourceIds_.size() > maximumInvalidatedResourceIds)
+        invalidatedResourceIds_.removeFirst();
+
+    activeRun_->ledger.clear();
+    toolEvidence_.clear();
+    completedToolCallHistory_.clear();
+    contractRecoveries_.clear();
+    contractFailureCounts_.clear();
+    lastFailedToolCallSignature_.clear();
+    pollableToolCallSignature_.clear();
+    lastPollCompletedAtMs_ = 0;
+    ++activeRun_->evidenceRevision;
+    activeRun_->lastReviewedEvidenceRevision = -1;
+    activeRun_->completionReviewsAtRevision = 0;
+    activeRun_->completionReviewFailures = 0;
 }
 
 void AgentController::setState(AgentRun::State state)

@@ -146,6 +146,11 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools,
                               "choose another action. For a "
                               "multi-step request, form a "
                               "checklist in the user's order. "
+                              "Treat explicit paths, names, units, and "
+                              "ordered constraints in the original request "
+                              "as immutable. Do not substitute another path "
+                              "to work around authorization or tool errors; "
+                              "report the blocker instead. "
                               "When the controller explicitly "
                               "requests task_plan, return that "
                               "structured action before any "
@@ -294,7 +299,8 @@ chat::Message AgentPromptBuilder::taskPlanCorrectionMessage(
 
 chat::Message AgentPromptBuilder::toolResultMessage(
     const agent::ToolResult& result, int evidenceSequence,
-    const QJsonObject& ledgerState, const QString& verificationReason)
+    const QJsonObject& ledgerState, const QString& verificationReason,
+    const QString& recoveryGuidance)
 {
     const auto rawStructured =
         result.result.value(QStringLiteral("structuredContent"));
@@ -365,6 +371,8 @@ chat::Message AgentPromptBuilder::toolResultMessage(
                 "read-back tool. Do not repeat discovery calls whose results "
                 "are already in the ledger.")
                 .arg(verificationReason);
+    if (!recoveryGuidance.isEmpty())
+        guidance += QLatin1Char(' ') + recoveryGuidance.trimmed();
     return {
         chat::Role::User,
         QStringLiteral("<tool_result name=\"%1\" evidence_sequence=\"%2\">%3"

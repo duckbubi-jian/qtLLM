@@ -912,6 +912,14 @@ void StdioMcpTransportTest::appliesLocalToolPolicy()
         QStringLiteral("thirdparty.read_text_file"));
     QCOMPARE(unknownRule.risk, infrastructure::mcp::ToolRisk::ModifiesData);
     QVERIFY(!unknownRule.alwaysAllow);
+    const auto closeCaseRule = infrastructure::mcp::defaultToolPolicyRule(
+        QStringLiteral("shondy-mcp.close_case"));
+    QCOMPARE(closeCaseRule.risk, infrastructure::mcp::ToolRisk::Destructive);
+    QVERIFY(!closeCaseRule.alwaysAllow);
+    const auto newCaseRule = infrastructure::mcp::defaultToolPolicyRule(
+        QStringLiteral("shondy-mcp.new_case"));
+    QCOMPARE(newCaseRule.risk, infrastructure::mcp::ToolRisk::CreatesData);
+    QVERIFY(!newCaseRule.alwaysAllow);
 }
 
 void StdioMcpTransportTest::roundTripsServerConfiguration()

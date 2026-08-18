@@ -127,6 +127,8 @@ ToolApprovalWidget::ToolApprovalWidget(infrastructure::mcp::ToolRisk risk,
     allowButton_->setObjectName(QStringLiteral("allowToolButton"));
     alwaysAllowButton_ = new QPushButton(tr("Always allow"), this);
     alwaysAllowButton_->setObjectName(QStringLiteral("alwaysAllowToolButton"));
+    alwaysAllowButton_->setVisible(risk !=
+                                   infrastructure::mcp::ToolRisk::Destructive);
     actionRow->addWidget(rejectButton_);
     actionRow->addWidget(allowButton_);
     actionRow->addWidget(alwaysAllowButton_);

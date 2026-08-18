@@ -7,6 +7,8 @@
 #include <QSignalSpy>
 #include <QtTest>
 
+#include <algorithm>
+
 namespace qtllm::tests
 {
 class AgentControllerTest final : public QObject
@@ -15,6 +17,8 @@ class AgentControllerTest final : public QObject
 
    private slots:
     void completesMultiStepToolRun();
+    void publishesStructuredProgressSnapshots();
+    void publishesApprovalRecoveryAndCancellationProgress();
     void simpleToolRunCompletesWithoutReview();
     void simpleTaskRecoversFromFailureWithoutStructuredReview();
     void waitsForApprovalAndHonorsRejection();
@@ -38,6 +42,9 @@ class AgentControllerTest final : public QObject
     void protectsContextAndInvalidatesOldResourceIds();
     void rejectsMismatchedObjectTemplateResult();
     void rejectsRepeatedSuccessfulToolCall();
+    void singleCaseOpenRejectsFollowUpTools();
+    void multiStepCaseOpenCanContinueWithoutCleanup();
+    void limitsConsecutiveDiscoveryBreadth();
     void preservesSummaryWhenCompletionReviewFormattingFails();
     void allowsRepeatedPollingUntilTerminalStatus();
     void cancelsPendingStatusPoll();
@@ -497,6 +504,141 @@ void AgentControllerTest::completesMultiStepToolRun()
     QCOMPARE(finishedSpy.count(), 1);
     QVERIFY(!controller.hasActiveRun());
     QCOMPARE(controller.conversationMessages().size(), 2);
+}
+
+void AgentControllerTest::publishesStructuredProgressSnapshots()
+{
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [](const QList<chat::Message>&, const models::InferencePreset&,
+               int) {},
+            [] {}, [](const QString&, const QJsonObject&)
+            { return QStringLiteral("tool-request-1"); }, [](const QString&) {},
+            acceptsToolArguments, [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+    QSignalSpy progressSpy(&controller,
+                           &application::AgentController::progressChanged);
+    const auto latest = [&progressSpy]
+    {
+        return qvariant_cast<application::AgentProgressSnapshot>(
+            progressSpy.constLast().constFirst());
+    };
+
+    QVERIFY(controller.start(
+        QStringLiteral("1. Use a tool.\n2. Report the result."), {},
+        {echoTool()}));
+    QVERIFY(!progressSpy.isEmpty());
+    QCOMPARE(latest().state, application::AgentRun::State::Deciding);
+    QCOMPARE(latest().operation, QStringLiteral("Choosing the next action"));
+
+    const QJsonArray plan{
+        planStep(QStringLiteral("step-1"), QStringLiteral("Use a tool"), true),
+        planStep(QStringLiteral("step-2"), QStringLiteral("Report the result"),
+                 false)};
+    controller.receiveToken(taskPlanAction(plan));
+    controller.completeGeneration(false);
+    auto snapshot = latest();
+    QCOMPARE(snapshot.steps.size(), 2);
+    QCOMPARE(snapshot.currentStepId, QStringLiteral("step-1"));
+    QCOMPARE(snapshot.steps.constFirst().status,
+             application::AgentProgressStepStatus::Current);
+    QCOMPARE(snapshot.recentActivity.constLast().type,
+             agent::EventType::DecisionStarted);
+    QVERIFY(std::any_of(
+        snapshot.recentActivity.cbegin(), snapshot.recentActivity.cend(),
+        [](const application::AgentProgressActivity& activity)
+        { return activity.type == agent::EventType::TaskPlanAccepted; }));
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.echo","arguments":{"value":"hello"}})"));
+    controller.completeGeneration(false);
+    snapshot = latest();
+    QCOMPARE(snapshot.state, application::AgentRun::State::ExecutingTool);
+    QCOMPARE(snapshot.operation, QStringLiteral("Calling fake.echo"));
+    QCOMPARE(snapshot.waitingReason,
+             QStringLiteral("Waiting for the tool result"));
+
+    agent::ToolResult result;
+    result.requestId = QStringLiteral("tool-request-1");
+    result.serverId = QStringLiteral("fake");
+    result.toolName = QStringLiteral("echo");
+    result.structuredContent =
+        QJsonObject{{QStringLiteral("value"), QStringLiteral("hello")}};
+    controller.receiveToolResult(result);
+    snapshot = latest();
+    QCOMPARE(snapshot.completedToolCount, 1);
+    QCOMPARE(snapshot.evidenceCount, 1);
+
+    controller.receiveToken(
+        QByteArrayLiteral(R"({"action":"final","content":"Done"})"));
+    controller.completeGeneration(false);
+    const QJsonArray completedSteps{
+        reviewedStep(QStringLiteral("step-1"), QStringLiteral("Use a tool"),
+                     true, QStringLiteral("satisfied"), QJsonArray{1}),
+        reviewedStep(QStringLiteral("step-2"),
+                     QStringLiteral("Report the result"), false,
+                     QStringLiteral("satisfied"), QJsonArray{1})};
+    controller.receiveToken(completionReviewAction(
+        QStringLiteral("complete"), completedSteps,
+        QStringLiteral("All requested work is complete.")));
+    controller.completeGeneration(false);
+    snapshot = latest();
+    QCOMPARE(snapshot.state, application::AgentRun::State::Completed);
+    QCOMPARE(snapshot.steps.constFirst().status,
+             application::AgentProgressStepStatus::Completed);
+    QCOMPARE(snapshot.steps.constLast().status,
+             application::AgentProgressStepStatus::Completed);
+    QVERIFY(snapshot.currentStepId.isEmpty());
+}
+
+void AgentControllerTest::publishesApprovalRecoveryAndCancellationProgress()
+{
+    application::AgentController approvalController(
+        application::AgentController::Dependencies{
+            [](const QList<chat::Message>&, const models::InferencePreset&,
+               int) {},
+            [] {}, [](const QString&, const QJsonObject&)
+            { return QStringLiteral("tool-request-1"); }, [](const QString&) {},
+            acceptsToolArguments, [](const QString&)
+            { return infrastructure::mcp::ToolDecision::RequireApproval; }});
+    QVERIFY(approvalController.start(QStringLiteral("Read the current value."),
+                                     {}, {echoTool()}));
+    approvalController.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.echo","arguments":{"value":"hello"}})"));
+    approvalController.completeGeneration(false);
+    auto snapshot = approvalController.progressSnapshot();
+    QCOMPARE(snapshot.state, application::AgentRun::State::WaitingForApproval);
+    QCOMPARE(snapshot.operation, QStringLiteral("Calling fake.echo"));
+    QCOMPARE(snapshot.waitingReason,
+             QStringLiteral("Waiting for your approval"));
+
+    approvalController.resolveApproval(true);
+    QCOMPARE(approvalController.progressSnapshot().state,
+             application::AgentRun::State::ExecutingTool);
+    approvalController.cancel();
+    snapshot = approvalController.progressSnapshot();
+    QCOMPARE(snapshot.state, application::AgentRun::State::Cancelled);
+    QCOMPARE(snapshot.finishCode, QStringLiteral("cancelled"));
+
+    application::AgentController recoveryController(
+        application::AgentController::Dependencies{
+            [](const QList<chat::Message>&, const models::InferencePreset&,
+               int) {},
+            [] {}, [](const QString&, const QJsonObject&)
+            { return QStringLiteral("unused"); }, [](const QString&) {},
+            acceptsToolArguments, [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+    QVERIFY(recoveryController.start(QStringLiteral("Read the current value."),
+                                     {}, {echoTool()}));
+    recoveryController.receiveToken(
+        QByteArrayLiteral(R"({"action":"unsupported"})"));
+    recoveryController.completeGeneration(false);
+    snapshot = recoveryController.progressSnapshot();
+    QVERIFY(std::any_of(
+        snapshot.recentActivity.cbegin(), snapshot.recentActivity.cend(),
+        [](const application::AgentProgressActivity& activity)
+        { return activity.type == agent::EventType::RecoveryStarted; }));
+    QCOMPARE(snapshot.state, application::AgentRun::State::Deciding);
 }
 
 void AgentControllerTest::simpleToolRunCompletesWithoutReview()
@@ -1255,12 +1397,12 @@ void AgentControllerTest::protectsContextAndInvalidatesOldResourceIds()
             [](const QString&) {}, acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
 
-    QVERIFY(
-        controller.start(QStringLiteral("Create and configure one case"), {},
-                         {ledgerTool(QStringLiteral("new_case"), false),
-                          ledgerTool(QStringLiteral("create_object"), false),
-                          ledgerTool(QStringLiteral("close_case"), false),
-                          ledgerTool(QStringLiteral("inspect"), true)}));
+    QVERIFY(controller.start(
+        QStringLiteral("Create, configure, and close one case"), {},
+        {ledgerTool(QStringLiteral("new_case"), false),
+         ledgerTool(QStringLiteral("create_object"), false),
+         ledgerTool(QStringLiteral("close_case"), false),
+         ledgerTool(QStringLiteral("inspect"), true)}));
     controller.receiveToken(QByteArrayLiteral(
         R"({"action":"call_tool","tool":"fake.new_case","arguments":{"parent_directory":"E:/","case_name":"case_1"}})"));
     controller.completeGeneration(false);
@@ -1409,6 +1551,205 @@ void AgentControllerTest::rejectsRepeatedSuccessfulToolCall()
     QCOMPARE(generationCount, 3);
     QVERIFY(generatedMessages.constLast().content.contains(
         QStringLiteral("already completed successfully")));
+}
+
+void AgentControllerTest::singleCaseOpenRejectsFollowUpTools()
+{
+    auto generationCount = 0;
+    auto toolCallCount = 0;
+    QList<chat::Message> generatedMessages;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>& messages,
+                const models::InferencePreset&, int)
+            {
+                ++generationCount;
+                generatedMessages = messages;
+            },
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-%1").arg(toolCallCount);
+            },
+            [](const QString&) {}, acceptsToolArguments,
+            [](const QString& toolName)
+            {
+                return toolName.endsWith(QStringLiteral(".close_case"))
+                           ? infrastructure::mcp::ToolDecision::RequireApproval
+                           : infrastructure::mcp::ToolDecision::Allow;
+            }});
+    QSignalSpy approvalSpy(&controller,
+                           &application::AgentController::approvalRequested);
+    QSignalSpy finalSpy(&controller,
+                        &application::AgentController::finalAnswerReady);
+
+    QVERIFY(
+        controller.start(QStringLiteral("Open case E:/case_1."), {},
+                         {ledgerTool(QStringLiteral("open_case"), false),
+                          ledgerTool(QStringLiteral("list_item"), true),
+                          ledgerTool(QStringLiteral("close_case"), false)}));
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.open_case","arguments":{"case_path":"E:/case_1"}})"));
+    controller.completeGeneration(false);
+    QCOMPARE(toolCallCount, 1);
+
+    agent::ToolResult opened;
+    opened.requestId = QStringLiteral("tool-request-1");
+    opened.serverId = QStringLiteral("fake");
+    opened.toolName = QStringLiteral("open_case");
+    opened.structuredContent =
+        QJsonObject{{QStringLiteral("ok"), true},
+                    {QStringLiteral("case_path"), QStringLiteral("E:/case_1")}};
+    controller.receiveToolResult(opened);
+    QCOMPARE(controller.activeRun()->completedSingleOperationTool,
+             QStringLiteral("fake.open_case"));
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("Return final next")));
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.list_item","arguments":{"item_type":"solidRegion"}})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(toolCallCount, 1);
+    QCOMPARE(approvalSpy.count(), 0);
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("next action must be final")));
+
+    controller.receiveToken(
+        QByteArrayLiteral(R"({"action":"final","content":"Case opened."})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Completed);
+    QCOMPARE(finalSpy.count(), 1);
+    QCOMPARE(generationCount, 3);
+}
+
+void AgentControllerTest::multiStepCaseOpenCanContinueWithoutCleanup()
+{
+    auto toolCallCount = 0;
+    QList<chat::Message> generatedMessages;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>& messages,
+                const models::InferencePreset&, int)
+            { generatedMessages = messages; },
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-%1").arg(toolCallCount);
+            },
+            [](const QString&) {}, acceptsToolArguments,
+            [](const QString& toolName)
+            {
+                return toolName.endsWith(QStringLiteral(".close_case"))
+                           ? infrastructure::mcp::ToolDecision::RequireApproval
+                           : infrastructure::mcp::ToolDecision::Allow;
+            }});
+    QSignalSpy approvalSpy(&controller,
+                           &application::AgentController::approvalRequested);
+
+    QVERIFY(controller.start(
+        QStringLiteral("Open case E:/case_1 and inspect the shaft."), {},
+        {ledgerTool(QStringLiteral("open_case"), false),
+         ledgerTool(QStringLiteral("inspect"), true),
+         ledgerTool(QStringLiteral("close_case"), false)}));
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.open_case","arguments":{"case_path":"E:/case_1"}})"));
+    controller.completeGeneration(false);
+    agent::ToolResult opened;
+    opened.requestId = QStringLiteral("tool-request-1");
+    opened.serverId = QStringLiteral("fake");
+    opened.toolName = QStringLiteral("open_case");
+    opened.structuredContent =
+        QJsonObject{{QStringLiteral("ok"), true},
+                    {QStringLiteral("case_path"), QStringLiteral("E:/case_1")}};
+    controller.receiveToolResult(opened);
+    QVERIFY(controller.activeRun()->completedSingleOperationTool.isEmpty());
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.inspect","arguments":{"name":"shaft"}})"));
+    controller.completeGeneration(false);
+    QCOMPARE(toolCallCount, 2);
+    agent::ToolResult inspected;
+    inspected.requestId = QStringLiteral("tool-request-2");
+    inspected.serverId = QStringLiteral("fake");
+    inspected.toolName = QStringLiteral("inspect");
+    inspected.structuredContent =
+        QJsonObject{{QStringLiteral("ok"), true},
+                    {QStringLiteral("name"), QStringLiteral("shaft")}};
+    controller.receiveToolResult(inspected);
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.close_case","arguments":{}})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(toolCallCount, 2);
+    QCOMPARE(approvalSpy.count(), 0);
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("did not request closing")));
+    controller.cancel();
+}
+
+void AgentControllerTest::limitsConsecutiveDiscoveryBreadth()
+{
+    auto toolCallCount = 0;
+    QList<chat::Message> generatedMessages;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>& messages,
+                const models::InferencePreset&, int)
+            { generatedMessages = messages; },
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-%1").arg(toolCallCount);
+            },
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+
+    QVERIFY(controller.start(QStringLiteral("Inspect relevant case items."), {},
+                             {ledgerTool(QStringLiteral("list_item"), true)}));
+    for (auto index = 0; index < 4; ++index)
+    {
+        const auto action =
+            QJsonDocument(
+                QJsonObject{
+                    {QStringLiteral("action"), QStringLiteral("call_tool")},
+                    {QStringLiteral("tool"), QStringLiteral("fake.list_item")},
+                    {QStringLiteral("arguments"),
+                     QJsonObject{{QStringLiteral("item_type"),
+                                  QStringLiteral("type-%1").arg(index)}}}})
+                .toJson(QJsonDocument::Compact);
+        controller.receiveToken(action);
+        controller.completeGeneration(false);
+        QCOMPARE(toolCallCount, index + 1);
+
+        agent::ToolResult result;
+        result.requestId = QStringLiteral("tool-request-%1").arg(index + 1);
+        result.serverId = QStringLiteral("fake");
+        result.toolName = QStringLiteral("list_item");
+        result.structuredContent =
+            QJsonObject{{QStringLiteral("ok"), true},
+                        {QStringLiteral("result"), QJsonArray{}}};
+        controller.receiveToolResult(result);
+    }
+    QCOMPARE(controller.activeRun()->consecutiveDiscoveryCalls, 4);
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.list_item","arguments":{"item_type":"type-4"}})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(toolCallCount, 4);
+    QCOMPARE(controller.activeRun()->redundantDiscoveryCalls, 1);
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("consecutive read-only discovery")));
+
+    controller.receiveToken(
+        QByteArrayLiteral(R"({"action":"final","content":"Done."})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Completed);
 }
 
 void AgentControllerTest::preservesSummaryWhenCompletionReviewFormattingFails()

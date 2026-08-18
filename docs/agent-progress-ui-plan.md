@@ -12,6 +12,25 @@ This plan adds a structured, user-facing Agent progress surface inside qtLLM.
 It improves observability of the control loop without exposing the model's
 private chain of thought or changing any MCP Server, tool schema, or protocol.
 
+## Implementation Status
+
+Implemented in qtLLM on 2026-08-18:
+
+- the application layer emits bounded `AgentProgressSnapshot` updates for
+  plans, state transitions, tool activity, evidence, recovery, and terminal
+  outcomes;
+- `AgentProgressWidget` renders elapsed time, ordered plan steps, the current
+  operation, waiting state, counters, and expandable recent activity;
+- `MainWindow` keeps the structured progress item beside the final answer and
+  collapses it after completion, cancellation, or failure;
+- progress text is bounded and redacted before display, and late non-terminal
+  snapshots cannot overwrite a terminal summary;
+- controller and UI tests cover planning, tools, evidence, approval, recovery,
+  cancellation, completion, failure, narrow layouts, and long text.
+
+The existing Activity tab remains the detailed diagnostic record. No MCP
+Server or MCP protocol change was required.
+
 ## Product Boundary
 
 The progress view must show what the runtime has accepted, executed, observed,

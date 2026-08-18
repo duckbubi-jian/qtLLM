@@ -1,5 +1,6 @@
 #include "MainWindow.hpp"
 
+#include "AgentProgressWidget.hpp"
 #include "BuiltInMcpServer.hpp"
 #include "ChatView.hpp"
 #include "ComputeSettingsDialog.hpp"
@@ -202,10 +203,10 @@ MainWindow::MainWindow(const QString& settingsFilePath, QWidget* parent)
             });
     connect(&agentController_,
             &application::AgentController::userRequestAccepted, this,
-            [this](const QString&, const QString& prompt)
+            [this](const QString& runId, const QString& prompt)
             {
                 appendUserMessage(prompt);
-                showAgentActivity();
+                showAgentProgress(runId);
                 chatView_->promptEditor()->clear();
                 pendingUtf8_.clear();
                 currentAssistantText_.clear();
@@ -258,14 +259,11 @@ MainWindow::MainWindow(const QString& settingsFilePath, QWidget* parent)
             [this](const agent::Event& event)
             {
                 appendAgentEvent(event);
-                if (event.type == agent::EventType::Warning)
-                {
-                    stopThinkingAnimation();
-                    updateAgentActivity(event.message);
-                }
                 if (!event.message.isEmpty())
                     chatView_->setStatusText(event.message);
             });
+    connect(&agentController_, &application::AgentController::progressChanged,
+            this, &MainWindow::updateAgentProgress);
     connect(&agentController_, &application::AgentController::stateChanged,
             this, &MainWindow::updateAgentState);
     connect(&agentController_, &application::AgentController::runFinished, this,
@@ -273,7 +271,6 @@ MainWindow::MainWindow(const QString& settingsFilePath, QWidget* parent)
                    const QString& code, const QString& message)
             {
                 agentRunActive_ = false;
-                removeAgentActivity();
                 if (pendingToolApproval_ != nullptr)
                 {
                     pendingToolApproval_->markCancelled();
@@ -289,6 +286,7 @@ MainWindow::MainWindow(const QString& settingsFilePath, QWidget* parent)
                 {
                     showError(code, message);
                 }
+                activeAgentProgress_ = nullptr;
                 updateState(workerClient_.state());
             });
     connect(&mcpManager_,
@@ -1247,7 +1245,8 @@ void MainWindow::resetConversationView()
     chatView_->activityLog()->clear();
     renderTimer_->stop();
     currentAssistant_ = nullptr;
-    agentActivityMessage_ = nullptr;
+    activeAgentProgress_ = nullptr;
+    lastAgentProgress_ = {};
     pendingToolApproval_ = nullptr;
     currentAssistantText_.clear();
     pendingUtf8_.clear();
@@ -1394,7 +1393,6 @@ void MainWindow::finishGeneration(bool cancelled, const QJsonObject& metrics)
 
 void MainWindow::showError(const QString& code, const QString& message)
 {
-    removeAgentActivity();
     chatView_->setStatusText(tr("Error: %1").arg(message));
     if (currentAssistant_ != nullptr)
     {
@@ -1419,13 +1417,6 @@ void MainWindow::buildUi()
     renderTimer_->setInterval(40);
     connect(renderTimer_, &QTimer::timeout, this,
             [this] { renderAssistant(); });
-
-    thinkingAnimationTimer_ = new QTimer(this);
-    thinkingAnimationTimer_->setObjectName(
-        QStringLiteral("thinkingAnimationTimer"));
-    thinkingAnimationTimer_->setInterval(360);
-    connect(thinkingAnimationTimer_, &QTimer::timeout, this,
-            &MainWindow::advanceThinkingAnimation);
 
     connect(chatView_, &ChatView::modelFolderRequested, this,
             &MainWindow::selectModelPackage);
@@ -1637,7 +1628,6 @@ void MainWindow::beginAgentPrompt(const QString& prompt)
 
 void MainWindow::appendAgentAnswer(const QString& answer)
 {
-    removeAgentActivity();
     auto* message = new MessageWidget(MessageWidget::Role::Assistant);
     message->setAssistantText(answer, true);
     chatView_->conversationLayout()->insertWidget(
@@ -1646,60 +1636,36 @@ void MainWindow::appendAgentAnswer(const QString& answer)
     scrollConversationToBottom();
 }
 
-void MainWindow::showAgentActivity()
+void MainWindow::showAgentProgress(const QString& runId)
 {
-    if (agentActivityMessage_ != nullptr) return;
-    agentActivityMessage_ = new MessageWidget(MessageWidget::Role::Assistant);
-    agentActivityMessage_->setProperty("agentActivity", true);
+    if (activeAgentProgress_ != nullptr) return;
+    activeAgentProgress_ = new AgentProgressWidget;
     chatView_->conversationLayout()->insertWidget(
-        chatView_->conversationLayout()->count() - 1, agentActivityMessage_);
-    startThinkingAnimation();
+        chatView_->conversationLayout()->count() - 1, activeAgentProgress_);
+    if (lastAgentProgress_.runId == runId)
+        activeAgentProgress_->setSnapshot(lastAgentProgress_);
+    else
+    {
+        application::AgentProgressSnapshot initial;
+        initial.runId = runId;
+        initial.state = application::AgentRun::State::Idle;
+        initial.operation = tr("Starting agent run");
+        initial.waitingReason = tr("Preparing the task");
+        activeAgentProgress_->setSnapshot(initial);
+    }
     scrollConversationToBottom();
 }
 
-void MainWindow::startThinkingAnimation()
+void MainWindow::updateAgentProgress(
+    const application::AgentProgressSnapshot& snapshot)
 {
-    if (agentActivityMessage_ == nullptr) return;
-    if (thinkingAnimationTimer_->isActive()) return;
-    thinkingAnimationFrame_ = 1;
-    advanceThinkingAnimation();
-    thinkingAnimationTimer_->start();
-}
-
-void MainWindow::stopThinkingAnimation()
-{
-    if (thinkingAnimationTimer_->isActive()) thinkingAnimationTimer_->stop();
-    thinkingAnimationFrame_ = 1;
-}
-
-void MainWindow::advanceThinkingAnimation()
-{
-    if (agentActivityMessage_ == nullptr)
-    {
-        stopThinkingAnimation();
+    lastAgentProgress_ = snapshot;
+    if (activeAgentProgress_ == nullptr ||
+        activeAgentProgress_->snapshot().runId != snapshot.runId)
         return;
-    }
-    updateAgentActivity(
-        tr("Thinking%1")
-            .arg(QString(thinkingAnimationFrame_, QLatin1Char('.'))));
-    thinkingAnimationFrame_ = thinkingAnimationFrame_ % 3 + 1;
-}
-
-void MainWindow::updateAgentActivity(const QString& text)
-{
-    if (agentActivityMessage_ == nullptr) return;
     const auto followOutput = conversationIsAtBottom();
-    agentActivityMessage_->setAssistantText(text, false);
+    activeAgentProgress_->setSnapshot(snapshot);
     if (followOutput) scrollConversationToBottom();
-}
-
-void MainWindow::removeAgentActivity()
-{
-    stopThinkingAnimation();
-    if (agentActivityMessage_ == nullptr) return;
-    chatView_->conversationLayout()->removeWidget(agentActivityMessage_);
-    delete agentActivityMessage_;
-    agentActivityMessage_ = nullptr;
 }
 
 void MainWindow::updateAgentState(application::AgentRun::State state)
@@ -1708,27 +1674,19 @@ void MainWindow::updateAgentState(application::AgentRun::State state)
     {
         case application::AgentRun::State::Deciding:
             chatView_->setStatusText(tr("Thinking..."));
-            startThinkingAnimation();
             break;
         case application::AgentRun::State::WaitingForApproval:
-            stopThinkingAnimation();
             chatView_->setStatusText(tr("Waiting for tool approval"));
-            updateAgentActivity(tr("Waiting for tool approval..."));
             break;
         case application::AgentRun::State::ExecutingTool:
-            stopThinkingAnimation();
             chatView_->setStatusText(tr("Using a tool..."));
-            updateAgentActivity(tr("Using a tool..."));
             break;
         case application::AgentRun::State::GeneratingAnswer:
-            stopThinkingAnimation();
             chatView_->setStatusText(tr("Preparing the answer..."));
-            updateAgentActivity(tr("Preparing the answer..."));
             break;
         case application::AgentRun::State::Completed:
         case application::AgentRun::State::Cancelled:
         case application::AgentRun::State::Failed:
-            removeAgentActivity();
             break;
         default:
             break;

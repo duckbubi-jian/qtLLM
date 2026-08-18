@@ -8,6 +8,7 @@
 #include <QDebug>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QUuid>
 
 #include <algorithm>
@@ -23,9 +24,11 @@ constexpr auto runTimeoutMilliseconds = 120'000;
 constexpr auto minimumPollIntervalMilliseconds = 1'000;
 constexpr auto maximumCompletionReviewsPerEvidenceRevision = 2;
 constexpr auto maximumContractFailuresPerTarget = 2;
+constexpr auto maximumConsecutiveDiscoveryCalls = 4;
 constexpr qsizetype maximumDetectedCycleLength = 4;
 constexpr qsizetype maximumLoggedEventDataBytes = 4'096;
 constexpr qsizetype maximumInvalidatedResourceIds = 128;
+constexpr qsizetype maximumProgressActivities = 8;
 
 QString unqualifiedToolName(const QString& qualifiedToolName)
 {
@@ -45,6 +48,112 @@ bool closesContext(const QString& qualifiedToolName)
 {
     return unqualifiedToolName(qualifiedToolName) ==
            QLatin1String("close_case");
+}
+
+bool explicitlyRequestsContextClose(const QString& request)
+{
+    const auto normalized = request.trimmed().toLower();
+    static const QStringList negativePhrases{
+        QStringLiteral("do not close"),
+        QStringLiteral("don't close"),
+        QStringLiteral("without closing"),
+        QStringLiteral("keep open"),
+        QStringLiteral("\u4e0d\u8981\u5173\u95ed"),
+        QStringLiteral("\u522b\u5173\u95ed"),
+        QStringLiteral("\u4fdd\u6301\u6253\u5f00")};
+    for (const auto& phrase : negativePhrases)
+        if (normalized.contains(phrase)) return false;
+
+    static const QStringList closeTerms{
+        QStringLiteral("close_case"),   QStringLiteral("close"),
+        QStringLiteral("shut"),         QStringLiteral("\u5173\u95ed"),
+        QStringLiteral("\u5173\u6389"), QStringLiteral("\u9000\u51fa")};
+    return std::any_of(closeTerms.cbegin(), closeTerms.cend(),
+                       [&normalized](const QString& term)
+                       { return normalized.contains(term); });
+}
+
+bool isSingleContextOperationRequest(const QString& request,
+                                     const QString& qualifiedToolName)
+{
+    const auto name = unqualifiedToolName(qualifiedToolName);
+    if (name != QLatin1String("open_case") &&
+        name != QLatin1String("load_case") &&
+        name != QLatin1String("switch_case") &&
+        name != QLatin1String("new_case") &&
+        name != QLatin1String("close_case"))
+        return false;
+
+    const auto normalized = request.trimmed().toLower();
+    auto nonEmptyLines = 0;
+    for (const auto& line : normalized.split(QLatin1Char('\n')))
+        if (!line.trimmed().isEmpty()) ++nonEmptyLines;
+    if (nonEmptyLines > 1) return false;
+
+    QStringList operationTerms;
+    if (name == QLatin1String("new_case"))
+        operationTerms = {QStringLiteral("new"), QStringLiteral("create"),
+                          QStringLiteral("\u65b0\u5efa"),
+                          QStringLiteral("\u521b\u5efa")};
+    else if (name == QLatin1String("close_case"))
+        operationTerms = {QStringLiteral("close"), QStringLiteral("shut"),
+                          QStringLiteral("\u5173\u95ed"),
+                          QStringLiteral("\u5173\u6389"),
+                          QStringLiteral("\u9000\u51fa")};
+    else
+        operationTerms = {
+            QStringLiteral("open"),         QStringLiteral("load"),
+            QStringLiteral("switch"),       QStringLiteral("\u6253\u5f00"),
+            QStringLiteral("\u52a0\u8f7d"), QStringLiteral("\u5207\u6362")};
+    const auto mentionsOperation =
+        std::any_of(operationTerms.cbegin(), operationTerms.cend(),
+                    [&normalized](const QString& term)
+                    { return normalized.contains(term); });
+    if (!mentionsOperation) return false;
+
+    static const QStringList additionalOperationTerms{
+        QStringLiteral("open"),         QStringLiteral("load"),
+        QStringLiteral("switch"),       QStringLiteral("new"),
+        QStringLiteral("create"),       QStringLiteral("inspect"),
+        QStringLiteral("list"),         QStringLiteral("check"),
+        QStringLiteral("query"),        QStringLiteral("find"),
+        QStringLiteral("configure"),    QStringLiteral("set "),
+        QStringLiteral("edit"),         QStringLiteral("import"),
+        QStringLiteral("run"),          QStringLiteral("solve"),
+        QStringLiteral("simulate"),     QStringLiteral("read"),
+        QStringLiteral("delete"),       QStringLiteral("close"),
+        QStringLiteral("\u6253\u5f00"), QStringLiteral("\u52a0\u8f7d"),
+        QStringLiteral("\u5207\u6362"), QStringLiteral("\u65b0\u5efa"),
+        QStringLiteral("\u521b\u5efa"), QStringLiteral("\u67e5\u770b"),
+        QStringLiteral("\u5217\u51fa"), QStringLiteral("\u68c0\u67e5"),
+        QStringLiteral("\u67e5\u8be2"), QStringLiteral("\u914d\u7f6e"),
+        QStringLiteral("\u8bbe\u7f6e"), QStringLiteral("\u7f16\u8f91"),
+        QStringLiteral("\u5bfc\u5165"), QStringLiteral("\u8fd0\u884c"),
+        QStringLiteral("\u6c42\u89e3"), QStringLiteral("\u8ba1\u7b97"),
+        QStringLiteral("\u8bfb\u53d6"), QStringLiteral("\u5220\u9664"),
+        QStringLiteral("\u5173\u95ed")};
+    return std::none_of(
+        additionalOperationTerms.cbegin(), additionalOperationTerms.cend(),
+        [&normalized, &operationTerms](const QString& term)
+        {
+            return normalized.contains(term) && !operationTerms.contains(term);
+        });
+}
+
+bool explicitlyRequestsExhaustiveDiscovery(const QString& request)
+{
+    const auto normalized = request.trimmed().toLower();
+    static const QRegularExpression englishTerms(QStringLiteral(
+        R"(\b(all|every|everything|entire|exhaustive)\b|complete\s+inventory)"));
+    if (englishTerms.match(normalized).hasMatch()) return true;
+
+    static const QStringList terms{QStringLiteral("\u5168\u90e8"),
+                                   QStringLiteral("\u6240\u6709"),
+                                   QStringLiteral("\u9010\u9879"),
+                                   QStringLiteral("\u5b8c\u6574\u76d8\u70b9")};
+    return std::any_of(terms.cbegin(), terms.cend(),
+                       [&normalized](const QString& term)
+                       { return normalized.contains(term); });
 }
 
 QString stringArgument(const QJsonObject& arguments,
@@ -374,10 +483,15 @@ bool isDiscoveryToolName(const QString& qualifiedToolName)
         QStringLiteral("list"),     QStringLiteral("get"),
         QStringLiteral("describe"), QStringLiteral("inspect"),
         QStringLiteral("find"),     QStringLiteral("query"),
-        QStringLiteral("search"),   QStringLiteral("read")};
-    return std::any_of(
-        verbs.cbegin(), verbs.cend(), [&name](const QString& verb)
-        { return name == verb || name.startsWith(verb + QLatin1Char('_')); });
+        QStringLiteral("search"),   QStringLiteral("read"),
+        QStringLiteral("fetch"),    QStringLiteral("lookup"),
+        QStringLiteral("retrieve"), QStringLiteral("enumerate"),
+        QStringLiteral("scan"),     QStringLiteral("view"),
+        QStringLiteral("snapshot")};
+    static const QRegularExpression separator(QStringLiteral("[^a-z0-9]+"));
+    const auto tokens = name.split(separator, Qt::SkipEmptyParts);
+    return std::any_of(tokens.cbegin(), tokens.cend(), [](const QString& token)
+                       { return verbs.contains(token); });
 }
 
 qsizetype messageCharacters(const QList<chat::Message>& messages)
@@ -395,6 +509,7 @@ AgentController::AgentController(Dependencies dependencies, QObject* parent)
       runTimer_(new QTimer(this)),
       pollTimer_(new QTimer(this))
 {
+    qRegisterMetaType<AgentProgressSnapshot>();
     runTimer_->setSingleShot(true);
     runTimer_->setInterval(runTimeoutMilliseconds);
     connect(runTimer_, &QTimer::timeout, this,
@@ -559,6 +674,104 @@ bool AgentController::hasConversation() const
     return !conversationMessages_.isEmpty();
 }
 
+AgentProgressSnapshot AgentController::progressSnapshot() const
+{
+    AgentProgressSnapshot snapshot;
+    if (!activeRun_) return snapshot;
+
+    const auto& run = *activeRun_;
+    snapshot.runId = run.id;
+    snapshot.state = run.state;
+    snapshot.elapsedMilliseconds =
+        qMax<qint64>(0, run.startedAt.msecsTo(QDateTime::currentDateTimeUtc()));
+    snapshot.completedToolCount = run.successfulToolResults;
+    snapshot.evidenceCount = static_cast<int>(toolEvidence_.size());
+    snapshot.finishCode = run.finishCode;
+    snapshot.finishMessage = run.finishMessage;
+
+    const auto terminal = isTerminal(run.state);
+    auto assignedCurrentStep = false;
+    for (const auto& value : run.completionSteps)
+    {
+        const auto object = value.toObject();
+        AgentProgressStep step;
+        step.id = object.value(QStringLiteral("id")).toString();
+        step.description =
+            object.value(QStringLiteral("description")).toString();
+        const auto status =
+            object.value(QStringLiteral("status")).toString().toLower();
+        if (status == QLatin1String("satisfied"))
+            step.status = AgentProgressStepStatus::Completed;
+        else if (status == QLatin1String("blocked"))
+            step.status = AgentProgressStepStatus::Blocked;
+        else if (run.state == AgentRun::State::Completed && status.isEmpty())
+            step.status = AgentProgressStepStatus::Completed;
+        else if (!terminal && !assignedCurrentStep)
+        {
+            step.status = AgentProgressStepStatus::Current;
+            snapshot.currentStepId = step.id;
+            assignedCurrentStep = true;
+        }
+        snapshot.steps.append(std::move(step));
+    }
+
+    const auto toolOperation = [](const std::optional<agent::Action>& action)
+    {
+        return action.has_value()
+                   ? QStringLiteral("Calling %1").arg(action->toolName)
+                   : QString{};
+    };
+    switch (run.state)
+    {
+        case AgentRun::State::Idle:
+            snapshot.operation = QStringLiteral("Starting agent run");
+            snapshot.waitingReason = QStringLiteral("Preparing the task");
+            break;
+        case AgentRun::State::Deciding:
+            snapshot.operation = QStringLiteral("Choosing the next action");
+            snapshot.waitingReason =
+                QStringLiteral("Waiting for the model response");
+            break;
+        case AgentRun::State::WaitingForApproval:
+            snapshot.operation = toolOperation(pendingApproval_);
+            snapshot.waitingReason =
+                QStringLiteral("Waiting for your approval");
+            break;
+        case AgentRun::State::ExecutingTool:
+            snapshot.operation = toolOperation(activeToolAction_);
+            if (snapshot.operation.isEmpty())
+                snapshot.operation = toolOperation(pendingPollAction_);
+            snapshot.waitingReason =
+                pendingPollAction_.has_value()
+                    ? QStringLiteral("Waiting for the next status check")
+                    : QStringLiteral("Waiting for the tool result");
+            break;
+        case AgentRun::State::GeneratingAnswer:
+            snapshot.operation = QStringLiteral("Preparing the final answer");
+            break;
+        case AgentRun::State::Completed:
+            snapshot.operation = QStringLiteral("Agent run completed");
+            break;
+        case AgentRun::State::Cancelled:
+            snapshot.operation = QStringLiteral("Agent run stopped");
+            break;
+        case AgentRun::State::Failed:
+            snapshot.operation = QStringLiteral("Agent run failed");
+            break;
+    }
+
+    const auto firstEvent =
+        qMax<qsizetype>(0, run.events.size() - maximumProgressActivities);
+    for (auto index = firstEvent; index < run.events.size(); ++index)
+    {
+        const auto& event = run.events.at(index);
+        snapshot.recentActivity.append({event.type, event.message.left(240),
+                                        event.toolName.left(160),
+                                        event.timestamp});
+    }
+    return snapshot;
+}
+
 void AgentController::receiveToken(const QByteArray& bytes)
 {
     if (!hasActiveRun() || state_ != AgentRun::State::Deciding ||
@@ -686,6 +899,28 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
     completedToolCallHistory_.append(completedToolCallSignature);
     const auto outcome = normalizedResult.outcome;
     const auto inProgress = outcome == agent::ToolOutcome::InProgress;
+    if (completedToolAction.has_value() && !inProgress)
+    {
+        if (completedOperationKind == ToolOperationKind::ReadOnly &&
+            isDiscoveryToolName(completedToolAction->toolName))
+            ++activeRun_->consecutiveDiscoveryCalls;
+        else
+            activeRun_->consecutiveDiscoveryCalls = 0;
+    }
+    if (completedToolAction.has_value() &&
+        outcome == agent::ToolOutcome::Succeeded &&
+        isSingleContextOperationRequest(activeRun_->userRequest,
+                                        completedToolAction->toolName))
+    {
+        activeRun_->completedSingleOperationTool =
+            completedToolAction->toolName;
+        recoveryGuidance +=
+            (recoveryGuidance.isEmpty() ? QString{} : QStringLiteral(" ")) +
+            QStringLiteral(
+                "The sole operation requested by the user succeeded. "
+                "Return final next. Do not call another tool, inspect the "
+                "opened context, or perform cleanup.");
+    }
     if (inProgress)
     {
         pollableToolCallSignature_ = completedToolCallSignature;
@@ -926,7 +1161,10 @@ void AgentController::handleAction(const agent::Action& action,
         else
         {
             const auto unfinishedReason =
-                unfinishedEvidenceReason(toolEvidence_, activeRun_->ledger);
+                activeRun_->completedSingleOperationTool.isEmpty()
+                    ? unfinishedEvidenceReason(toolEvidence_,
+                                               activeRun_->ledger)
+                    : QString{};
             if (unfinishedReason.isEmpty())
                 completeRun(action.content);
             else
@@ -1034,6 +1272,53 @@ void AgentController::handleAction(const agent::Action& action,
         return;
     }
     activeRun_->consecutiveValidationFailures = 0;
+    if (!activeRun_->completedSingleOperationTool.isEmpty())
+    {
+        recordDuplicateToolAction();
+        retryNoProgressAction(
+            rawAction,
+            QStringLiteral(
+                "%1 already completed the user's sole requested operation. "
+                "The next action must be final; no additional tool call is "
+                "within scope.")
+                .arg(activeRun_->completedSingleOperationTool));
+        return;
+    }
+    if (closesContext(action.toolName) && contextEstablished_ &&
+        !explicitlyRequestsContextClose(activeRun_->userRequest))
+    {
+        recordDuplicateToolAction();
+        retryNoProgressAction(
+            rawAction,
+            QStringLiteral(
+                "The user did not request closing the active case. Keep it "
+                "open and return final when the requested work is complete; "
+                "do not close it as inspection or cleanup."));
+        return;
+    }
+    const auto candidateOperationKind =
+        operationKind(*tool, dependencies_.toolRisk);
+    const auto isBreadthDiscovery =
+        candidateOperationKind == ToolOperationKind::ReadOnly &&
+        isDiscoveryToolName(action.toolName);
+    if (isBreadthDiscovery &&
+        activeRun_->consecutiveDiscoveryCalls >=
+            maximumConsecutiveDiscoveryCalls &&
+        !explicitlyRequestsExhaustiveDiscovery(activeRun_->userRequest) &&
+        !isRequiredContractDiscovery(action) && !isStatusPoll)
+    {
+        recordDuplicateToolAction();
+        retryNoProgressAction(
+            rawAction,
+            QStringLiteral(
+                "The run already made %1 consecutive read-only discovery "
+                "calls without executing another requested operation. Do "
+                "not broaden the inventory. Use existing evidence to return "
+                "final, or call only a non-discovery tool required by an "
+                "explicit unfinished outcome.")
+                .arg(maximumConsecutiveDiscoveryCalls));
+        return;
+    }
     activeRun_->inferenceMessages.append(
         {chat::Role::Assistant, QString::fromUtf8(rawAction)});
     const auto decision = dependencies_.toolPolicy(action.toolName);
@@ -1074,6 +1359,10 @@ void AgentController::acceptTaskPlan(const agent::Action& action,
     activeRun_->inferenceMessages.append(
         AgentPromptBuilder::taskPlanAcceptedMessage(
             activeRun_->completionSteps));
+    recordEvent(
+        agent::EventType::TaskPlanAccepted,
+        QStringLiteral("Task plan accepted."), {},
+        {{QStringLiteral("stepCount"), activeRun_->completionSteps.size()}});
     requestDecision();
 }
 
@@ -1253,6 +1542,11 @@ void AgentController::handleCompletionReview(const agent::Action& action,
                "Agent completion review accepted: run=%1 verdict=%2 steps=%3")
                .arg(activeRun_->id, action.completionVerdict)
                .arg(activeRun_->completionSteps.size());
+    recordEvent(
+        agent::EventType::TaskStepUpdated,
+        QStringLiteral("Task step status updated."), {},
+        {{QStringLiteral("verdict"), action.completionVerdict},
+         {QStringLiteral("stepCount"), activeRun_->completionSteps.size()}});
     if (action.completionVerdict == QLatin1String("complete"))
     {
         const auto content =
@@ -1344,6 +1638,8 @@ void AgentController::retryTaskPlan(const QByteArray& rawAction,
         {chat::Role::Assistant, QString::fromUtf8(rawAction)});
     activeRun_->inferenceMessages.append(
         AgentPromptBuilder::taskPlanCorrectionMessage(errorMessage));
+    recordEvent(agent::EventType::RecoveryStarted,
+                QStringLiteral("Repairing the task plan."));
     requestDecision();
 }
 
@@ -1389,6 +1685,8 @@ void AgentController::retryCompletionReview(const QByteArray& rawAction,
         {chat::Role::Assistant, QString::fromUtf8(rawAction)});
     activeRun_->inferenceMessages.append(
         AgentPromptBuilder::completionReviewCorrectionMessage(errorMessage));
+    recordEvent(agent::EventType::RecoveryStarted,
+                QStringLiteral("Repairing the completion review."));
     requestDecision();
 }
 
@@ -1419,6 +1717,8 @@ void AgentController::retryUnfinishedFinal(const QByteArray& rawAction,
         {chat::Role::Assistant, QString::fromUtf8(rawAction)});
     activeRun_->inferenceMessages.append(
         AgentPromptBuilder::unfinishedFinalMessage(errorMessage));
+    recordEvent(agent::EventType::RecoveryStarted,
+                QStringLiteral("Checking unfinished task steps."));
     requestDecision();
 }
 
@@ -1454,6 +1754,8 @@ void AgentController::retryInvalidAction(const QByteArray& rawAction,
         {chat::Role::Assistant, QString::fromUtf8(rawAction)});
     activeRun_->inferenceMessages.append(
         AgentPromptBuilder::correctionMessage(errorMessage));
+    recordEvent(agent::EventType::RecoveryStarted,
+                QStringLiteral("Repairing an invalid agent action."));
     requestDecision();
 }
 
@@ -1483,6 +1785,9 @@ void AgentController::retryInvalidToolAction(
     activeRun_->inferenceMessages.append(
         AgentPromptBuilder::toolValidationCorrectionMessage(tool, arguments,
                                                             issue));
+    recordEvent(agent::EventType::RecoveryStarted,
+                QStringLiteral("Repairing invalid tool arguments."),
+                tool.qualifiedName);
     requestDecision();
 }
 
@@ -1508,6 +1813,8 @@ void AgentController::retryNoProgressAction(const QByteArray& rawAction,
         {chat::Role::Assistant, QString::fromUtf8(rawAction)});
     activeRun_->inferenceMessages.append(
         AgentPromptBuilder::noProgressMessage(errorMessage));
+    recordEvent(agent::EventType::RecoveryStarted,
+                QStringLiteral("Recovering from a repeated action."));
     requestDecision();
 }
 
@@ -1624,6 +1931,21 @@ void AgentController::resolveContractRecovery(const agent::Action& action)
     }
 }
 
+bool AgentController::isRequiredContractDiscovery(
+    const agent::Action& action) const
+{
+    const auto itemType = actionItemType(action);
+    return std::any_of(contractRecoveries_.cbegin(), contractRecoveries_.cend(),
+                       [&action, &itemType](const ContractRecovery& recovery)
+                       {
+                           return !recovery.discoveryTool.isEmpty() &&
+                                  action.toolName == recovery.discoveryTool &&
+                                  (recovery.itemType.isEmpty() ||
+                                   recovery.itemType.compare(
+                                       itemType, Qt::CaseInsensitive) == 0);
+                       });
+}
+
 bool AgentController::requiresContextResetApproval(
     const agent::Action& action) const
 {
@@ -1713,6 +2035,7 @@ void AgentController::setState(AgentRun::State state)
     state_ = state;
     if (activeRun_) activeRun_->state = state;
     emit stateChanged(state_);
+    emitProgressChanged();
 }
 
 void AgentController::recordEvent(agent::EventType type, const QString& message,
@@ -1733,6 +2056,13 @@ void AgentController::recordEvent(agent::EventType type, const QString& message,
         logMessage += QStringLiteral(" data=%1").arg(eventDataSummary(data));
     qInfo().noquote() << logMessage;
     emit eventRecorded(event);
+    emitProgressChanged();
+}
+
+void AgentController::emitProgressChanged()
+{
+    if (!activeRun_) return;
+    emit progressChanged(progressSnapshot());
 }
 
 void AgentController::completeRun(const QString& content)

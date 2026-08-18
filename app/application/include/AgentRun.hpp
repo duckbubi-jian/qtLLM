@@ -44,6 +44,7 @@ struct AgentRun
     int duplicateToolActions = 0;
     int duplicateMutationActions = 0;
     int redundantDiscoveryCalls = 0;
+    int consecutiveDiscoveryCalls = 0;
     int pollRequests = 0;
     int completionReviewAttempts = 0;
     int completionReviewSuccesses = 0;
@@ -64,6 +65,7 @@ struct AgentRun
     QList<agent::Event> events;
     QList<chat::Message> inferenceMessages;
     QString toolRequestId;
+    QString completedSingleOperationTool;
     QString finishCode;
     QString finishMessage;
     AgentLedger ledger;

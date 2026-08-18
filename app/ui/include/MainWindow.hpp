@@ -19,6 +19,7 @@ class QTimer;
 
 namespace qtllm::ui
 {
+class AgentProgressWidget;
 class ChatView;
 class MessageWidget;
 class McpControlPanel;
@@ -77,7 +78,6 @@ class MainWindow final : public QMainWindow
     void appendToken(const QByteArray& bytes);
     void finishGeneration(bool cancelled, const QJsonObject& metrics);
     void showError(const QString& code, const QString& message);
-    void advanceThinkingAnimation();
 
    private:
     void buildUi();
@@ -101,11 +101,9 @@ class MainWindow final : public QMainWindow
                                          quint64 totalBytes);
     void beginChatPrompt(const QString& prompt);
     void beginAgentPrompt(const QString& prompt);
-    void showAgentActivity();
-    void startThinkingAnimation();
-    void stopThinkingAnimation();
-    void updateAgentActivity(const QString& text);
-    void removeAgentActivity();
+    void showAgentProgress(const QString& runId);
+    void updateAgentProgress(
+        const application::AgentProgressSnapshot& snapshot);
     void appendAgentAnswer(const QString& answer);
     void updateAgentState(application::AgentRun::State state);
     void loadMcpServers();
@@ -128,9 +126,8 @@ class MainWindow final : public QMainWindow
     QFutureWatcher<models::ModelPackageResult> modelVerificationWatcher_;
     ChatView* chatView_ = nullptr;
     QTimer* renderTimer_ = nullptr;
-    QTimer* thinkingAnimationTimer_ = nullptr;
     MessageWidget* currentAssistant_ = nullptr;
-    MessageWidget* agentActivityMessage_ = nullptr;
+    AgentProgressWidget* activeAgentProgress_ = nullptr;
     ToolApprovalWidget* pendingToolApproval_ = nullptr;
     McpControlPanel* mcpControlPanel_ = nullptr;
     QString currentAssistantText_;
@@ -146,6 +143,7 @@ class MainWindow final : public QMainWindow
     QSet<QString> pendingMcpRestarts_;
     models::ModelSelection pendingModelSelection_;
     models::ModelSelection activeModelSelection_;
+    application::AgentProgressSnapshot lastAgentProgress_;
     inference::ModelLoadOptions modelLoadOptions_;
     bool verifyingModelPackage_ = false;
     int modelVerificationPercent_ = -1;
@@ -154,6 +152,5 @@ class MainWindow final : public QMainWindow
     bool primaryActionStops_ = false;
     bool builtInFilesystemRunning_ = false;
     bool filesystemConfiguredExternally_ = false;
-    int thinkingAnimationFrame_ = 1;
 };
 }  // namespace qtllm::ui

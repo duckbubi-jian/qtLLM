@@ -1,4 +1,5 @@
 #include "AssistantResponse.hpp"
+#include "AgentProgressWidget.hpp"
 #include "AutoHideTabWidget.hpp"
 #include "ChatController.hpp"
 #include "ChatView.hpp"
@@ -27,6 +28,7 @@
 #include <QMenu>
 #include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSizePolicy>
 #include <QStackedWidget>
 #include <QTabBar>
@@ -60,7 +62,7 @@ class AssistantResponseTest final : public QObject
     void rendersConversationPreview();
     void reasoningOnlyResponseFallsBackToVisibleAnswer();
     void showsInlineToolApprovalAndRedactsSecrets();
-    void showsAgentActivityUntilRunEnds();
+    void showsStructuredAgentProgressUntilRunEnds();
     void recordsRedactedAgentActivity();
     void enterSendsAndShiftEnterAddsNewline();
     void leavesPromptEmptyAfterGenerationError();
@@ -404,7 +406,7 @@ void AssistantResponseTest::showsInlineToolApprovalAndRedactsSecrets()
              ui::ToolApprovalDecision::AlwaysAllow);
 }
 
-void AssistantResponseTest::showsAgentActivityUntilRunEnds()
+void AssistantResponseTest::showsStructuredAgentProgressUntilRunEnds()
 {
     ui::MainWindow window(settingsFilePath());
     auto* controller = window.findChild<application::AgentController*>();
@@ -415,63 +417,126 @@ void AssistantResponseTest::showsAgentActivityUntilRunEnds()
 
     emit controller->userRequestAccepted(QStringLiteral("run-id"),
                                          QStringLiteral("hello"));
-    auto activityMessages = window.findChildren<ui::MessageWidget*>();
-    QCOMPARE(activityMessages.size(), 2);
-    auto* activity = static_cast<ui::MessageWidget*>(nullptr);
-    for (auto* message : activityMessages)
-    {
-        if (message->property("agentActivity").toBool())
-        {
-            activity = message;
-            break;
-        }
-    }
-    QVERIFY(activity != nullptr);
-    auto* body = activity->findChild<QTextBrowser*>(
-        QStringLiteral("assistantMessageBody"));
-    QVERIFY(body != nullptr);
-    QCOMPARE(body->toPlainText(), QStringLiteral("Thinking."));
-    auto* thinkingTimer =
-        window.findChild<QTimer*>(QStringLiteral("thinkingAnimationTimer"));
-    QVERIFY(thinkingTimer != nullptr);
-    QVERIFY(thinkingTimer->isActive());
-    const auto thinkingTimerId = thinkingTimer->timerId();
+    auto progressWidgets = window.findChildren<ui::AgentProgressWidget*>();
+    QCOMPARE(progressWidgets.size(), 1);
+    auto* progress = progressWidgets.constFirst();
 
-    emit controller->stateChanged(application::AgentRun::State::Deciding);
-    QVERIFY(thinkingTimer->isActive());
-    QCOMPARE(thinkingTimer->timerId(), thinkingTimerId);
-    QVERIFY(QMetaObject::invokeMethod(&window, "advanceThinkingAnimation",
-                                      Qt::DirectConnection));
-    QCOMPARE(body->toPlainText(), QStringLiteral("Thinking.."));
+    application::AgentProgressSnapshot running;
+    running.runId = QStringLiteral("run-id");
+    running.state = application::AgentRun::State::ExecutingTool;
+    running.elapsedMilliseconds = 65'000;
+    running.steps = {
+        {QStringLiteral("step-1"), QStringLiteral("Inspect the workspace"),
+         application::AgentProgressStepStatus::Completed},
+        {QStringLiteral("step-2"),
+         QStringLiteral("Create the inlet with token=do-not-display"),
+         application::AgentProgressStepStatus::Current},
+        {QStringLiteral("step-3"),
+         QStringLiteral("Verify_") + QString(180, QLatin1Char('x')),
+         application::AgentProgressStepStatus::Pending}};
+    running.currentStepId = QStringLiteral("step-2");
+    running.operation = QStringLiteral("Calling shondy.create_inlet");
+    running.waitingReason = QStringLiteral("Waiting for the tool result");
+    running.completedToolCount = 2;
+    running.evidenceCount = 3;
+    running.recentActivity = {
+        {agent::EventType::ToolStarted,
+         QStringLiteral("Tool started with token=do-not-display"),
+         QStringLiteral("shondy.create_inlet"),
+         QDateTime::fromString(QStringLiteral("2026-08-14T02:03:05Z"),
+                               Qt::ISODate)}};
+    emit controller->progressChanged(running);
 
-    emit controller->eventRecorded(
-        {QStringLiteral("run-id"),
-         agent::EventType::Warning,
-         QStringLiteral("Still running; select Stop to cancel."),
-         {},
-         {}});
-    QCOMPARE(body->toPlainText(),
-             QStringLiteral("Still running; select Stop to cancel."));
+    auto* title =
+        progress->findChild<QLabel*>(QStringLiteral("agentProgressTitle"));
+    auto* elapsed =
+        progress->findChild<QLabel*>(QStringLiteral("agentProgressElapsed"));
+    auto* summary =
+        progress->findChild<QLabel*>(QStringLiteral("agentProgressSummary"));
+    auto* operation =
+        progress->findChild<QLabel*>(QStringLiteral("agentProgressOperation"));
+    auto* activityToggle = progress->findChild<QToolButton*>(
+        QStringLiteral("agentProgressActivityToggle"));
+    QVERIFY(title != nullptr);
+    QVERIFY(elapsed != nullptr);
+    QVERIFY(summary != nullptr);
+    QVERIFY(operation != nullptr);
+    QVERIFY(activityToggle != nullptr);
+    QCOMPARE(title->text(), QStringLiteral("Agent working"));
+    QCOMPARE(elapsed->text(), QStringLiteral("01:05"));
+    QVERIFY(summary->text().contains(QStringLiteral("3 steps, 1 complete")));
+    QVERIFY(operation->text().contains(QStringLiteral("shondy.create_inlet")));
+    const auto stepLabels = progress->findChildren<QLabel*>(
+        QStringLiteral("agentProgressStepDescription"));
+    QCOMPARE(stepLabels.size(), 3);
+    for (const auto* label : stepLabels)
+        QVERIFY(!label->text().contains(QStringLiteral("do-not-display")));
+    const auto stepRows =
+        progress->findChildren<QWidget*>(QStringLiteral("agentProgressStep"));
+    QCOMPARE(stepRows.size(), 3);
+    for (const auto* row : stepRows)
+        QVERIFY(
+            !row->accessibleName().contains(QStringLiteral("do-not-display")));
+    window.resize(720, 520);
+    window.show();
+    QCoreApplication::processEvents();
+    auto* conversationScroll =
+        window.findChild<QScrollArea*>(QStringLiteral("conversationScroll"));
+    QVERIFY(conversationScroll != nullptr);
+    QVERIFY(progress->width() <= conversationScroll->viewport()->width());
+    for (const auto* label : stepLabels)
+        QVERIFY(label->mapTo(progress, QPoint(label->width(), 0)).x() <=
+                progress->contentsRect().right() + 1);
 
-    emit controller->stateChanged(application::AgentRun::State::ExecutingTool);
-    QCOMPARE(body->toPlainText(), QStringLiteral("Using a tool..."));
+    activityToggle->click();
+    const auto activityItems = progress->findChildren<QLabel*>(
+        QStringLiteral("agentProgressActivityItem"));
+    QCOMPARE(activityItems.size(), 1);
+    QVERIFY(!activityItems.constFirst()->text().contains(
+        QStringLiteral("do-not-display")));
+    QVERIFY(activityItems.constFirst()->text().contains(
+        QStringLiteral("[redacted]")));
 
+    application::AgentProgressSnapshot completed = running;
+    completed.state = application::AgentRun::State::Completed;
+    for (auto& step : completed.steps)
+        step.status = application::AgentProgressStepStatus::Completed;
+    emit controller->progressChanged(completed);
     emit controller->finalAnswerReady(QStringLiteral("run-id"),
                                       QStringLiteral("Done."));
-    activityMessages = window.findChildren<ui::MessageWidget*>();
-    QCOMPARE(activityMessages.size(), 2);
-    for (auto* message : activityMessages)
-        QVERIFY(!message->property("agentActivity").toBool());
+    QCOMPARE(title->text(), QStringLiteral("Agent complete"));
+    QVERIFY(!progress->isExpanded());
+    emit controller->runFinished(QStringLiteral("run-id"),
+                                 application::AgentRun::State::Completed, {},
+                                 {});
+    QCOMPARE(window.findChildren<ui::AgentProgressWidget*>().size(), 1);
+    QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 2);
 
-    emit controller->userRequestAccepted(QStringLiteral("failed-run"),
+    emit controller->progressChanged(running);
+    QCOMPARE(title->text(), QStringLiteral("Agent complete"));
+
+    emit controller->userRequestAccepted(QStringLiteral("next-run"),
                                          QStringLiteral("try again"));
-    QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 4);
-    emit controller->stateChanged(application::AgentRun::State::Failed);
-    activityMessages = window.findChildren<ui::MessageWidget*>();
-    QCOMPARE(activityMessages.size(), 3);
-    for (auto* message : activityMessages)
-        QVERIFY(!message->property("agentActivity").toBool());
-    emit controller->runFinished(QStringLiteral("failed-run"),
+    progressWidgets = window.findChildren<ui::AgentProgressWidget*>();
+    QCOMPARE(progressWidgets.size(), 2);
+    auto* failedProgress = progressWidgets.constLast();
+    application::AgentProgressSnapshot failed = running;
+    failed.runId = QStringLiteral("next-run");
+    failed.state = application::AgentRun::State::Failed;
+    failed.finishCode = QStringLiteral("tool_failed");
+    failed.finishMessage =
+        QStringLiteral("Request failed; token=do-not-display");
+    emit controller->progressChanged(failed);
+    auto* failedTitle = failedProgress->findChild<QLabel*>(
+        QStringLiteral("agentProgressTitle"));
+    auto* failedFinish = failedProgress->findChild<QLabel*>(
+        QStringLiteral("agentProgressFinish"));
+    QVERIFY(failedTitle != nullptr);
+    QVERIFY(failedFinish != nullptr);
+    QCOMPARE(failedTitle->text(), QStringLiteral("Agent failed"));
+    QVERIFY(!failedFinish->text().contains(QStringLiteral("do-not-display")));
+    QVERIFY(failedFinish->text().contains(QStringLiteral("[redacted]")));
+    emit controller->runFinished(QStringLiteral("next-run"),
                                  application::AgentRun::State::Failed,
                                  QStringLiteral("generation_failed"),
                                  QStringLiteral("Generation failed."));

@@ -377,6 +377,82 @@ QTextBrowser#assistantMessageBody {
     border: none;
     border-radius: 8px;
 }
+QWidget#agentProgressCard {
+    margin: 6px 12px;
+    color: #202124;
+    background: #f8fafc;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+}
+QWidget#agentProgressCard[progressState="terminal"] {
+    background: #f6f8fa;
+    border-color: #d7dbe0;
+}
+QToolButton#agentProgressToggle {
+    min-width: 24px;
+    max-width: 24px;
+    min-height: 24px;
+    max-height: 24px;
+    padding: 0;
+    background: transparent;
+    border: none;
+}
+QToolButton#agentProgressToggle:hover {
+    background: #e8eef5;
+    border-radius: 4px;
+}
+QLabel#agentProgressTitle {
+    font-weight: 600;
+}
+QLabel#agentProgressElapsed,
+QLabel#agentProgressSummary,
+QLabel#agentProgressCounts,
+QLabel#agentProgressWaiting,
+QLabel#agentProgressActivityItem {
+    color: #64748b;
+}
+QLabel#agentProgressElapsed {
+    font-family: "Cascadia Mono", "Consolas", monospace;
+}
+QLabel#agentProgressOperation {
+    color: #334155;
+    font-weight: 600;
+}
+QLabel#agentProgressFinish {
+    color: #991b1b;
+}
+QWidget#agentProgressStep {
+    background: transparent;
+}
+QWidget#agentProgressStep[stepStatus="current"] QLabel#agentProgressStepDescription {
+    color: #1d4ed8;
+    font-weight: 600;
+}
+QWidget#agentProgressStep[stepStatus="completed"] QLabel#agentProgressStepDescription {
+    color: #166534;
+}
+QWidget#agentProgressStep[stepStatus="blocked"] QLabel#agentProgressStepDescription {
+    color: #991b1b;
+}
+QWidget#agentProgressStep[stepStatus="pending"] QLabel#agentProgressStepDescription {
+    color: #64748b;
+}
+QToolButton#agentProgressActivityToggle {
+    min-height: 26px;
+    padding: 0 5px;
+    color: #475569;
+    background: transparent;
+    border: none;
+}
+QToolButton#agentProgressActivityToggle:hover {
+    color: #202124;
+    background: #eef1f4;
+    border-radius: 4px;
+}
+QWidget#agentProgressActivity {
+    background: transparent;
+    border-left: 2px solid #d7dbe0;
+}
 QWidget#toolApprovalCard {
     margin: 8px 12px;
     background: #fffaf0;

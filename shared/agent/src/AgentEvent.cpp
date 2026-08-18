@@ -8,6 +8,10 @@ QString eventTypeName(EventType type)
     {
         case EventType::RunStarted:
             return QStringLiteral("run_started");
+        case EventType::TaskPlanAccepted:
+            return QStringLiteral("task_plan_accepted");
+        case EventType::TaskStepUpdated:
+            return QStringLiteral("task_step_updated");
         case EventType::DecisionStarted:
             return QStringLiteral("decision_started");
         case EventType::ApprovalRequested:
@@ -18,6 +22,8 @@ QString eventTypeName(EventType type)
             return QStringLiteral("tool_finished");
         case EventType::AnswerStarted:
             return QStringLiteral("answer_started");
+        case EventType::RecoveryStarted:
+            return QStringLiteral("recovery_started");
         case EventType::Warning:
             return QStringLiteral("warning");
         case EventType::Completed:

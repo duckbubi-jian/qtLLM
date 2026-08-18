@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AgentAction.hpp"
+#include "AgentProgress.hpp"
 #include "AgentRun.hpp"
 #include "AssistantContext.hpp"
 #include "ModelPackage.hpp"
@@ -68,6 +69,7 @@ class AgentController final : public QObject
     [[nodiscard]] const std::optional<AgentRun>& activeRun() const;
     [[nodiscard]] const QList<chat::Message>& conversationMessages() const;
     [[nodiscard]] bool hasConversation() const;
+    [[nodiscard]] AgentProgressSnapshot progressSnapshot() const;
 
    public slots:
     void receiveToken(const QByteArray& bytes);
@@ -82,6 +84,8 @@ class AgentController final : public QObject
    signals:
     void stateChanged(qtllm::application::AgentRun::State state);
     void eventRecorded(const qtllm::agent::Event& event);
+    void progressChanged(
+        const qtllm::application::AgentProgressSnapshot& snapshot);
     void userRequestAccepted(const QString& runId, const QString& request);
     void approvalRequested(const QString& runId, const QString& toolName,
                            const QJsonObject& arguments);
@@ -135,6 +139,8 @@ class AgentController final : public QObject
         const agent::Action& action, const agent::ToolResult& result,
         bool& exhausted);
     void resolveContractRecovery(const agent::Action& action);
+    [[nodiscard]] bool isRequiredContractDiscovery(
+        const agent::Action& action) const;
     [[nodiscard]] bool requiresContextResetApproval(
         const agent::Action& action) const;
     [[nodiscard]] QString updateContextAfterSuccess(
@@ -147,6 +153,7 @@ class AgentController final : public QObject
     void recordEvent(agent::EventType type, const QString& message = {},
                      const QString& toolName = {},
                      const QJsonObject& data = {});
+    void emitProgressChanged();
     void completeRun(const QString& content);
     void failRun(const QString& code, const QString& message);
 

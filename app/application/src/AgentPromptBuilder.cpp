@@ -160,7 +160,18 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools,
                               "and sessions between steps; "
                               "do not close and reopen the "
                               "same resource merely to "
-                              "inspect or verify it. ");
+                              "inspect or verify it. Tool availability is "
+                              "not permission to broaden the task: every "
+                              "tool call must directly support an explicit "
+                              "requested outcome. After a successful terminal "
+                              "result satisfies the last explicit outcome, "
+                              "return final; do not inventory unrelated "
+                              "resource types or perform cleanup. When the "
+                              "user's only "
+                              "request is to open, create, switch, or close a "
+                              "case, return final immediately after that "
+                              "operation succeeds. Do not inventory item "
+                              "types or close an opened case as cleanup. ");
     QString omissionNotice;
     if (catalog.omittedToolCount > 0)
         omissionNotice +=

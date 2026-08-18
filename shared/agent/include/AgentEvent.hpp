@@ -10,11 +10,14 @@ namespace qtllm::agent
 enum class EventType
 {
     RunStarted,
+    TaskPlanAccepted,
+    TaskStepUpdated,
     DecisionStarted,
     ApprovalRequested,
     ToolStarted,
     ToolFinished,
     AnswerStarted,
+    RecoveryStarted,
     Warning,
     Completed,
     Cancelled,

@@ -35,6 +35,8 @@ class AgentController final : public QObject
         const QString&, const QJsonObject&)>;
     using ToolPolicyHandler =
         std::function<infrastructure::mcp::ToolDecision(const QString&)>;
+    using ToolRiskHandler =
+        std::function<infrastructure::mcp::ToolRisk(const QString&)>;
 
     struct Dependencies
     {
@@ -44,6 +46,7 @@ class AgentController final : public QObject
         CancelToolHandler cancelTool;
         ValidateToolHandler validateTool;
         ToolPolicyHandler toolPolicy;
+        ToolRiskHandler toolRisk;
     };
 
     explicit AgentController(Dependencies dependencies = {},

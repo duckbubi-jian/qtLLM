@@ -26,10 +26,13 @@ class AgentPromptBuilder final
     static chat::Message taskPlanAcceptedMessage(const QJsonArray& steps);
     static chat::Message taskPlanCorrectionMessage(const QString& errorMessage);
     static chat::Message toolResultMessage(const agent::ToolResult& result,
-                                           int evidenceSequence);
+                                           int evidenceSequence,
+                                           const QJsonObject& ledgerState,
+                                           const QString& verificationReason);
     static chat::Message completionReviewMessage(
         const QString& originalRequest, const QJsonArray& completionSteps,
-        const QList<QJsonObject>& toolEvidence);
+        const QList<QJsonObject>& toolEvidence, const QJsonObject& ledgerState,
+        const QString& verificationReason);
     static chat::Message completionReviewCorrectionMessage(
         const QString& errorMessage);
     static chat::Message completionContinuationMessage(

@@ -30,6 +30,7 @@ class AgentContextCompactor final
                                         const QString& originalRequest,
                                         const QList<QJsonObject>& toolEvidence,
                                         const QJsonObject& completionState,
+                                        const QJsonObject& ledgerState,
                                         const models::InferencePreset& preset);
 };
 }  // namespace qtllm::application

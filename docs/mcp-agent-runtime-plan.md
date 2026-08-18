@@ -91,10 +91,9 @@ The current implementation already provides most of the outer loop:
   `allOf`, `anyOf`, and `oneOf`; rejected calls receive a focused contract and
   use a retry counter independent from malformed Agent actions.
 
-The first implementation milestone closes the largest gap between tool
-discovery and execution. Remaining work is to make validator diagnostics
-structured, retain resource identities independently from conversation text,
-and require mutation verification where the existing tool catalog permits it.
+The first three implementation milestones close the largest gaps between tool
+discovery, execution, and verified state. Remaining work is to unify outcome
+and retry policy, then validate the loop against real local models.
 
 ## Failure Pattern To Fix
 
@@ -388,6 +387,10 @@ Acceptance:
 - An unchanged invalid signature is rejected without consuming an MCP call.
 
 ### M3: Resource Ledger And Verification
+
+Status: implemented. The controller now keeps bounded run-scoped resource,
+job, and mutation-verification records and carries them through tool results,
+context compaction, and completion review.
 
 Deliverables:
 

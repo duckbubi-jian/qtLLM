@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AgentEvent.hpp"
+#include "AgentLedger.hpp"
 #include "ChatMessage.hpp"
 
 #include <QDateTime>
@@ -51,6 +52,7 @@ struct AgentRun
     QList<agent::Event> events;
     QList<chat::Message> inferenceMessages;
     QString toolRequestId;
+    AgentLedger ledger;
 };
 }  // namespace qtllm::application
 

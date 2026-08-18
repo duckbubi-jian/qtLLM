@@ -114,20 +114,48 @@ QString singleLine(QString value)
         .trimmed();
 }
 
-QString unfinishedEvidenceReason(const QList<QJsonObject>& toolEvidence)
+QString unfinishedEvidenceReason(const QList<QJsonObject>& toolEvidence,
+                                 const AgentLedger& ledger)
 {
-    if (toolEvidence.isEmpty()) return {};
-    const auto& latest = toolEvidence.constLast();
-    if (latest.value(QStringLiteral("outcome")).toString() ==
-        QLatin1String("error"))
-        return QStringLiteral(
-            "The most recent tool call failed, so the requested operation "
-            "does not yet have successful evidence.");
-    if (!latest.value(QStringLiteral("terminal")).toBool())
-        return QStringLiteral(
-            "The most recent tool result is still running or pending and is "
-            "not terminal evidence.");
-    return {};
+    if (!toolEvidence.isEmpty())
+    {
+        const auto& latest = toolEvidence.constLast();
+        if (latest.value(QStringLiteral("outcome")).toString() ==
+            QLatin1String("error"))
+            return QStringLiteral(
+                "The most recent tool call failed, so the requested operation "
+                "does not yet have successful evidence.");
+        if (!latest.value(QStringLiteral("terminal")).toBool())
+            return QStringLiteral(
+                "The most recent tool result is still running or pending and "
+                "is not terminal evidence.");
+    }
+    return ledger.unresolvedVerificationReason();
+}
+
+ToolOperationKind operationKind(
+    const agent::ToolDefinition& tool,
+    const AgentController::ToolRiskHandler& toolRisk)
+{
+    const auto readOnlyHint =
+        tool.annotations.value(QStringLiteral("readOnlyHint"));
+    if (readOnlyHint.isBool())
+        return readOnlyHint.toBool() ? ToolOperationKind::ReadOnly
+                                     : ToolOperationKind::Mutation;
+    if (tool.annotations.value(QStringLiteral("destructiveHint")).toBool())
+        return ToolOperationKind::Mutation;
+    if (!toolRisk) return ToolOperationKind::Unknown;
+    switch (toolRisk(tool.qualifiedName))
+    {
+        case infrastructure::mcp::ToolRisk::ReadOnly:
+            return ToolOperationKind::ReadOnly;
+        case infrastructure::mcp::ToolRisk::CreatesData:
+        case infrastructure::mcp::ToolRisk::Destructive:
+            return ToolOperationKind::Mutation;
+        case infrastructure::mcp::ToolRisk::ModifiesData:
+            return ToolOperationKind::Unknown;
+    }
+    return ToolOperationKind::Unknown;
 }
 
 qsizetype messageCharacters(const QList<chat::Message>& messages)
@@ -369,6 +397,22 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
         evidenceSequence = static_cast<int>(toolEvidence_.size() + 1);
         toolEvidence_.append(AgentContextCompactor::toolEvidence(
             evidenceSequence, *completedToolAction, result));
+        const auto definition = std::find_if(
+            availableTools_.cbegin(), availableTools_.cend(),
+            [&completedToolAction](const agent::ToolDefinition& candidate)
+            {
+                return candidate.qualifiedName == completedToolAction->toolName;
+            });
+        const auto kind =
+            definition == availableTools_.cend()
+                ? ToolOperationKind::Unknown
+                : operationKind(*definition, dependencies_.toolRisk);
+        const auto outputSchemaValidated =
+            definition != availableTools_.cend() &&
+            definition->hasOutputSchema && !definition->outputSchema.isEmpty();
+        activeRun_->ledger.recordToolResult(evidenceSequence,
+                                            *completedToolAction, result, kind,
+                                            outputSchemaValidated);
         ++activeRun_->evidenceRevision;
         activeRun_->completionReviewsAtRevision = 0;
         activeRun_->completionReviewFailures = 0;
@@ -386,8 +430,9 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
                                : QStringLiteral("Tool call completed."),
                 result.serverId + QLatin1Char('.') + result.toolName,
                 result.result);
-    activeRun_->inferenceMessages.append(
-        AgentPromptBuilder::toolResultMessage(result, evidenceSequence));
+    activeRun_->inferenceMessages.append(AgentPromptBuilder::toolResultMessage(
+        result, evidenceSequence, activeRun_->ledger.snapshot(),
+        activeRun_->ledger.unresolvedVerificationReason()));
     requestDecision();
 }
 
@@ -438,7 +483,8 @@ void AgentController::compactContextIfNeeded()
          activeRun_->awaitingCompletionReview}};
     const auto result = AgentContextCompactor::compact(
         activeRun_->inferenceMessages, activeRun_->requestMessageIndex,
-        activeRun_->userRequest, toolEvidence_, completionState, preset_);
+        activeRun_->userRequest, toolEvidence_, completionState,
+        activeRun_->ledger.snapshot(), preset_);
     if (!result.compacted) return;
     ++activeRun_->contextCompactions;
     qInfo().noquote()
@@ -521,7 +567,7 @@ void AgentController::handleAction(const agent::Action& action,
         else
         {
             const auto unfinishedReason =
-                unfinishedEvidenceReason(toolEvidence_);
+                unfinishedEvidenceReason(toolEvidence_, activeRun_->ledger);
             if (unfinishedReason.isEmpty())
                 completeRun(action.content);
             else
@@ -664,9 +710,10 @@ void AgentController::beginCompletionReview(const agent::Action& action,
     activeRun_->inferenceMessages.append(
         {chat::Role::Assistant, QString::fromUtf8(rawAction)});
     activeRun_->inferenceMessages.append(
-        AgentPromptBuilder::completionReviewMessage(activeRun_->userRequest,
-                                                    activeRun_->completionSteps,
-                                                    toolEvidence_));
+        AgentPromptBuilder::completionReviewMessage(
+            activeRun_->userRequest, activeRun_->completionSteps, toolEvidence_,
+            activeRun_->ledger.snapshot(),
+            activeRun_->ledger.unresolvedVerificationReason()));
     requestDecision();
 }
 
@@ -713,6 +760,7 @@ QString AgentController::validateCompletionReview(
         const auto sequences =
             reviewed.value(QStringLiteral("evidence")).toArray();
         auto hasTerminalSuccess = false;
+        auto citesUnverifiedMutation = false;
         for (const auto& sequenceValue : sequences)
         {
             const auto sequence = sequenceValue.toInt();
@@ -728,6 +776,9 @@ QString AgentController::validateCompletionReview(
                     (evidence.value(QStringLiteral("outcome")).toString() ==
                          QLatin1String("success") &&
                      evidence.value(QStringLiteral("terminal")).toBool());
+                citesUnverifiedMutation =
+                    citesUnverifiedMutation ||
+                    activeRun_->ledger.evidenceRequiresVerification(sequence);
                 break;
             }
             if (!found)
@@ -743,7 +794,15 @@ QString AgentController::validateCompletionReview(
                        "Completion step %1 requires successful terminal tool "
                        "evidence.")
                 .arg(id);
+        if (status == QLatin1String("satisfied") && citesUnverifiedMutation)
+            return QStringLiteral(
+                       "Completion step %1 cites a mutation whose read-back "
+                       "verification is still unresolved.")
+                .arg(id);
     }
+    if (action.completionVerdict == QLatin1String("complete") &&
+        activeRun_->ledger.hasUnresolvedVerification())
+        return activeRun_->ledger.unresolvedVerificationReason();
     return {};
 }
 
@@ -751,7 +810,7 @@ bool AgentController::hasSufficientCompletionEvidence() const
 {
     if (!activeRun_ || activeRun_->pendingFinalCandidate.isEmpty() ||
         activeRun_->completionSteps.isEmpty() ||
-        !unfinishedEvidenceReason(toolEvidence_).isEmpty())
+        !unfinishedEvidenceReason(toolEvidence_, activeRun_->ledger).isEmpty())
         return false;
 
     auto requiredToolSteps = 0;

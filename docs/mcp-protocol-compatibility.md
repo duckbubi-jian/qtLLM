@@ -104,6 +104,10 @@ feature differences have dedicated Fake Server coverage.
   path, schema path, validation keyword, and readable message. The focused
   correction prompt receives that diagnostic together with the rejected
   arguments and the failed tool's bounded contract.
+- Agent runs keep a bounded run-scoped ledger of resource identifiers, parent
+  relationships, asynchronous jobs, and mutation verification evidence. The
+  ledger survives context compaction and unresolved verification prevents a
+  completion claim.
 - Tests run with the Fake MCP Server and do not require a model or network.
 - Two Servers can expose same-named tools independently; failure or restart of
   one Server does not revoke the other Server's capabilities.

@@ -90,7 +90,9 @@ MainWindow::MainWindow(const QString& settingsFilePath, QWidget* parent)
                       toolName, arguments);
               },
               [this](const QString& toolName)
-              { return toolPolicy_.evaluate(toolName); }},
+              { return toolPolicy_.evaluate(toolName); },
+              [this](const QString& toolName)
+              { return toolPolicy_.risk(toolName); }},
           this)
 {
     resize(1080, 760);

@@ -40,6 +40,8 @@ class AgentControllerTest final : public QObject
     void doesNotUsePreparedFinalWhenReviewStalls();
     void stagnationRecoveryIsIndependentFromActionRepair();
     void compactsLongAgentContextAndPreservesEvidence();
+    void tracksRunScopedLedgerAndRequiresVerification();
+    void rejectsCompletionWithUnverifiedMutation();
     void hasNoToolCallCountLimit();
     void longRunWarningDoesNotStopAgent();
 };
@@ -64,6 +66,18 @@ agent::ToolDefinition namedTool(const QString& name, const QString& description)
               QJsonObject{{QStringLiteral("value"),
                            QJsonObject{{QStringLiteral("type"),
                                         QStringLiteral("string")}}}}}}};
+}
+
+agent::ToolDefinition ledgerTool(const QString& name, bool readOnly)
+{
+    return {QStringLiteral("fake.") + name,
+            QStringLiteral("fake"),
+            name,
+            QStringLiteral("Ledger test tool"),
+            {{QStringLiteral("type"), QStringLiteral("object")}},
+            {},
+            {{QStringLiteral("readOnlyHint"), readOnly}},
+            false};
 }
 
 agent::ToolDefinition inletTool()
@@ -998,6 +1012,10 @@ void AgentControllerTest::allowsRepeatedPollingUntilTerminalStatus()
                                  {QStringLiteral("progress"), 33.0}}}};
     controller.receiveToolResult(firstResult);
     QCOMPARE(generationCount, 2);
+    QCOMPARE(controller.activeRun()->ledger.jobs().size(), 1);
+    QCOMPARE(controller.activeRun()->ledger.jobs().constFirst().status,
+             QStringLiteral("running"));
+    QVERIFY(!controller.activeRun()->ledger.jobs().constFirst().terminal);
     QVERIFY(generatedMessages.constLast().content.contains(
         QStringLiteral("still in progress")));
 
@@ -1030,6 +1048,10 @@ void AgentControllerTest::allowsRepeatedPollingUntilTerminalStatus()
         QJsonObject{{QStringLiteral("result"),
                      QJsonObject{{QStringLiteral("isRunning"), false}}}};
     controller.receiveToolResult(terminalResult);
+    QCOMPARE(controller.activeRun()->ledger.jobs().size(), 1);
+    QCOMPARE(controller.activeRun()->ledger.jobs().constFirst().status,
+             QStringLiteral("completed"));
+    QVERIFY(controller.activeRun()->ledger.jobs().constFirst().terminal);
 
     controller.receiveToken(action);
     controller.completeGeneration(false);
@@ -1579,6 +1601,8 @@ void AgentControllerTest::compactsLongAgentContextAndPreservesEvidence()
                                   {{QStringLiteral("promptTokens"), 1'900}});
 
     const auto uuid = QStringLiteral("713b9921-7b45-45a5-aad3-0b8bc89fced6");
+    const auto parentUuid =
+        QStringLiteral("13a1ef20-1023-4a77-858b-60bb7f10f65d");
     const auto path = QStringLiteral("E:/stl_case1/case1");
     agent::ToolResult result;
     result.requestId = QStringLiteral("tool-request-1");
@@ -1588,6 +1612,7 @@ void AgentControllerTest::compactsLongAgentContextAndPreservesEvidence()
         {QStringLiteral("structuredContent"),
          QJsonObject{{QStringLiteral("ok"), true},
                      {QStringLiteral("uuid"), uuid},
+                     {QStringLiteral("parent_uuid"), parentUuid},
                      {QStringLiteral("case_path"), path},
                      {QStringLiteral("large_payload"),
                       QStringLiteral("mesh-data-").repeated(2'000)}}}};
@@ -1601,9 +1626,10 @@ void AgentControllerTest::compactsLongAgentContextAndPreservesEvidence()
     const auto compactedTask = generatedMessages.constLast().content;
     QVERIFY(compactedTask.contains(request));
     QVERIFY(compactedTask.contains(QStringLiteral("<agent_progress>")));
-    QVERIFY(compactedTask.contains(QStringLiteral("qtllm-agent-progress-v2")));
+    QVERIFY(compactedTask.contains(QStringLiteral("qtllm-agent-progress-v3")));
     QVERIFY(compactedTask.contains(QStringLiteral("Create the shaft region")));
     QVERIFY(compactedTask.contains(uuid));
+    QVERIFY(compactedTask.contains(parentUuid));
     QVERIFY(compactedTask.contains(path));
     QVERIFY(compactedTask.size() < 5'000);
     QVERIFY(
@@ -1634,8 +1660,190 @@ void AgentControllerTest::compactsLongAgentContextAndPreservesEvidence()
     QCOMPARE(twiceCompactedTask.count(QStringLiteral("<agent_progress>")), 1);
     QCOMPARE(twiceCompactedTask.count(request), 1);
     QVERIFY(twiceCompactedTask.contains(uuid));
+    QVERIFY(twiceCompactedTask.contains(parentUuid));
     QVERIFY(twiceCompactedTask.contains(secondUuid));
     controller.cancel();
+}
+
+void AgentControllerTest::tracksRunScopedLedgerAndRequiresVerification()
+{
+    auto generationCount = 0;
+    auto toolCallCount = 0;
+    QList<chat::Message> generatedMessages;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>& messages,
+                const models::InferencePreset&, int)
+            {
+                ++generationCount;
+                generatedMessages = messages;
+            },
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-%1").arg(toolCallCount);
+            },
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+    QSignalSpy finalSpy(&controller,
+                        &application::AgentController::finalAnswerReady);
+
+    const auto createAction = QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.create","arguments":{"name":"resource","parent_uuid":"parent-1"}})");
+    const auto inspectAction = QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.inspect","arguments":{"name_uuid":"resource/resource-1"}})");
+    QVERIFY(controller.start(
+        QStringLiteral("Create the resource and report it."), {},
+        {ledgerTool(QStringLiteral("create"), false),
+         ledgerTool(QStringLiteral("inspect"), true)}));
+    controller.receiveToken(createAction);
+    controller.completeGeneration(false);
+
+    agent::ToolResult createResult;
+    createResult.requestId = QStringLiteral("tool-request-1");
+    createResult.serverId = QStringLiteral("fake");
+    createResult.toolName = QStringLiteral("create");
+    createResult.structuredContent = QJsonObject{
+        {QStringLiteral("created"),
+         QJsonObject{
+             {QStringLiteral("name"), QStringLiteral("resource")},
+             {QStringLiteral("uuid"), QStringLiteral("resource-1")},
+             {QStringLiteral("parent_uuid"), QStringLiteral("parent-1")}}}};
+    controller.receiveToolResult(createResult);
+
+    QVERIFY(controller.activeRun().has_value());
+    const auto& ledger = controller.activeRun()->ledger;
+    QCOMPARE(ledger.resources().size(), 1);
+    QCOMPARE(ledger.resources().constFirst().stableId,
+             QStringLiteral("resource-1"));
+    QCOMPARE(ledger.resources().constFirst().parentId,
+             QStringLiteral("parent-1"));
+    QCOMPARE(ledger.verifications().size(), 1);
+    QCOMPARE(ledger.verifications().constFirst().state,
+             QStringLiteral("pending"));
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("<run_ledger>")));
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("parent-1")));
+
+    controller.receiveToken(
+        QByteArrayLiteral(R"({"action":"final","content":"Done"})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(finalSpy.count(), 0);
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("read-back verification")));
+
+    controller.receiveToken(inspectAction);
+    controller.completeGeneration(false);
+    agent::ToolResult inspectResult;
+    inspectResult.requestId = QStringLiteral("tool-request-2");
+    inspectResult.serverId = QStringLiteral("fake");
+    inspectResult.toolName = QStringLiteral("inspect");
+    inspectResult.structuredContent = QJsonObject{
+        {QStringLiteral("name"), QStringLiteral("resource")},
+        {QStringLiteral("uuid"), QStringLiteral("resource-1")},
+        {QStringLiteral("parent_uuid"), QStringLiteral("parent-1")}};
+    controller.receiveToolResult(inspectResult);
+    QCOMPARE(controller.activeRun()->ledger.verifications().constFirst().state,
+             QStringLiteral("verified"));
+
+    controller.receiveToken(
+        QByteArrayLiteral(R"({"action":"final","content":"Done"})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Completed);
+    QCOMPARE(finalSpy.count(), 1);
+}
+
+void AgentControllerTest::rejectsCompletionWithUnverifiedMutation()
+{
+    auto generationCount = 0;
+    auto toolCallCount = 0;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>&, const models::InferencePreset&,
+                int) { ++generationCount; },
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-%1").arg(toolCallCount);
+            },
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+    QSignalSpy finalSpy(&controller,
+                        &application::AgentController::finalAnswerReady);
+
+    QVERIFY(controller.start(QStringLiteral("1. Create the resource.\n"
+                                            "2. Report the resource."),
+                             {},
+                             {ledgerTool(QStringLiteral("create"), false),
+                              ledgerTool(QStringLiteral("inspect"), true)}));
+    const QJsonArray plan{
+        planStep(QStringLiteral("create"),
+                 QStringLiteral("Create the resource"), true),
+        planStep(QStringLiteral("report"),
+                 QStringLiteral("Report the resource"), false)};
+    controller.receiveToken(taskPlanAction(plan));
+    controller.completeGeneration(false);
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.create","arguments":{"name":"resource"}})"));
+    controller.completeGeneration(false);
+    agent::ToolResult result;
+    result.requestId = QStringLiteral("tool-request-1");
+    result.serverId = QStringLiteral("fake");
+    result.toolName = QStringLiteral("create");
+    result.structuredContent =
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("resource")},
+                    {QStringLiteral("uuid"), QStringLiteral("resource-1")}};
+    controller.receiveToolResult(result);
+
+    controller.receiveToken(
+        QByteArrayLiteral(R"({"action":"final","content":"Done"})"));
+    controller.completeGeneration(false);
+    const QJsonArray incompleteReview{
+        reviewedStep(QStringLiteral("create"),
+                     QStringLiteral("Create the resource"), true,
+                     QStringLiteral("satisfied"), QJsonArray{1}),
+        reviewedStep(QStringLiteral("report"),
+                     QStringLiteral("Report the resource"), false,
+                     QStringLiteral("satisfied"), QJsonArray{1})};
+    controller.receiveToken(
+        completionReviewAction(QStringLiteral("complete"), incompleteReview,
+                               QStringLiteral("The resource is complete.")));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(finalSpy.count(), 0);
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.inspect","arguments":{"name_uuid":"resource/resource-1"}})"));
+    controller.completeGeneration(false);
+    agent::ToolResult verification;
+    verification.requestId = QStringLiteral("tool-request-2");
+    verification.serverId = QStringLiteral("fake");
+    verification.toolName = QStringLiteral("inspect");
+    verification.structuredContent =
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("resource")},
+                    {QStringLiteral("uuid"), QStringLiteral("resource-1")}};
+    controller.receiveToolResult(verification);
+
+    controller.receiveToken(
+        QByteArrayLiteral(R"({"action":"final","content":"Done"})"));
+    controller.completeGeneration(false);
+    const QJsonArray completeReview{
+        reviewedStep(QStringLiteral("create"),
+                     QStringLiteral("Create the resource"), true,
+                     QStringLiteral("satisfied"), QJsonArray{1, 2}),
+        reviewedStep(QStringLiteral("report"),
+                     QStringLiteral("Report the resource"), false,
+                     QStringLiteral("satisfied"), QJsonArray{2})};
+    controller.receiveToken(
+        completionReviewAction(QStringLiteral("complete"), completeReview,
+                               QStringLiteral("The resource is verified.")));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Completed);
+    QCOMPARE(finalSpy.count(), 1);
 }
 
 void AgentControllerTest::hasNoToolCallCountLimit()

@@ -35,6 +35,9 @@ class AgentPromptBuilder final
         const QJsonArray& completionSteps, const QString& nextStep);
     static chat::Message unfinishedFinalMessage(const QString& errorMessage);
     static chat::Message correctionMessage(const QString& errorMessage);
+    static chat::Message toolValidationCorrectionMessage(
+        const agent::ToolDefinition& tool, const QJsonObject& arguments,
+        const QString& errorMessage);
     static chat::Message noProgressMessage(const QString& errorMessage);
 };
 }  // namespace qtllm::application

@@ -30,6 +30,8 @@ struct AgentRun
     QString userRequest;
     State state = State::Idle;
     int repairAttempts = 0;
+    int validationRepairs = 0;
+    int consecutiveValidationFailures = 0;
     int stagnationRecoveries = 0;
     int successfulToolResults = 0;
     int evidenceRevision = 0;

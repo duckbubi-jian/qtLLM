@@ -6,8 +6,13 @@
 - Refer to
   [`mcp-protocol-compatibility.md`](mcp-protocol-compatibility.md) for the
   currently implemented capabilities.
+- Refer to
+  [`mcp-agent-runtime-plan.md`](mcp-agent-runtime-plan.md) for the controlled
+  Agent loop, small-model tool contracts, runtime state, and delivery order.
+  That plan changes qtLLM only; external MCP Server changes are out of scope.
 - The product target is a general-purpose, offline-first stdio MCP Host, not a
-  coding agent.
+  coding agent. Reusing a coding-agent-style control loop does not add built-in
+  coding tools or coding-specific workflows.
 - HTTP, authentication, web search, and memory are outside the current roadmap.
 
 ## Implementation Order

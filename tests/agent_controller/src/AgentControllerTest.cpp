@@ -25,6 +25,8 @@ class AgentControllerTest final : public QObject
     void includesRuntimeContextInPrompt();
     void toolCatalogIsStableAndValid();
     void toolCatalogOmitsWholeDefinitions();
+    void compactCatalogPreservesComplexOmittedContract();
+    void repairsToolValidationWithFocusedContract();
     void rejectsUnchangedRetryAfterToolError();
     void rejectsRepeatedSuccessfulToolCall();
     void preservesSummaryWhenCompletionReviewFormattingFails();
@@ -62,6 +64,76 @@ agent::ToolDefinition namedTool(const QString& name, const QString& description)
               QJsonObject{{QStringLiteral("value"),
                            QJsonObject{{QStringLiteral("type"),
                                         QStringLiteral("string")}}}}}}};
+}
+
+agent::ToolDefinition inletTool()
+{
+    const QJsonObject geometrySource{
+        {QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("additionalProperties"), false},
+        {QStringLiteral("properties"),
+         QJsonObject{
+             {QStringLiteral("type"),
+              QJsonObject{
+                  {QStringLiteral("type"), QStringLiteral("string")},
+                  {QStringLiteral("const"), QStringLiteral("geometry_file")}}},
+             {QStringLiteral("file_path"),
+              QJsonObject{{QStringLiteral("type"), QStringLiteral("string")}}},
+             {QStringLiteral("scale_ratio"),
+              QJsonObject{
+                  {QStringLiteral("type"), QStringLiteral("number")}}}}},
+        {QStringLiteral("required"),
+         QJsonArray{QStringLiteral("type"), QStringLiteral("file_path")}}};
+    const QJsonObject circleSource{
+        {QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("additionalProperties"), false},
+        {QStringLiteral("properties"),
+         QJsonObject{
+             {QStringLiteral("type"),
+              QJsonObject{{QStringLiteral("type"), QStringLiteral("string")},
+                          {QStringLiteral("const"), QStringLiteral("circle")}}},
+             {QStringLiteral("radius"),
+              QJsonObject{
+                  {QStringLiteral("type"), QStringLiteral("number")}}}}},
+        {QStringLiteral("required"),
+         QJsonArray{QStringLiteral("type"), QStringLiteral("radius")}}};
+    const QJsonObject inletSpec{
+        {QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("additionalProperties"), false},
+        {QStringLiteral("properties"),
+         QJsonObject{
+             {QStringLiteral("name"),
+              QJsonObject{{QStringLiteral("type"), QStringLiteral("string")}}},
+             {QStringLiteral("source"),
+              QJsonObject{
+                  {QStringLiteral("discriminator"),
+                   QJsonObject{{QStringLiteral("propertyName"),
+                                QStringLiteral("type")}}},
+                  {QStringLiteral("oneOf"),
+                   QJsonArray{QJsonObject{{QStringLiteral("$ref"),
+                                           QStringLiteral(
+                                               "#/$defs/GeometryFileSource")}},
+                              QJsonObject{{QStringLiteral("$ref"),
+                                           QStringLiteral(
+                                               "#/$defs/CircleSource")}}}}}}}},
+        {QStringLiteral("required"),
+         QJsonArray{QStringLiteral("name"), QStringLiteral("source")}}};
+    const QJsonObject schema{
+        {QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("additionalProperties"), false},
+        {QStringLiteral("properties"),
+         QJsonObject{{QStringLiteral("spec"),
+                      QJsonObject{{QStringLiteral("$ref"),
+                                   QStringLiteral("#/$defs/InletSpec")}}}}},
+        {QStringLiteral("required"), QJsonArray{QStringLiteral("spec")}},
+        {QStringLiteral("$defs"),
+         QJsonObject{{QStringLiteral("InletSpec"), inletSpec},
+                     {QStringLiteral("GeometryFileSource"), geometrySource},
+                     {QStringLiteral("CircleSource"), circleSource}}}};
+    return {QStringLiteral("shondy.create_inlet"), QStringLiteral("shondy"),
+            QStringLiteral("create_inlet"),
+            QStringLiteral("Create an inlet from a structured definition"),
+            schema};
 }
 
 QJsonObject planStep(const QString& id, const QString& description,
@@ -120,9 +192,14 @@ void AgentControllerTest::toolCatalogIsStableAndValid()
         application::ToolCatalogBuilder::build({middle, zeta, alpha}, 4'096);
 
     QCOMPARE(first.json, second.json);
+    QCOMPARE(first.indexJson, second.indexJson);
     QCOMPARE(first.includedToolCount, 3);
     QCOMPARE(first.omittedToolCount, 0);
+    QCOMPARE(first.indexedToolCount, 3);
+    QCOMPARE(first.unindexedToolCount, 0);
     QVERIFY(first.json.size() <= 4'096);
+    QVERIFY(first.indexJson.size() <=
+            application::ToolCatalogBuilder::defaultMaximumIndexBytes);
 
     QJsonParseError error;
     const auto document = QJsonDocument::fromJson(first.json, &error);
@@ -169,6 +246,9 @@ void AgentControllerTest::toolCatalogOmitsWholeDefinitions()
     QCOMPARE(actual.json, expected.json);
     QCOMPARE(actual.includedToolCount, 2);
     QCOMPARE(actual.omittedToolCount, 1);
+    QCOMPARE(actual.omittedToolNames,
+             QStringList{QStringLiteral("fake.middle")});
+    QCOMPARE(actual.indexedToolCount, 3);
     QVERIFY(actual.json.size() <= expected.json.size());
     QVERIFY(QJsonDocument::fromJson(actual.json).isArray());
 
@@ -176,6 +256,102 @@ void AgentControllerTest::toolCatalogOmitsWholeDefinitions()
     QCOMPARE(empty.json, QByteArrayLiteral("[]"));
     QCOMPARE(empty.includedToolCount, 0);
     QCOMPARE(empty.omittedToolCount, 1);
+}
+
+void AgentControllerTest::compactCatalogPreservesComplexOmittedContract()
+{
+    const auto tool = inletTool();
+    const auto catalog =
+        application::ToolCatalogBuilder::build({tool}, 2, 16'384);
+
+    QCOMPARE(catalog.json, QByteArrayLiteral("[]"));
+    QCOMPARE(catalog.includedToolCount, 0);
+    QCOMPARE(catalog.omittedToolCount, 1);
+    QCOMPARE(catalog.omittedToolNames,
+             QStringList{QStringLiteral("shondy.create_inlet")});
+    QCOMPARE(catalog.indexedToolCount, 1);
+    QCOMPARE(catalog.unindexedToolCount, 0);
+    QVERIFY(catalog.indexJson.size() <= 16'384);
+
+    const auto document = QJsonDocument::fromJson(catalog.indexJson);
+    QVERIFY(document.isArray());
+    QCOMPARE(document.array().size(), 1);
+    const auto indexText = QString::fromUtf8(catalog.indexJson);
+    QVERIFY(indexText.contains(QStringLiteral("shondy.create_inlet")));
+    QVERIFY(indexText.contains(QStringLiteral("spec")));
+    QVERIFY(indexText.contains(QStringLiteral("geometry_file")));
+    QVERIFY(indexText.contains(QStringLiteral("file_path")));
+    QVERIFY(indexText.contains(QStringLiteral("circle")));
+}
+
+void AgentControllerTest::repairsToolValidationWithFocusedContract()
+{
+    auto generationCount = 0;
+    auto toolCallCount = 0;
+    QList<chat::Message> generatedMessages;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>& messages,
+                const models::InferencePreset&, int)
+            {
+                ++generationCount;
+                generatedMessages = messages;
+            },
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-1");
+            },
+            [](const QString&) {},
+            [](const QString&, const QJsonObject& arguments,
+               QString& errorMessage)
+            {
+                const auto source = arguments.value(QStringLiteral("spec"))
+                                        .toObject()
+                                        .value(QStringLiteral("source"))
+                                        .toObject();
+                if (source.value(QStringLiteral("type")).toString() ==
+                    QLatin1String("geometry_file"))
+                    return true;
+                errorMessage = QStringLiteral(
+                    "arguments.spec.source.type must be one of "
+                    "[\"geometry_file\",\"circle\"].");
+                return false;
+            },
+            [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+
+    QVERIFY(controller.start(QStringLiteral("Create the inlet"), {},
+                             {inletTool()}));
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"shondy.create_inlet","arguments":{"spec":{"name":"inlet_shaft","source":{"type":"geometryFile","file_path":"E:/stl_case1/inlet_shaft.stl"}}}})"));
+    controller.completeGeneration(false);
+
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(generationCount, 2);
+    QCOMPARE(toolCallCount, 0);
+    QCOMPARE(controller.activeRun()->repairAttempts, 0);
+    QCOMPARE(controller.activeRun()->validationRepairs, 1);
+    QCOMPARE(controller.activeRun()->consecutiveValidationFailures, 1);
+    const auto correction = generatedMessages.constLast().content;
+    QVERIFY(correction.contains(QStringLiteral("was not executed")));
+    QVERIFY(correction.contains(QStringLiteral("shondy.create_inlet")));
+    QVERIFY(correction.contains(QStringLiteral("geometryFile")));
+    QVERIFY(correction.contains(QStringLiteral("geometry_file")));
+    QVERIFY(correction.contains(QStringLiteral("file_path")));
+    QVERIFY(correction.contains(QStringLiteral("<compact_contract>")));
+    QVERIFY(correction.contains(QStringLiteral("<exact_input_schema>")));
+    QVERIFY(
+        correction.contains(QStringLiteral("do not call list or describe")));
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"shondy.create_inlet","arguments":{"spec":{"name":"inlet_shaft","source":{"type":"geometry_file","file_path":"E:/stl_case1/inlet_shaft.stl"}}}})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::ExecutingTool);
+    QCOMPARE(toolCallCount, 1);
+    QCOMPARE(controller.activeRun()->consecutiveValidationFailures, 0);
+    controller.cancel();
 }
 
 void AgentControllerTest::completesMultiStepToolRun()

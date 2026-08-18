@@ -59,7 +59,11 @@ The incremental plan for protocol conformance, multi-server isolation, richer
 MCP capabilities, additional transports, and security boundaries is documented
 in [the MCP Host improvement plan](docs/mcp-host-improvement-plan.md). The
 currently implemented protocol surface is listed in the
-[MCP compatibility matrix](docs/mcp-protocol-compatibility.md).
+[MCP compatibility matrix](docs/mcp-protocol-compatibility.md). The controlled
+decision loop, small-model tool-contract strategy, and staged runtime work are
+defined in the
+[qtLLM Agent runtime plan](docs/mcp-agent-runtime-plan.md). That plan changes
+qtLLM only and treats external MCP Servers and their contracts as fixed inputs.
 
 ## Diagnostics
 

@@ -108,6 +108,10 @@ class AgentController final : public QObject
     void executeTool(const agent::Action& action);
     void retryInvalidAction(const QByteArray& rawAction,
                             const QString& errorMessage);
+    void retryInvalidToolAction(const QByteArray& rawAction,
+                                const QString& errorMessage,
+                                const agent::ToolDefinition& tool,
+                                const QJsonObject& arguments);
     void retryNoProgressAction(const QByteArray& rawAction,
                                const QString& errorMessage);
     void setState(AgentRun::State state);

@@ -556,12 +556,12 @@ void AgentController::handleAction(const agent::Action& action,
         return;
     }
 
-    const auto available =
-        std::any_of(availableTools_.cbegin(), availableTools_.cend(),
-                    [&action](const agent::ToolDefinition& tool)
-                    { return tool.qualifiedName == action.toolName; });
+    const auto tool =
+        std::find_if(availableTools_.cbegin(), availableTools_.cend(),
+                     [&action](const agent::ToolDefinition& candidate)
+                     { return candidate.qualifiedName == action.toolName; });
     QString validationError;
-    if (!available)
+    if (tool == availableTools_.cend())
         validationError =
             QStringLiteral("Tool is not available: %1").arg(action.toolName);
     else if (!dependencies_.validateTool(action.toolName, action.arguments,
@@ -573,9 +573,14 @@ void AgentController::handleAction(const agent::Action& action,
     }
     if (!validationError.isEmpty())
     {
-        retryInvalidAction(rawAction, validationError);
+        if (tool == availableTools_.cend())
+            retryInvalidAction(rawAction, validationError);
+        else
+            retryInvalidToolAction(rawAction, validationError, *tool,
+                                   action.arguments);
         return;
     }
+    activeRun_->consecutiveValidationFailures = 0;
     activeRun_->inferenceMessages.append(
         {chat::Role::Assistant, QString::fromUtf8(rawAction)});
     const auto decision = dependencies_.toolPolicy(action.toolName);
@@ -976,6 +981,35 @@ void AgentController::retryInvalidAction(const QByteArray& rawAction,
         {chat::Role::Assistant, QString::fromUtf8(rawAction)});
     activeRun_->inferenceMessages.append(
         AgentPromptBuilder::correctionMessage(errorMessage));
+    requestDecision();
+}
+
+void AgentController::retryInvalidToolAction(const QByteArray& rawAction,
+                                             const QString& errorMessage,
+                                             const agent::ToolDefinition& tool,
+                                             const QJsonObject& arguments)
+{
+    if (!activeRun_) return;
+    if (activeRun_->consecutiveValidationFailures >= 1)
+    {
+        failRun(QStringLiteral("invalid_tool_arguments"), errorMessage);
+        return;
+    }
+    ++activeRun_->validationRepairs;
+    ++activeRun_->consecutiveValidationFailures;
+    qWarning().noquote()
+        << QStringLiteral(
+               "Agent tool validation correction: run=%1 repairs=%2 "
+               "reason=%3 tool=%4 action=%5")
+               .arg(activeRun_->id)
+               .arg(activeRun_->validationRepairs)
+               .arg(singleLine(errorMessage), tool.qualifiedName,
+                    singleLine(QString::fromUtf8(rawAction)).left(2'048));
+    activeRun_->inferenceMessages.append(
+        {chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    activeRun_->inferenceMessages.append(
+        AgentPromptBuilder::toolValidationCorrectionMessage(tool, arguments,
+                                                            errorMessage));
     requestDecision();
 }
 

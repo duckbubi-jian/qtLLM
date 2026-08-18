@@ -4,6 +4,7 @@
 #include "McpProtocol.hpp"
 #include "McpServerRegistry.hpp"
 #include "ToolPolicy.hpp"
+#include "ToolRegistry.hpp"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -233,6 +234,7 @@ class StdioMcpTransportTest final : public QObject
     void propagatesRemoteErrors();
     void timesOutAndCanCancel();
     void validatesArgumentsBeforeCallingServer();
+    void validatesDiscriminatedUnionArguments();
     void appliesLocalToolPolicy();
     void roundTripsServerConfiguration();
     void rejectsInvalidServerIds();
@@ -730,6 +732,107 @@ void StdioMcpTransportTest::validatesArgumentsBeforeCallingServer()
                  .callTool(QStringLiteral("fake.echo"),
                            {{QStringLiteral("value"), QStringLiteral("valid")}})
                  .isEmpty());
+}
+
+void StdioMcpTransportTest::validatesDiscriminatedUnionArguments()
+{
+    const QJsonObject geometrySource{
+        {QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("additionalProperties"), false},
+        {QStringLiteral("properties"),
+         QJsonObject{
+             {QStringLiteral("type"),
+              QJsonObject{
+                  {QStringLiteral("const"), QStringLiteral("geometry_file")}}},
+             {QStringLiteral("file_path"),
+              QJsonObject{{QStringLiteral("type"), QStringLiteral("string")}}},
+             {QStringLiteral("scale_ratio"),
+              QJsonObject{
+                  {QStringLiteral("type"), QStringLiteral("number")}}}}},
+        {QStringLiteral("required"),
+         QJsonArray{QStringLiteral("type"), QStringLiteral("file_path")}}};
+    const QJsonObject circleSource{
+        {QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("additionalProperties"), false},
+        {QStringLiteral("properties"),
+         QJsonObject{
+             {QStringLiteral("type"),
+              QJsonObject{{QStringLiteral("const"), QStringLiteral("circle")}}},
+             {QStringLiteral("radius"),
+              QJsonObject{{QStringLiteral("type"),
+                           QJsonArray{QStringLiteral("number"),
+                                      QStringLiteral("null")}}}}}},
+        {QStringLiteral("required"),
+         QJsonArray{QStringLiteral("type"), QStringLiteral("radius")}}};
+    const QJsonObject schema{
+        {QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("additionalProperties"), false},
+        {QStringLiteral("properties"),
+         QJsonObject{
+             {QStringLiteral("source"),
+              QJsonObject{
+                  {QStringLiteral("discriminator"),
+                   QJsonObject{{QStringLiteral("propertyName"),
+                                QStringLiteral("type")}}},
+                  {QStringLiteral("oneOf"),
+                   QJsonArray{QJsonObject{{QStringLiteral("$ref"),
+                                           QStringLiteral(
+                                               "#/$defs/GeometryFileSource")}},
+                              QJsonObject{{QStringLiteral("$ref"),
+                                           QStringLiteral(
+                                               "#/$defs/CircleSource")}}}}}}}},
+        {QStringLiteral("required"), QJsonArray{QStringLiteral("source")}},
+        {QStringLiteral("$defs"),
+         QJsonObject{{QStringLiteral("GeometryFileSource"), geometrySource},
+                     {QStringLiteral("CircleSource"), circleSource}}}};
+    const agent::ToolDefinition tool{
+        QStringLiteral("fake.create_inlet"), QStringLiteral("fake"),
+        QStringLiteral("create_inlet"), QStringLiteral("Create inlet"), schema};
+    infrastructure::mcp::ToolRegistry registry;
+    QString errorMessage;
+    QVERIFY(registry.replaceServerTools(QStringLiteral("fake"), {tool},
+                                        errorMessage));
+
+    QVERIFY(!registry.validateArguments(
+        QStringLiteral("fake.create_inlet"),
+        {{QStringLiteral("source"),
+          QJsonObject{
+              {QStringLiteral("type"), QStringLiteral("geometryFile")},
+              {QStringLiteral("file_path"), QStringLiteral("E:/inlet.stl")}}}},
+        errorMessage));
+    QVERIFY(errorMessage.contains(QStringLiteral("arguments.source.type")));
+    QVERIFY(errorMessage.contains(QStringLiteral("geometry_file")));
+    QVERIFY(errorMessage.contains(QStringLiteral("circle")));
+
+    errorMessage.clear();
+    QVERIFY(!registry.validateArguments(
+        QStringLiteral("fake.create_inlet"),
+        {{QStringLiteral("source"),
+          QJsonObject{
+              {QStringLiteral("type"), QStringLiteral("geometry_file")},
+              {QStringLiteral("file_path"), QStringLiteral("E:/inlet.stl")},
+              {QStringLiteral("scale_ratio"), QJsonValue(QJsonValue::Null)}}}},
+        errorMessage));
+    QVERIFY(errorMessage.contains(
+        QStringLiteral("arguments.source.scale_ratio must be number")));
+
+    errorMessage.clear();
+    QVERIFY(registry.validateArguments(
+        QStringLiteral("fake.create_inlet"),
+        {{QStringLiteral("source"),
+          QJsonObject{
+              {QStringLiteral("type"), QStringLiteral("geometry_file")},
+              {QStringLiteral("file_path"), QStringLiteral("E:/inlet.stl")}}}},
+        errorMessage));
+    QVERIFY(errorMessage.isEmpty());
+
+    QVERIFY(registry.validateArguments(
+        QStringLiteral("fake.create_inlet"),
+        {{QStringLiteral("source"),
+          QJsonObject{
+              {QStringLiteral("type"), QStringLiteral("circle")},
+              {QStringLiteral("radius"), QJsonValue(QJsonValue::Null)}}}},
+        errorMessage));
 }
 
 void StdioMcpTransportTest::appliesLocalToolPolicy()

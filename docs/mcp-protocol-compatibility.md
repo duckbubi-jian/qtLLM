@@ -42,7 +42,7 @@ feature differences have dedicated Fake Server coverage.
 | Tools | `tools/list` | Supported |
 | Tools | Cursor pagination and atomic snapshots | Supported |
 | Tools | `tools/call` | Supported |
-| Tools | Input schema validation | Supported subset |
+| Tools | Input schema validation | Supported subset including local `$ref`, `const`, type unions, `allOf`, `anyOf`, and `oneOf` |
 | Tools | Output schema and annotations | Supported |
 | Tools | List-changed notification and refresh coalescing | Supported |
 | Results | Text content and raw result preservation | Supported |
@@ -94,6 +94,12 @@ feature differences have dedicated Fake Server coverage.
 - Tool catalog output is deterministically ordered and always valid JSON.
 - A size budget omits complete tool definitions; it never truncates a name,
   description, schema, UTF-8 sequence, or closing JSON delimiter.
+- The Agent prompt keeps a separately budgeted compact tool index when complete
+  definitions are omitted. The index resolves local references and preserves
+  required fields, discriminator values, and union call shapes.
+- Local input and output validation follows local `$ref` values and validates
+  `const`, string or array `type`, `allOf`, `anyOf`, and `oneOf` before a tool
+  call is sent or a structured result is accepted.
 - Tests run with the Fake MCP Server and do not require a model or network.
 - Two Servers can expose same-named tools independently; failure or restart of
   one Server does not revoke the other Server's capabilities.

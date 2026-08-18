@@ -462,6 +462,19 @@ Implemented policy:
 
 ### M5: Real-Model Acceptance And Tuning
 
+Implemented acceptance infrastructure:
+
+- Every terminal Agent run exports versioned JSON metrics for tool selection,
+  argument validation, targeted repairs, duplicate actions, polling, evidence,
+  context compaction, and completion review.
+- `qtllm-agent-eval` reuses the production Worker, Agent controller, MCP Host,
+  validation, policy, and tool result paths in a headless model-matrix runner.
+- File-driven suites define prompts, authorization behavior, and metric
+  assertions without adding domain-specific behavior to the Agent runtime.
+- Reports include the model, preset, placement, repeat, inference metrics, Host
+  diagnostics, Agent metrics, and event trace. See
+  [`agent-evaluation.md`](agent-evaluation.md).
+
 Deliverables:
 
 - Run the existing lightweight and larger local-model matrix against simple,

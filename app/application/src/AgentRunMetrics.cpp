@@ -47,7 +47,6 @@ QString failureCategory(const AgentRun& run)
         return QStringLiteral("protocol");
     if (code.contains(QStringLiteral("denied")))
         return QStringLiteral("authorization");
-    if (code.contains(QStringLiteral("tool"))) return QStringLiteral("tool");
     if (code.contains(QStringLiteral("completion")) ||
         code.contains(QStringLiteral("verification")))
         return QStringLiteral("verification");
@@ -55,8 +54,15 @@ QString failureCategory(const AgentRun& run)
         return QStringLiteral("generation");
     if (code.contains(QStringLiteral("invalid_agent")) ||
         code.contains(QStringLiteral("invalid_tool")) ||
-        code.contains(QStringLiteral("task_plan")))
+        code.contains(QStringLiteral("task_plan")) ||
+        code == QLatin1String("agent_stalled") ||
+        code == QLatin1String("decision_too_large"))
         return QStringLiteral("agent_action");
+    if (code.contains(QStringLiteral("worker")) ||
+        code.contains(QStringLiteral("inference")) ||
+        code.contains(QStringLiteral("model")))
+        return QStringLiteral("generation");
+    if (code.contains(QStringLiteral("tool"))) return QStringLiteral("tool");
     return QStringLiteral("unknown");
 }
 

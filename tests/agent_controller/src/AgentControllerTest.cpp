@@ -24,6 +24,7 @@ class AgentControllerTest final : public QObject
     void doesNotRetryUncertainMutationAfterTransportFailure();
     void retriesReadOnlyTransportFailureOnce();
     void exportsStructuredRunMetrics();
+    void classifiesRunMetricFailures();
     void keepsConversationHistoryAndClearsIt();
     void emptyToolPromptForbidsToolCalls();
     void casualPromptPrefersFinalWithoutTools();
@@ -944,6 +945,34 @@ void AgentControllerTest::exportsStructuredRunMetrics()
         qvariant_cast<QJsonObject>(metricsSpy.constFirst().at(1));
     QCOMPARE(emittedMetrics.value(QStringLiteral("state")).toString(),
              QStringLiteral("completed"));
+}
+
+void AgentControllerTest::classifiesRunMetricFailures()
+{
+    application::AgentRun run;
+    run.state = application::AgentRun::State::Failed;
+    const auto category = [&run](const QString& code)
+    {
+        run.finishCode = code;
+        return application::AgentRunMetrics::fromRun(run).failureCategory;
+    };
+
+    QCOMPARE(category(QStringLiteral("invalid_tool_arguments")),
+             QStringLiteral("agent_action"));
+    QCOMPARE(category(QStringLiteral("decision_too_large")),
+             QStringLiteral("agent_action"));
+    QCOMPARE(category(QStringLiteral("tool_denied")),
+             QStringLiteral("authorization"));
+    QCOMPARE(category(QStringLiteral("tool_side_effect_uncertain")),
+             QStringLiteral("transport_or_uncertain_side_effect"));
+    QCOMPARE(category(QStringLiteral("completion_unverified")),
+             QStringLiteral("verification"));
+    QCOMPARE(category(QStringLiteral("worker_crashed")),
+             QStringLiteral("generation"));
+    QCOMPARE(category(QStringLiteral("model_context_failed")),
+             QStringLiteral("generation"));
+    QCOMPARE(category(QStringLiteral("tool_call_failed")),
+             QStringLiteral("tool"));
 }
 
 void AgentControllerTest::keepsConversationHistoryAndClearsIt()

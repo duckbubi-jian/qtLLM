@@ -182,6 +182,20 @@ qt_add_executable(qtllm-fake-mcp-server
     "${CMAKE_CURRENT_SOURCE_DIR}/fake_mcp_server/FakeMcpServer.cpp"
 )
 target_link_libraries(qtllm-fake-mcp-server PRIVATE Qt6::Core)
+
+qt_add_executable(qtllm-agent-eval
+    "${CMAKE_CURRENT_SOURCE_DIR}/agent_evaluation/AgentEvaluationMain.cpp"
+)
+target_link_libraries(qtllm-agent-eval
+    PRIVATE
+        Qt6::Core
+        qtllm_app_application
+)
+add_dependencies(qtllm-agent-eval
+    qtllm-worker
+    qtllm-fake-mcp-server
+)
+
 add_dependencies(qtllm-mcp-tests
     qtllm-fake-mcp-server
     qtllm-mcp-filesystem

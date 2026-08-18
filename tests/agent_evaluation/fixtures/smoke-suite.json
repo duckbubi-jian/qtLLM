@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "scenarios": [
+    {
+      "name": "echo_once",
+      "prompt": "Call fake.echo exactly once with value acceptance-smoke, then report the returned value.",
+      "approval": "allow",
+      "expect": {
+        "equals": {
+          "state": "completed",
+          "firstToolChoice": "fake.echo"
+        },
+        "maximum": {
+          "validationRepairs": 1,
+          "redundantDiscoveryCalls": 0,
+          "duplicateMutationActions": 0
+        },
+        "minimum": {
+          "successfulToolResults": 1
+        }
+      }
+    },
+    {
+      "name": "denied_echo",
+      "prompt": "Call fake.echo with value denied-smoke and report the result.",
+      "approval": "deny",
+      "expect": {
+        "equals": {
+          "state": "failed",
+          "finishCode": "tool_denied",
+          "failureCategory": "authorization"
+        },
+        "maximum": {
+          "executedToolCalls": 0,
+          "duplicateMutationActions": 0
+        }
+      }
+    }
+  ]
+}

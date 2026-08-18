@@ -32,7 +32,7 @@ QString stateName(AgentRun::State state)
     return QStringLiteral("unknown");
 }
 
-QString failureCategory(const AgentRun& run)
+QString failureCategoryForRun(const AgentRun& run)
 {
     if (run.finishCode.isEmpty()) return {};
     const auto code = run.finishCode.toLower();
@@ -66,7 +66,7 @@ QString failureCategory(const AgentRun& run)
     return QStringLiteral("unknown");
 }
 
-QString firstToolChoice(const AgentRun& run)
+QString firstToolChoiceForRun(const AgentRun& run)
 {
     for (const auto& event : run.events)
         if (event.type == agent::EventType::ToolStarted) return event.toolName;
@@ -81,8 +81,8 @@ AgentRunMetrics AgentRunMetrics::fromRun(const AgentRun& run)
     metrics.state = stateName(run.state);
     metrics.finishCode = run.finishCode;
     metrics.finishMessage = run.finishMessage;
-    metrics.failureCategory = failureCategory(run);
-    metrics.firstToolChoice = firstToolChoice(run);
+    metrics.failureCategory = failureCategoryForRun(run);
+    metrics.firstToolChoice = firstToolChoiceForRun(run);
     metrics.decisionCount = run.decisionCount;
     metrics.toolActionAttempts = run.toolActionAttempts;
     metrics.toolValidationAttempts = run.toolValidationAttempts;

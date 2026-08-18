@@ -793,28 +793,59 @@ void StdioMcpTransportTest::validatesDiscriminatedUnionArguments()
     QVERIFY(registry.replaceServerTools(QStringLiteral("fake"), {tool},
                                         errorMessage));
 
-    QVERIFY(!registry.validateArguments(
+    const auto wrongDiscriminator = registry.validateArgumentsDetailed(
         QStringLiteral("fake.create_inlet"),
         {{QStringLiteral("source"),
           QJsonObject{
               {QStringLiteral("type"), QStringLiteral("geometryFile")},
-              {QStringLiteral("file_path"), QStringLiteral("E:/inlet.stl")}}}},
-        errorMessage));
-    QVERIFY(errorMessage.contains(QStringLiteral("arguments.source.type")));
-    QVERIFY(errorMessage.contains(QStringLiteral("geometry_file")));
-    QVERIFY(errorMessage.contains(QStringLiteral("circle")));
+              {QStringLiteral("file_path"), QStringLiteral("E:/inlet.stl")}}}});
+    QVERIFY(!wrongDiscriminator.valid);
+    QCOMPARE(wrongDiscriminator.issue.toolName,
+             QStringLiteral("fake.create_inlet"));
+    QCOMPARE(wrongDiscriminator.issue.instancePath,
+             QStringLiteral("arguments.source.type"));
+    QCOMPARE(wrongDiscriminator.issue.schemaPath,
+             QStringLiteral("#/properties/source/oneOf"));
+    QCOMPARE(wrongDiscriminator.issue.keyword, QStringLiteral("discriminator"));
+    QVERIFY(wrongDiscriminator.issue.message.contains(
+        QStringLiteral("geometry_file")));
+    QVERIFY(
+        wrongDiscriminator.issue.message.contains(QStringLiteral("circle")));
 
-    errorMessage.clear();
-    QVERIFY(!registry.validateArguments(
+    const auto invalidScaleRatio = registry.validateArgumentsDetailed(
         QStringLiteral("fake.create_inlet"),
         {{QStringLiteral("source"),
           QJsonObject{
               {QStringLiteral("type"), QStringLiteral("geometry_file")},
               {QStringLiteral("file_path"), QStringLiteral("E:/inlet.stl")},
-              {QStringLiteral("scale_ratio"), QJsonValue(QJsonValue::Null)}}}},
-        errorMessage));
-    QVERIFY(errorMessage.contains(
+              {QStringLiteral("scale_ratio"), QJsonValue(QJsonValue::Null)}}}});
+    QVERIFY(!invalidScaleRatio.valid);
+    QCOMPARE(invalidScaleRatio.issue.instancePath,
+             QStringLiteral("arguments.source.scale_ratio"));
+    QCOMPARE(invalidScaleRatio.issue.schemaPath,
+             QStringLiteral(
+                 "#/$defs/GeometryFileSource/properties/scale_ratio/type"));
+    QCOMPARE(invalidScaleRatio.issue.keyword, QStringLiteral("type"));
+    QVERIFY(invalidScaleRatio.issue.message.contains(
         QStringLiteral("arguments.source.scale_ratio must be number")));
+
+    const auto missingCircleRadius = registry.validateArgumentsDetailed(
+        QStringLiteral("fake.create_inlet"),
+        {{QStringLiteral("source"),
+          QJsonObject{{QStringLiteral("type"), QStringLiteral("circle")}}}});
+    QVERIFY(!missingCircleRadius.valid);
+    QCOMPARE(missingCircleRadius.issue.instancePath,
+             QStringLiteral("arguments.source.radius"));
+    QCOMPARE(missingCircleRadius.issue.schemaPath,
+             QStringLiteral("#/$defs/CircleSource/required"));
+    QCOMPARE(missingCircleRadius.issue.keyword, QStringLiteral("required"));
+
+    const auto unknownTool =
+        registry.validateArgumentsDetailed(QStringLiteral("fake.missing"), {});
+    QVERIFY(!unknownTool.valid);
+    QCOMPARE(unknownTool.issue.toolName, QStringLiteral("fake.missing"));
+    QCOMPARE(unknownTool.issue.instancePath, QStringLiteral("arguments"));
+    QCOMPARE(unknownTool.issue.keyword, QStringLiteral("tool"));
 
     errorMessage.clear();
     QVERIFY(registry.validateArguments(

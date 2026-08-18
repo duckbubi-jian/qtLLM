@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ToolDefinition.hpp"
+#include "ToolValidation.hpp"
 
 #include <QHash>
 #include <QJsonObject>
@@ -24,6 +25,8 @@ class ToolRegistry final
     [[nodiscard]] bool validateArguments(const QString& qualifiedName,
                                          const QJsonObject& arguments,
                                          QString& errorMessage) const;
+    [[nodiscard]] agent::ToolValidationResult validateArgumentsDetailed(
+        const QString& qualifiedName, const QJsonObject& arguments) const;
     [[nodiscard]] bool validateOutput(const QString& qualifiedName,
                                       const QJsonValue& output,
                                       QString& errorMessage) const;

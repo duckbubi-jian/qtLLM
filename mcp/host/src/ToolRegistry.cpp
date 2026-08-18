@@ -6,6 +6,7 @@
 #include <QStringList>
 
 #include <cmath>
+#include <utility>
 
 namespace qtllm::infrastructure::mcp
 {
@@ -119,11 +120,39 @@ QString compactJson(const QJsonValue& value)
     return wrapped.sliced(1).chopped(1);
 }
 
-QString discriminatorError(const QJsonValue& value, const QJsonObject& schema,
-                           const QJsonArray& branches, const QJsonObject& root,
-                           const QString& path)
+QString encodedPointerToken(QString token)
 {
-    if (!value.isObject() || branches.isEmpty()) return {};
+    return token.replace(QStringLiteral("~"), QStringLiteral("~0"))
+        .replace(QStringLiteral("/"), QStringLiteral("~1"));
+}
+
+QString childSchemaPath(const QString& parent, const QString& keyword,
+                        const QString& token = {})
+{
+    auto result = parent + QLatin1Char('/') + keyword;
+    if (!token.isEmpty())
+        result += QLatin1Char('/') + encodedPointerToken(token);
+    return result;
+}
+
+void assignIssue(agent::ToolValidationIssue& issue, const QString& instancePath,
+                 const QString& schemaPath, const QString& keyword,
+                 const QString& message)
+{
+    issue.instancePath = instancePath;
+    issue.schemaPath = schemaPath;
+    issue.keyword = keyword;
+    issue.message = message;
+}
+
+bool assignDiscriminatorIssue(const QJsonValue& value,
+                              const QJsonObject& schema,
+                              const QJsonArray& branches,
+                              const QJsonObject& root, const QString& path,
+                              const QString& schemaPath,
+                              agent::ToolValidationIssue& issue)
+{
+    if (!value.isObject() || branches.isEmpty()) return false;
     const auto object = value.toObject();
     QStringList candidates;
     const auto explicitProperty = schema.value(QStringLiteral("discriminator"))
@@ -183,25 +212,61 @@ QString discriminatorError(const QJsonValue& value, const QJsonObject& schema,
         if (!object.contains(candidate))
         {
             if (requiredInEveryBranch)
-                return QStringLiteral("%1 is required and must be one of %2.")
-                    .arg(candidatePath, compactJson(allowed));
+            {
+                assignIssue(
+                    issue, candidatePath,
+                    childSchemaPath(schemaPath, QStringLiteral("oneOf")),
+                    QStringLiteral("discriminator"),
+                    QStringLiteral("%1 is required and must be one of %2.")
+                        .arg(candidatePath, compactJson(allowed)));
+                return true;
+            }
             continue;
         }
         if (!allowed.contains(object.value(candidate)))
-            return QStringLiteral("%1 must be one of %2.")
-                .arg(candidatePath, compactJson(allowed));
+        {
+            assignIssue(issue, candidatePath,
+                        childSchemaPath(schemaPath, QStringLiteral("oneOf")),
+                        QStringLiteral("discriminator"),
+                        QStringLiteral("%1 must be one of %2.")
+                            .arg(candidatePath, compactJson(allowed)));
+            return true;
+        }
     }
-    return {};
+    return false;
+}
+
+bool matchesExplicitDiscriminator(const QJsonValue& value,
+                                  const QJsonObject& schema,
+                                  const QJsonObject& branch,
+                                  const QJsonObject& root)
+{
+    if (!value.isObject()) return false;
+    const auto propertyName = schema.value(QStringLiteral("discriminator"))
+                                  .toObject()
+                                  .value(QStringLiteral("propertyName"))
+                                  .toString();
+    const auto object = value.toObject();
+    if (propertyName.isEmpty() || !object.contains(propertyName)) return false;
+    const auto branchSchema = dereferencedSchema(branch, root);
+    const auto propertySchema = branchSchema.value(QStringLiteral("properties"))
+                                    .toObject()
+                                    .value(propertyName)
+                                    .toObject();
+    return allowedValues(propertySchema, root)
+        .contains(object.value(propertyName));
 }
 
 bool validateValue(const QJsonValue& value, const QJsonObject& schema,
                    const QJsonObject& root, const QString& path,
-                   QString& errorMessage, int depth = 0)
+                   const QString& schemaPath, agent::ToolValidationIssue& issue,
+                   int depth = 0)
 {
     if (depth > maximumValidationDepth)
     {
-        errorMessage =
-            QStringLiteral("%1 exceeds the supported schema depth.").arg(path);
+        assignIssue(
+            issue, path, schemaPath, QStringLiteral("depth"),
+            QStringLiteral("%1 exceeds the supported schema depth.").arg(path));
         return false;
     }
 
@@ -212,23 +277,31 @@ bool validateValue(const QJsonValue& value, const QJsonObject& schema,
         const auto resolved = resolveLocalReference(root, reference);
         if (!resolved.isObject())
         {
-            errorMessage = QStringLiteral("%1 uses unresolved schema ref %2.")
-                               .arg(path, reference);
+            assignIssue(issue, path,
+                        childSchemaPath(schemaPath, QStringLiteral("$ref")),
+                        QStringLiteral("$ref"),
+                        QStringLiteral("%1 uses unresolved schema ref %2.")
+                            .arg(path, reference));
             return false;
         }
-        if (!validateValue(value, resolved.toObject(), root, path, errorMessage,
-                           depth + 1))
+        if (!validateValue(value, resolved.toObject(), root, path, reference,
+                           issue, depth + 1))
             return false;
     }
 
     const auto allOf = schema.value(QStringLiteral("allOf"));
     if (allOf.isArray())
     {
-        for (const auto& branch : allOf.toArray())
+        const auto branches = allOf.toArray();
+        for (qsizetype index = 0; index < branches.size(); ++index)
         {
+            const auto branch = branches.at(index);
             if (!branch.isObject()) continue;
-            if (!validateValue(value, branch.toObject(), root, path,
-                               errorMessage, depth + 1))
+            if (!validateValue(
+                    value, branch.toObject(), root, path,
+                    childSchemaPath(schemaPath, QStringLiteral("allOf"),
+                                    QString::number(index)),
+                    issue, depth + 1))
                 return false;
         }
     }
@@ -236,26 +309,34 @@ bool validateValue(const QJsonValue& value, const QJsonObject& schema,
     const auto anyOf = schema.value(QStringLiteral("anyOf"));
     if (anyOf.isArray() && !anyOf.toArray().isEmpty())
     {
-        QString firstBranchError;
+        agent::ToolValidationIssue firstBranchIssue;
         auto matched = false;
-        for (const auto& branch : anyOf.toArray())
+        const auto branches = anyOf.toArray();
+        for (qsizetype index = 0; index < branches.size(); ++index)
         {
+            const auto branch = branches.at(index);
             if (!branch.isObject()) continue;
-            QString branchError;
-            if (validateValue(value, branch.toObject(), root, path, branchError,
-                              depth + 1))
+            agent::ToolValidationIssue branchIssue;
+            if (validateValue(
+                    value, branch.toObject(), root, path,
+                    childSchemaPath(schemaPath, QStringLiteral("anyOf"),
+                                    QString::number(index)),
+                    branchIssue, depth + 1))
             {
                 matched = true;
                 break;
             }
-            if (firstBranchError.isEmpty()) firstBranchError = branchError;
+            if (firstBranchIssue.message.isEmpty())
+                firstBranchIssue = std::move(branchIssue);
         }
         if (!matched)
         {
-            errorMessage = QStringLiteral(
-                               "%1 does not match any allowed "
-                               "schema. %2")
-                               .arg(path, firstBranchError);
+            assignIssue(
+                issue, path,
+                childSchemaPath(schemaPath, QStringLiteral("anyOf")),
+                QStringLiteral("anyOf"),
+                QStringLiteral("%1 does not match any allowed schema. %2")
+                    .arg(path, firstBranchIssue.message));
             return false;
         }
     }
@@ -263,33 +344,57 @@ bool validateValue(const QJsonValue& value, const QJsonObject& schema,
     const auto oneOf = schema.value(QStringLiteral("oneOf"));
     if (oneOf.isArray() && !oneOf.toArray().isEmpty())
     {
-        QString firstBranchError;
+        agent::ToolValidationIssue firstBranchIssue;
+        agent::ToolValidationIssue discriminatorBranchIssue;
         auto matches = 0;
-        for (const auto& branch : oneOf.toArray())
+        const auto branches = oneOf.toArray();
+        for (qsizetype index = 0; index < branches.size(); ++index)
         {
+            const auto branch = branches.at(index);
             if (!branch.isObject()) continue;
-            QString branchError;
-            if (validateValue(value, branch.toObject(), root, path, branchError,
-                              depth + 1))
+            agent::ToolValidationIssue branchIssue;
+            if (validateValue(
+                    value, branch.toObject(), root, path,
+                    childSchemaPath(schemaPath, QStringLiteral("oneOf"),
+                                    QString::number(index)),
+                    branchIssue, depth + 1))
                 ++matches;
-            else if (firstBranchError.isEmpty())
-                firstBranchError = branchError;
+            else
+            {
+                if (discriminatorBranchIssue.message.isEmpty() &&
+                    matchesExplicitDiscriminator(value, schema,
+                                                 branch.toObject(), root))
+                    discriminatorBranchIssue = branchIssue;
+                if (firstBranchIssue.message.isEmpty())
+                    firstBranchIssue = std::move(branchIssue);
+            }
         }
         if (matches == 0)
         {
-            errorMessage =
-                discriminatorError(value, schema, oneOf.toArray(), root, path);
-            if (errorMessage.isEmpty())
-                errorMessage =
-                    QStringLiteral("%1 does not match any oneOf branch. %2")
-                        .arg(path, firstBranchError);
+            if (!assignDiscriminatorIssue(value, schema, oneOf.toArray(), root,
+                                          path, schemaPath, issue))
+            {
+                if (!discriminatorBranchIssue.message.isEmpty())
+                    issue = std::move(discriminatorBranchIssue);
+                else if (!firstBranchIssue.message.isEmpty())
+                    issue = std::move(firstBranchIssue);
+                else
+                    assignIssue(
+                        issue, path,
+                        childSchemaPath(schemaPath, QStringLiteral("oneOf")),
+                        QStringLiteral("oneOf"),
+                        QStringLiteral("%1 does not match any oneOf branch.")
+                            .arg(path));
+            }
             return false;
         }
         if (matches > 1)
         {
-            errorMessage =
-                QStringLiteral("%1 matches more than one oneOf branch.")
-                    .arg(path);
+            assignIssue(issue, path,
+                        childSchemaPath(schemaPath, QStringLiteral("oneOf")),
+                        QStringLiteral("oneOf"),
+                        QStringLiteral("%1 matches more than one oneOf branch.")
+                            .arg(path));
             return false;
         }
     }
@@ -298,25 +403,33 @@ bool validateValue(const QJsonValue& value, const QJsonObject& schema,
     if ((typeValue.isString() || typeValue.isArray()) &&
         !matchesType(value, typeValue))
     {
-        errorMessage = QStringLiteral("%1 must be %2.")
-                           .arg(path, typeDescription(typeValue));
+        assignIssue(issue, path,
+                    childSchemaPath(schemaPath, QStringLiteral("type")),
+                    QStringLiteral("type"),
+                    QStringLiteral("%1 must be %2.")
+                        .arg(path, typeDescription(typeValue)));
         return false;
     }
 
     if (schema.contains(QStringLiteral("const")) &&
         schema.value(QStringLiteral("const")) != value)
     {
-        errorMessage =
+        assignIssue(
+            issue, path, childSchemaPath(schemaPath, QStringLiteral("const")),
+            QStringLiteral("const"),
             QStringLiteral("%1 must equal %2.")
-                .arg(path, compactJson(schema.value(QStringLiteral("const"))));
+                .arg(path, compactJson(schema.value(QStringLiteral("const")))));
         return false;
     }
 
     const auto enumValue = schema.value(QStringLiteral("enum"));
     if (enumValue.isArray() && !enumValue.toArray().contains(value))
     {
-        errorMessage = QStringLiteral("%1 must be one of %2.")
-                           .arg(path, compactJson(enumValue.toArray()));
+        assignIssue(issue, path,
+                    childSchemaPath(schemaPath, QStringLiteral("enum")),
+                    QStringLiteral("enum"),
+                    QStringLiteral("%1 must be one of %2.")
+                        .arg(path, compactJson(enumValue.toArray())));
         return false;
     }
 
@@ -331,8 +444,13 @@ bool validateValue(const QJsonValue& value, const QJsonObject& schema,
                 if (!item.isString()) continue;
                 if (!object.contains(item.toString()))
                 {
-                    errorMessage = QStringLiteral("%1.%2 is required.")
-                                       .arg(path, item.toString());
+                    const auto missingPath =
+                        path + QLatin1Char('.') + item.toString();
+                    assignIssue(
+                        issue, missingPath,
+                        childSchemaPath(schemaPath, QStringLiteral("required")),
+                        QStringLiteral("required"),
+                        QStringLiteral("%1 is required.").arg(missingPath));
                     return false;
                 }
             }
@@ -348,8 +466,13 @@ bool validateValue(const QJsonValue& value, const QJsonObject& schema,
             {
                 if (!properties.contains(item.key()))
                 {
-                    errorMessage = QStringLiteral("%1.%2 is not allowed.")
-                                       .arg(path, item.key());
+                    const auto extraPath = path + QLatin1Char('.') + item.key();
+                    assignIssue(
+                        issue, extraPath,
+                        childSchemaPath(schemaPath,
+                                        QStringLiteral("additionalProperties")),
+                        QStringLiteral("additionalProperties"),
+                        QStringLiteral("%1 is not allowed.").arg(extraPath));
                     return false;
                 }
             }
@@ -359,10 +482,12 @@ bool validateValue(const QJsonValue& value, const QJsonObject& schema,
         {
             if (!object.contains(property.key()) || !property->isObject())
                 continue;
-            if (!validateValue(object.value(property.key()),
-                               property->toObject(), root,
-                               path + QLatin1Char('.') + property.key(),
-                               errorMessage, depth + 1))
+            if (!validateValue(
+                    object.value(property.key()), property->toObject(), root,
+                    path + QLatin1Char('.') + property.key(),
+                    childSchemaPath(schemaPath, QStringLiteral("properties"),
+                                    property.key()),
+                    issue, depth + 1))
                 return false;
         }
     }
@@ -373,12 +498,18 @@ bool validateValue(const QJsonValue& value, const QJsonObject& schema,
         const auto maximum = schema.value(QStringLiteral("maxItems"));
         if (minimum.isDouble() && array.size() < minimum.toInteger())
         {
-            errorMessage = QStringLiteral("%1 has too few items.").arg(path);
+            assignIssue(issue, path,
+                        childSchemaPath(schemaPath, QStringLiteral("minItems")),
+                        QStringLiteral("minItems"),
+                        QStringLiteral("%1 has too few items.").arg(path));
             return false;
         }
         if (maximum.isDouble() && array.size() > maximum.toInteger())
         {
-            errorMessage = QStringLiteral("%1 has too many items.").arg(path);
+            assignIssue(issue, path,
+                        childSchemaPath(schemaPath, QStringLiteral("maxItems")),
+                        QStringLiteral("maxItems"),
+                        QStringLiteral("%1 has too many items.").arg(path));
             return false;
         }
         const auto itemSchema = schema.value(QStringLiteral("items"));
@@ -389,7 +520,8 @@ bool validateValue(const QJsonValue& value, const QJsonObject& schema,
                 if (!validateValue(
                         array.at(index), itemSchema.toObject(), root,
                         QStringLiteral("%1[%2]").arg(path).arg(index),
-                        errorMessage, depth + 1))
+                        childSchemaPath(schemaPath, QStringLiteral("items")),
+                        issue, depth + 1))
                     return false;
             }
         }
@@ -401,12 +533,20 @@ bool validateValue(const QJsonValue& value, const QJsonObject& schema,
         const auto maximum = schema.value(QStringLiteral("maxLength"));
         if (minimum.isDouble() && length < minimum.toInteger())
         {
-            errorMessage = QStringLiteral("%1 is too short.").arg(path);
+            assignIssue(
+                issue, path,
+                childSchemaPath(schemaPath, QStringLiteral("minLength")),
+                QStringLiteral("minLength"),
+                QStringLiteral("%1 is too short.").arg(path));
             return false;
         }
         if (maximum.isDouble() && length > maximum.toInteger())
         {
-            errorMessage = QStringLiteral("%1 is too long.").arg(path);
+            assignIssue(
+                issue, path,
+                childSchemaPath(schemaPath, QStringLiteral("maxLength")),
+                QStringLiteral("maxLength"),
+                QStringLiteral("%1 is too long.").arg(path));
             return false;
         }
     }
@@ -417,12 +557,18 @@ bool validateValue(const QJsonValue& value, const QJsonObject& schema,
         const auto maximum = schema.value(QStringLiteral("maximum"));
         if (minimum.isDouble() && number < minimum.toDouble())
         {
-            errorMessage = QStringLiteral("%1 is below the minimum.").arg(path);
+            assignIssue(issue, path,
+                        childSchemaPath(schemaPath, QStringLiteral("minimum")),
+                        QStringLiteral("minimum"),
+                        QStringLiteral("%1 is below the minimum.").arg(path));
             return false;
         }
         if (maximum.isDouble() && number > maximum.toDouble())
         {
-            errorMessage = QStringLiteral("%1 exceeds the maximum.").arg(path);
+            assignIssue(issue, path,
+                        childSchemaPath(schemaPath, QStringLiteral("maximum")),
+                        QStringLiteral("maximum"),
+                        QStringLiteral("%1 exceeds the maximum.").arg(path));
             return false;
         }
     }
@@ -499,16 +645,31 @@ bool ToolRegistry::validateArguments(const QString& qualifiedName,
                                      const QJsonObject& arguments,
                                      QString& errorMessage) const
 {
+    const auto result = validateArgumentsDetailed(qualifiedName, arguments);
+    errorMessage = result.valid ? QString{} : result.issue.message;
+    return result.valid;
+}
+
+agent::ToolValidationResult ToolRegistry::validateArgumentsDetailed(
+    const QString& qualifiedName, const QJsonObject& arguments) const
+{
     const auto* definition = find(qualifiedName);
     if (definition == nullptr)
     {
-        errorMessage =
-            QStringLiteral("Tool is not registered: %1").arg(qualifiedName);
-        return false;
+        return {
+            false,
+            {qualifiedName,
+             QStringLiteral("arguments"),
+             {},
+             QStringLiteral("tool"),
+             QStringLiteral("Tool is not registered: %1").arg(qualifiedName)}};
     }
-    return validateValue(arguments, definition->inputSchema,
-                         definition->inputSchema, QStringLiteral("arguments"),
-                         errorMessage);
+    agent::ToolValidationIssue issue;
+    const auto valid = validateValue(
+        arguments, definition->inputSchema, definition->inputSchema,
+        QStringLiteral("arguments"), QStringLiteral("#"), issue);
+    issue.toolName = qualifiedName;
+    return {valid, std::move(issue)};
 }
 
 bool ToolRegistry::validateOutput(const QString& qualifiedName,
@@ -531,8 +692,11 @@ bool ToolRegistry::validateOutput(const QString& qualifiedName,
             "outputSchema.");
         return false;
     }
-    return validateValue(output, definition->outputSchema,
-                         definition->outputSchema,
-                         QStringLiteral("structuredContent"), errorMessage);
+    agent::ToolValidationIssue issue;
+    const auto valid = validateValue(
+        output, definition->outputSchema, definition->outputSchema,
+        QStringLiteral("structuredContent"), QStringLiteral("#"), issue);
+    errorMessage = valid ? QString{} : issue.message;
+    return valid;
 }
 }  // namespace qtllm::infrastructure::mcp

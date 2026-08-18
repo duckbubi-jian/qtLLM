@@ -136,6 +136,12 @@ agent::ToolDefinition inletTool()
             schema};
 }
 
+agent::ToolValidationResult acceptsToolArguments(const QString&,
+                                                 const QJsonObject&)
+{
+    return {true, {}};
+}
+
 QJsonObject planStep(const QString& id, const QString& description,
                      bool requiresTool)
 {
@@ -304,8 +310,7 @@ void AgentControllerTest::repairsToolValidationWithFocusedContract()
                 return QStringLiteral("tool-request-1");
             },
             [](const QString&) {},
-            [](const QString&, const QJsonObject& arguments,
-               QString& errorMessage)
+            [](const QString& toolName, const QJsonObject& arguments)
             {
                 const auto source = arguments.value(QStringLiteral("spec"))
                                         .toObject()
@@ -313,11 +318,15 @@ void AgentControllerTest::repairsToolValidationWithFocusedContract()
                                         .toObject();
                 if (source.value(QStringLiteral("type")).toString() ==
                     QLatin1String("geometry_file"))
-                    return true;
-                errorMessage = QStringLiteral(
-                    "arguments.spec.source.type must be one of "
-                    "[\"geometry_file\",\"circle\"].");
-                return false;
+                    return agent::ToolValidationResult{true, {}};
+                return agent::ToolValidationResult{
+                    false,
+                    {toolName, QStringLiteral("arguments.spec.source.type"),
+                     QStringLiteral(
+                         "#/properties/spec/properties/source/oneOf"),
+                     QStringLiteral("discriminator"),
+                     QStringLiteral("arguments.spec.source.type must be one of "
+                                    "[\"geometry_file\",\"circle\"].")}};
             },
             [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
@@ -342,6 +351,10 @@ void AgentControllerTest::repairsToolValidationWithFocusedContract()
     QVERIFY(correction.contains(QStringLiteral("file_path")));
     QVERIFY(correction.contains(QStringLiteral("<compact_contract>")));
     QVERIFY(correction.contains(QStringLiteral("<exact_input_schema>")));
+    QVERIFY(correction.contains(QStringLiteral("<validation_issue>")));
+    QVERIFY(correction.contains(QStringLiteral("instancePath")));
+    QVERIFY(correction.contains(QStringLiteral("schemaPath")));
+    QVERIFY(correction.contains(QStringLiteral("discriminator")));
     QVERIFY(
         correction.contains(QStringLiteral("do not call list or describe")));
 
@@ -379,9 +392,7 @@ void AgentControllerTest::completesMultiStepToolRun()
                         QStringLiteral("hello");
                 return QStringLiteral("tool-request-1");
             },
-            [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
     QSignalSpy finalSpy(&controller,
                         &application::AgentController::finalAnswerReady);
@@ -475,8 +486,7 @@ void AgentControllerTest::simpleToolRunCompletesWithoutReview()
                 int) { ++generationCount; },
             [] {}, [](const QString&, const QJsonObject&)
             { return QStringLiteral("tool-request-1"); }, [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
     QSignalSpy finalSpy(&controller,
                         &application::AgentController::finalAnswerReady);
@@ -520,9 +530,7 @@ void AgentControllerTest::simpleTaskRecoversFromFailureWithoutStructuredReview()
                 ++toolCallCount;
                 return QStringLiteral("tool-request-%1").arg(toolCallCount);
             },
-            [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
     QSignalSpy finalSpy(&controller,
                         &application::AgentController::finalAnswerReady);
@@ -587,9 +595,7 @@ void AgentControllerTest::waitsForApprovalAndHonorsRejection()
                 ++toolCallCount;
                 return QStringLiteral("unexpected");
             },
-            [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::RequireApproval; }});
     QSignalSpy approvalSpy(&controller,
                            &application::AgentController::approvalRequested);
@@ -626,9 +632,7 @@ void AgentControllerTest::repairsOnlyOneInvalidAction()
                 ++toolCallCount;
                 return QStringLiteral("tool");
             },
-            [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
     QSignalSpy finishedSpy(&controller,
                            &application::AgentController::runFinished);
@@ -654,10 +658,9 @@ void AgentControllerTest::cancelsAndIgnoresLateResponses()
         application::AgentController::Dependencies{
             [](const QList<chat::Message>&, const models::InferencePreset&,
                int) {},
-            [&] { ++cancellationCount; }, [](const QString&, const QJsonObject&)
-            { return QString{}; }, [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            [&] { ++cancellationCount; },
+            [](const QString&, const QJsonObject&) { return QString{}; },
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
     QSignalSpy finalSpy(&controller,
                         &application::AgentController::finalAnswerReady);
@@ -683,8 +686,7 @@ void AgentControllerTest::keepsConversationHistoryAndClearsIt()
             { generatedMessages = messages; },
             [] {}, [](const QString&, const QJsonObject&)
             { return QStringLiteral("unused"); }, [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
     QSignalSpy clearedSpy(&controller,
                           &application::AgentController::conversationCleared);
@@ -724,8 +726,7 @@ void AgentControllerTest::emptyToolPromptForbidsToolCalls()
             { generatedMessages = messages; },
             [] {}, [](const QString&, const QJsonObject&)
             { return QStringLiteral("unused"); }, [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
 
     QVERIFY(controller.start(QStringLiteral("Write a C++ file"), {}, {}));
@@ -747,8 +748,7 @@ void AgentControllerTest::casualPromptPrefersFinalWithoutTools()
             { generatedMessages = messages; },
             [] {}, [](const QString&, const QJsonObject&)
             { return QStringLiteral("unused"); }, [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
 
     QVERIFY(controller.start(QStringLiteral("Hello"), {}, {echoTool()}));
@@ -771,8 +771,7 @@ void AgentControllerTest::includesRuntimeContextInPrompt()
             { generatedMessages = messages; },
             [] {}, [](const QString&, const QJsonObject&)
             { return QStringLiteral("unused"); }, [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
 
     const application::AssistantContext context{
@@ -816,9 +815,7 @@ void AgentControllerTest::rejectsUnchangedRetryAfterToolError()
                 ++toolCallCount;
                 return QStringLiteral("tool-request-%1").arg(toolCallCount);
             },
-            [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
 
     const auto repeatedAction = QByteArrayLiteral(
@@ -872,9 +869,7 @@ void AgentControllerTest::rejectsRepeatedSuccessfulToolCall()
                 ++toolCallCount;
                 return QStringLiteral("tool-request-%1").arg(toolCallCount);
             },
-            [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
 
     const auto action = QByteArrayLiteral(
@@ -915,9 +910,7 @@ void AgentControllerTest::preservesSummaryWhenCompletionReviewFormattingFails()
                 ++toolCallCount;
                 return QStringLiteral("tool-request-%1").arg(toolCallCount);
             },
-            [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
     QSignalSpy finalSpy(&controller,
                         &application::AgentController::finalAnswerReady);
@@ -983,9 +976,7 @@ void AgentControllerTest::allowsRepeatedPollingUntilTerminalStatus()
                 ++toolCallCount;
                 return QStringLiteral("tool-request-%1").arg(toolCallCount);
             },
-            [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
 
     const auto action = QByteArrayLiteral(
@@ -1062,9 +1053,7 @@ void AgentControllerTest::cancelsPendingStatusPoll()
                 ++toolCallCount;
                 return QStringLiteral("tool-request-%1").arg(toolCallCount);
             },
-            [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
 
     const auto action = QByteArrayLiteral(
@@ -1111,9 +1100,7 @@ void AgentControllerTest::rejectsAlternatingCompletedToolCycle()
                 ++toolCallCount;
                 return QStringLiteral("tool-request-%1").arg(toolCallCount);
             },
-            [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
 
     const auto openAction = QByteArrayLiteral(
@@ -1179,9 +1166,7 @@ void AgentControllerTest::reviewsPrematureFinalBeforeAnyToolCall()
                 ++toolCallCount;
                 return QStringLiteral("tool-request-1");
             },
-            [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
     QSignalSpy finalSpy(&controller,
                         &application::AgentController::finalAnswerReady);
@@ -1258,9 +1243,7 @@ void AgentControllerTest::reviewsCompletionAfterEachEvidenceRevision()
                 ++toolCallCount;
                 return QStringLiteral("tool-request-%1").arg(toolCallCount);
             },
-            [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
     QSignalSpy finalSpy(&controller,
                         &application::AgentController::finalAnswerReady);
@@ -1333,8 +1316,7 @@ void AgentControllerTest::rejectsRepeatedFinalDuringCompletionReview()
                 int) { ++generationCount; },
             [] {}, [](const QString&, const QJsonObject&)
             { return QStringLiteral("unused"); }, [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
     QSignalSpy finalSpy(&controller,
                         &application::AgentController::finalAnswerReady);
@@ -1382,8 +1364,7 @@ void AgentControllerTest::completionReviewRejectsNonTerminalEvidence()
                 int) { ++generationCount; },
             [] {}, [](const QString&, const QJsonObject&)
             { return QStringLiteral("tool-request-1"); }, [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
     QSignalSpy finalSpy(&controller,
                         &application::AgentController::finalAnswerReady);
@@ -1461,9 +1442,7 @@ void AgentControllerTest::doesNotUsePreparedFinalWhenReviewStalls()
                 ++toolCallCount;
                 return QStringLiteral("tool-request-%1").arg(toolCallCount);
             },
-            [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
     QSignalSpy finalSpy(&controller,
                         &application::AgentController::finalAnswerReady);
@@ -1522,9 +1501,7 @@ void AgentControllerTest::stagnationRecoveryIsIndependentFromActionRepair()
                 ++toolCallCount;
                 return QStringLiteral("tool-request-%1").arg(toolCallCount);
             },
-            [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
 
     const auto action = QByteArrayLiteral(
@@ -1578,9 +1555,7 @@ void AgentControllerTest::compactsLongAgentContextAndPreservesEvidence()
                 ++toolCallCount;
                 return QStringLiteral("tool-request-%1").arg(toolCallCount);
             },
-            [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
 
     models::InferencePreset preset;
@@ -1676,9 +1651,7 @@ void AgentControllerTest::hasNoToolCallCountLimit()
                 ++toolCallCount;
                 return QStringLiteral("tool-request-%1").arg(toolCallCount);
             },
-            [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
     QSignalSpy finishedSpy(&controller,
                            &application::AgentController::runFinished);
@@ -1751,8 +1724,7 @@ void AgentControllerTest::longRunWarningDoesNotStopAgent()
                int) {},
             [] {}, [](const QString&, const QJsonObject&)
             { return QStringLiteral("unused"); }, [](const QString&) {},
-            [](const QString&, const QJsonObject&, QString&) { return true; },
-            [](const QString&)
+            acceptsToolArguments, [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
     QSignalSpy eventSpy(&controller,
                         &application::AgentController::eventRecorded);

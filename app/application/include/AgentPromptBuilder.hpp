@@ -4,6 +4,7 @@
 #include "ChatMessage.hpp"
 #include "ToolDefinition.hpp"
 #include "ToolResult.hpp"
+#include "ToolValidation.hpp"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -37,7 +38,7 @@ class AgentPromptBuilder final
     static chat::Message correctionMessage(const QString& errorMessage);
     static chat::Message toolValidationCorrectionMessage(
         const agent::ToolDefinition& tool, const QJsonObject& arguments,
-        const QString& errorMessage);
+        const agent::ToolValidationIssue& issue);
     static chat::Message noProgressMessage(const QString& errorMessage);
 };
 }  // namespace qtllm::application

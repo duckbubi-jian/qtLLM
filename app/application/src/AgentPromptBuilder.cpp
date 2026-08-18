@@ -430,7 +430,7 @@ chat::Message AgentPromptBuilder::correctionMessage(const QString& errorMessage)
 
 chat::Message AgentPromptBuilder::toolValidationCorrectionMessage(
     const agent::ToolDefinition& tool, const QJsonObject& arguments,
-    const QString& errorMessage)
+    const agent::ToolValidationIssue& issue)
 {
     const auto compactContract =
         compactJson(ToolCatalogBuilder::compactDefinition(tool));
@@ -442,12 +442,20 @@ chat::Message AgentPromptBuilder::toolValidationCorrectionMessage(
     const auto rejectedArguments = boundedObjectJson(
         arguments, maximumRejectedArgumentsBytes,
         QStringLiteral("omitted because rejected arguments are oversized"));
+    const auto validationIssue = compactJson(
+        QJsonObject{{QStringLiteral("toolName"), issue.toolName},
+                    {QStringLiteral("instancePath"), issue.instancePath},
+                    {QStringLiteral("schemaPath"), issue.schemaPath},
+                    {QStringLiteral("keyword"), issue.keyword},
+                    {QStringLiteral("message"), issue.message}});
     return {
         chat::Role::User,
         QStringLiteral(
             "The previous tool action was rejected by local argument "
             "validation and was not executed. Failed tool: %1. "
-            "Validation error: %2 Rejected arguments: %3. "
+            "Structured validation issue: "
+            "<validation_issue>%2</validation_issue> "
+            "Rejected arguments: %3. "
             "Correct this tool call from the supplied contract; do not call "
             "list or describe merely to rediscover its schema. Copy exact "
             "enum and const spellings, preserve the required nesting, and "
@@ -456,7 +464,7 @@ chat::Message AgentPromptBuilder::toolValidationCorrectionMessage(
             "or choose another listed tool only if this is the wrong "
             "operation. <compact_contract>%4</compact_contract> "
             "<exact_input_schema>%5</exact_input_schema>")
-            .arg(tool.qualifiedName, errorMessage, rejectedArguments,
+            .arg(tool.qualifiedName, validationIssue, rejectedArguments,
                  compactContract, exactSchema)};
 }
 

@@ -100,6 +100,10 @@ feature differences have dedicated Fake Server coverage.
 - Local input and output validation follows local `$ref` values and validates
   `const`, string or array `type`, `allOf`, `anyOf`, and `oneOf` before a tool
   call is sent or a structured result is accepted.
+- Agent input-validation failures preserve the qualified tool name, instance
+  path, schema path, validation keyword, and readable message. The focused
+  correction prompt receives that diagnostic together with the rejected
+  arguments and the failed tool's bounded contract.
 - Tests run with the Fake MCP Server and do not require a model or network.
 - Two Servers can expose same-named tools independently; failure or restart of
   one Server does not revoke the other Server's capabilities.

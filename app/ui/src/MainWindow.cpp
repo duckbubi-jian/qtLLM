@@ -84,11 +84,10 @@ MainWindow::MainWindow(const QString& settingsFilePath, QWidget* parent)
               { return mcpManager_.callTool(toolName, arguments); },
               [this](const QString& requestId)
               { mcpManager_.cancel(requestId); },
-              [this](const QString& toolName, const QJsonObject& arguments,
-                     QString& errorMessage)
+              [this](const QString& toolName, const QJsonObject& arguments)
               {
-                  return mcpManager_.registry().validateArguments(
-                      toolName, arguments, errorMessage);
+                  return mcpManager_.registry().validateArgumentsDetailed(
+                      toolName, arguments);
               },
               [this](const QString& toolName)
               { return toolPolicy_.evaluate(toolName); }},

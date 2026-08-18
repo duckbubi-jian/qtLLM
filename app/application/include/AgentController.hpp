@@ -7,6 +7,7 @@
 #include "ToolDefinition.hpp"
 #include "ToolPolicy.hpp"
 #include "ToolResult.hpp"
+#include "ToolValidation.hpp"
 
 #include <QByteArray>
 #include <QJsonObject>
@@ -30,8 +31,8 @@ class AgentController final : public QObject
     using ToolCallHandler =
         std::function<QString(const QString&, const QJsonObject&)>;
     using CancelToolHandler = std::function<void(const QString&)>;
-    using ValidateToolHandler =
-        std::function<bool(const QString&, const QJsonObject&, QString&)>;
+    using ValidateToolHandler = std::function<agent::ToolValidationResult(
+        const QString&, const QJsonObject&)>;
     using ToolPolicyHandler =
         std::function<infrastructure::mcp::ToolDecision(const QString&)>;
 
@@ -109,7 +110,7 @@ class AgentController final : public QObject
     void retryInvalidAction(const QByteArray& rawAction,
                             const QString& errorMessage);
     void retryInvalidToolAction(const QByteArray& rawAction,
-                                const QString& errorMessage,
+                                const agent::ToolValidationIssue& issue,
                                 const agent::ToolDefinition& tool,
                                 const QJsonObject& arguments);
     void retryNoProgressAction(const QByteArray& rawAction,

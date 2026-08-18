@@ -357,9 +357,10 @@ Acceptance:
 
 ### M2: Structured Validation Repair
 
-Status: in progress. Focused contract correction, local union validation, and
-an independent bounded validation-repair path are implemented. Replacing the
-boolean-plus-string validation boundary with a structured issue remains.
+Status: implemented. The production validation boundary now carries the tool
+name, instance path, schema path, validation keyword, and readable message.
+Focused contract correction, local union validation, and an independent
+bounded validation-repair path are also implemented.
 
 Deliverables:
 

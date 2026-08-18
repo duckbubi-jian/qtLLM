@@ -560,24 +560,28 @@ void AgentController::handleAction(const agent::Action& action,
         std::find_if(availableTools_.cbegin(), availableTools_.cend(),
                      [&action](const agent::ToolDefinition& candidate)
                      { return candidate.qualifiedName == action.toolName; });
-    QString validationError;
     if (tool == availableTools_.cend())
-        validationError =
-            QStringLiteral("Tool is not available: %1").arg(action.toolName);
-    else if (!dependencies_.validateTool(action.toolName, action.arguments,
-                                         validationError))
     {
-        if (validationError.isEmpty())
-            validationError =
-                QStringLiteral("Tool arguments failed local validation.");
+        retryInvalidAction(
+            rawAction,
+            QStringLiteral("Tool is not available: %1").arg(action.toolName));
+        return;
     }
-    if (!validationError.isEmpty())
+    const auto validation =
+        dependencies_.validateTool(action.toolName, action.arguments);
+    if (!validation.valid)
     {
-        if (tool == availableTools_.cend())
-            retryInvalidAction(rawAction, validationError);
-        else
-            retryInvalidToolAction(rawAction, validationError, *tool,
-                                   action.arguments);
+        auto issue = validation.issue;
+        if (issue.toolName.isEmpty()) issue.toolName = action.toolName;
+        if (issue.instancePath.isEmpty())
+            issue.instancePath = QStringLiteral("arguments");
+        if (issue.schemaPath.isEmpty()) issue.schemaPath = QStringLiteral("#");
+        if (issue.keyword.isEmpty())
+            issue.keyword = QStringLiteral("validation");
+        if (issue.message.isEmpty())
+            issue.message =
+                QStringLiteral("Tool arguments failed local validation.");
+        retryInvalidToolAction(rawAction, issue, *tool, action.arguments);
         return;
     }
     activeRun_->consecutiveValidationFailures = 0;
@@ -984,15 +988,14 @@ void AgentController::retryInvalidAction(const QByteArray& rawAction,
     requestDecision();
 }
 
-void AgentController::retryInvalidToolAction(const QByteArray& rawAction,
-                                             const QString& errorMessage,
-                                             const agent::ToolDefinition& tool,
-                                             const QJsonObject& arguments)
+void AgentController::retryInvalidToolAction(
+    const QByteArray& rawAction, const agent::ToolValidationIssue& issue,
+    const agent::ToolDefinition& tool, const QJsonObject& arguments)
 {
     if (!activeRun_) return;
     if (activeRun_->consecutiveValidationFailures >= 1)
     {
-        failRun(QStringLiteral("invalid_tool_arguments"), errorMessage);
+        failRun(QStringLiteral("invalid_tool_arguments"), issue.message);
         return;
     }
     ++activeRun_->validationRepairs;
@@ -1000,16 +1003,17 @@ void AgentController::retryInvalidToolAction(const QByteArray& rawAction,
     qWarning().noquote()
         << QStringLiteral(
                "Agent tool validation correction: run=%1 repairs=%2 "
-               "reason=%3 tool=%4 action=%5")
+               "reason=%3 tool=%4 path=%5 keyword=%6 action=%7")
                .arg(activeRun_->id)
                .arg(activeRun_->validationRepairs)
-               .arg(singleLine(errorMessage), tool.qualifiedName,
+               .arg(singleLine(issue.message), tool.qualifiedName,
+                    issue.instancePath, issue.keyword,
                     singleLine(QString::fromUtf8(rawAction)).left(2'048));
     activeRun_->inferenceMessages.append(
         {chat::Role::Assistant, QString::fromUtf8(rawAction)});
     activeRun_->inferenceMessages.append(
         AgentPromptBuilder::toolValidationCorrectionMessage(tool, arguments,
-                                                            errorMessage));
+                                                            issue));
     requestDecision();
 }
 

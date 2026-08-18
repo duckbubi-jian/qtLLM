@@ -36,6 +36,17 @@ struct AgentRun
     int stagnationRecoveries = 0;
     int successfulToolResults = 0;
     int readOnlyTransportRetries = 0;
+    int decisionCount = 0;
+    int toolActionAttempts = 0;
+    int toolValidationAttempts = 0;
+    int toolValidationFailures = 0;
+    int executedToolCalls = 0;
+    int duplicateToolActions = 0;
+    int duplicateMutationActions = 0;
+    int redundantDiscoveryCalls = 0;
+    int pollRequests = 0;
+    int completionReviewAttempts = 0;
+    int completionReviewSuccesses = 0;
     int evidenceRevision = 0;
     int lastReviewedEvidenceRevision = -1;
     int completionReviewsAtRevision = 0;
@@ -53,6 +64,8 @@ struct AgentRun
     QList<agent::Event> events;
     QList<chat::Message> inferenceMessages;
     QString toolRequestId;
+    QString finishCode;
+    QString finishMessage;
     AgentLedger ledger;
 };
 }  // namespace qtllm::application

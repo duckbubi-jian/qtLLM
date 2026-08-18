@@ -84,6 +84,7 @@ class AgentController final : public QObject
     void approvalRequested(const QString& runId, const QString& toolName,
                            const QJsonObject& arguments);
     void finalAnswerReady(const QString& runId, const QString& content);
+    void metricsReady(const QString& runId, const QJsonObject& metrics);
     void runFinished(const QString& runId,
                      qtllm::application::AgentRun::State state,
                      const QString& code, const QString& message);

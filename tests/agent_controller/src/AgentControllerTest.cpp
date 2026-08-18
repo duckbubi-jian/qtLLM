@@ -1,4 +1,5 @@
 #include "AgentController.hpp"
+#include "AgentRunMetrics.hpp"
 #include "ToolCatalogBuilder.hpp"
 
 #include <QJsonArray>
@@ -22,6 +23,7 @@ class AgentControllerTest final : public QObject
     void cancellationRemainsTerminalAcrossApprovalAndToolResult();
     void doesNotRetryUncertainMutationAfterTransportFailure();
     void retriesReadOnlyTransportFailureOnce();
+    void exportsStructuredRunMetrics();
     void keepsConversationHistoryAndClearsIt();
     void emptyToolPromptForbidsToolCalls();
     void casualPromptPrefersFinalWithoutTools();
@@ -347,7 +349,6 @@ void AgentControllerTest::repairsToolValidationWithFocusedContract()
             },
             [](const QString&)
             { return infrastructure::mcp::ToolDecision::Allow; }});
-
     QVERIFY(controller.start(QStringLiteral("Create the inlet"), {},
                              {inletTool()}));
     controller.receiveToken(QByteArrayLiteral(
@@ -861,6 +862,88 @@ void AgentControllerTest::retriesReadOnlyTransportFailureOnce()
     QCOMPARE(toolCallCount, 2);
     QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
     controller.cancel();
+}
+
+void AgentControllerTest::exportsStructuredRunMetrics()
+{
+    auto toolCallCount = 0;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [](const QList<chat::Message>&, const models::InferencePreset&,
+               int) {},
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-%1").arg(toolCallCount);
+            },
+            [](const QString&) {},
+            [](const QString& toolName, const QJsonObject& arguments)
+            {
+                if (arguments.value(QStringLiteral("valid")).toBool())
+                    return agent::ToolValidationResult{true, {}};
+                return agent::ToolValidationResult{
+                    false,
+                    {toolName, QStringLiteral("arguments.valid"),
+                     QStringLiteral("#/properties/valid"),
+                     QStringLiteral("required"),
+                     QStringLiteral("arguments.valid is required.")}};
+            },
+            [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+    QSignalSpy metricsSpy(&controller,
+                          &application::AgentController::metricsReady);
+    const auto invalidAction = QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.list_items","arguments":{}})");
+    const auto validAction = QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.list_items","arguments":{"valid":true}})");
+
+    QVERIFY(controller.start(QStringLiteral("Inspect items"), {},
+                             {ledgerTool(QStringLiteral("list_items"), true)}));
+    controller.receiveToken(invalidAction);
+    controller.completeGeneration(false);
+    controller.receiveToken(validAction);
+    controller.completeGeneration(false);
+
+    agent::ToolResult result;
+    result.requestId = QStringLiteral("tool-request-1");
+    result.serverId = QStringLiteral("fake");
+    result.toolName = QStringLiteral("list_items");
+    controller.receiveToolResult(result);
+
+    controller.receiveToken(validAction);
+    controller.completeGeneration(false);
+    QCOMPARE(toolCallCount, 1);
+    controller.receiveToken(
+        QByteArrayLiteral(R"({"action":"final","content":"Done"})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Completed);
+
+    const auto metrics =
+        application::AgentRunMetrics::fromRun(*controller.activeRun());
+    QCOMPARE(metrics.state, QStringLiteral("completed"));
+    QCOMPARE(metrics.firstToolChoice, QStringLiteral("fake.list_items"));
+    QCOMPARE(metrics.decisionCount, 4);
+    QCOMPARE(metrics.toolActionAttempts, 3);
+    QCOMPARE(metrics.toolValidationAttempts, 2);
+    QCOMPARE(metrics.toolValidationFailures, 1);
+    QCOMPARE(metrics.validationRepairs, 1);
+    QCOMPARE(metrics.executedToolCalls, 1);
+    QCOMPARE(metrics.duplicateToolActions, 1);
+    QCOMPARE(metrics.duplicateMutationActions, 0);
+    QCOMPARE(metrics.redundantDiscoveryCalls, 1);
+    QCOMPARE(metrics.schemaValidArgumentRate, 0.5);
+    QVERIFY(!metrics.completionReviewSucceeded);
+
+    const auto json = metrics.toJson();
+    QCOMPARE(json.value(QStringLiteral("schemaVersion")).toInt(), 1);
+    QCOMPARE(json.value(QStringLiteral("toolEvidenceCount")).toInt(), 1);
+    QCOMPARE(json.value(QStringLiteral("finishCode")).toString(), QString{});
+    QCOMPARE(metricsSpy.count(), 1);
+    const auto emittedMetrics =
+        qvariant_cast<QJsonObject>(metricsSpy.constFirst().at(1));
+    QCOMPARE(emittedMetrics.value(QStringLiteral("state")).toString(),
+             QStringLiteral("completed"));
 }
 
 void AgentControllerTest::keepsConversationHistoryAndClearsIt()

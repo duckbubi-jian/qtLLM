@@ -2,6 +2,7 @@
 
 #include "AgentContextCompactor.hpp"
 #include "AgentPromptBuilder.hpp"
+#include "AgentRunMetrics.hpp"
 #include "ToolResultStatus.hpp"
 
 #include <QDebug>
@@ -158,6 +159,19 @@ ToolOperationKind operationKind(
     return ToolOperationKind::Unknown;
 }
 
+bool isDiscoveryToolName(const QString& qualifiedToolName)
+{
+    const auto name = qualifiedToolName.section(QLatin1Char('.'), -1).toLower();
+    static const QStringList verbs{
+        QStringLiteral("list"),     QStringLiteral("get"),
+        QStringLiteral("describe"), QStringLiteral("inspect"),
+        QStringLiteral("find"),     QStringLiteral("query"),
+        QStringLiteral("search"),   QStringLiteral("read")};
+    return std::any_of(
+        verbs.cbegin(), verbs.cend(), [&name](const QString& verb)
+        { return name == verb || name.startsWith(verb + QLatin1Char('_')); });
+}
+
 qsizetype messageCharacters(const QList<chat::Message>& messages)
 {
     qsizetype total = 0;
@@ -248,6 +262,8 @@ void AgentController::cancel()
     if (!hasActiveRun()) return;
     const auto previousState = state_;
     const auto toolRequestId = activeRun_->toolRequestId;
+    activeRun_->finishCode = QStringLiteral("cancelled");
+    activeRun_->finishMessage = QStringLiteral("Agent run cancelled.");
     setState(AgentRun::State::Cancelled);
     if (runTimer_->isActive()) runTimer_->stop();
     if (pollTimer_->isActive()) pollTimer_->stop();
@@ -265,6 +281,8 @@ void AgentController::cancel()
         dependencies_.cancelTool(toolRequestId);
     recordEvent(agent::EventType::Cancelled,
                 QStringLiteral("Agent run cancelled."));
+    emit metricsReady(activeRun_->id,
+                      AgentRunMetrics::fromRun(*activeRun_).toJson());
     emit runFinished(activeRun_->id, state_, QStringLiteral("cancelled"),
                      QStringLiteral("Agent run cancelled."));
 }
@@ -515,6 +533,7 @@ bool AgentController::isTerminal(AgentRun::State state)
 void AgentController::requestDecision()
 {
     if (!activeRun_) return;
+    ++activeRun_->decisionCount;
     compactContextIfNeeded();
     decisionBytes_.clear();
     setState(AgentRun::State::Deciding);
@@ -645,10 +664,29 @@ void AgentController::handleAction(const agent::Action& action,
         return;
     }
 
+    ++activeRun_->toolActionAttempts;
+    const auto recordDuplicateToolAction = [this, &action]
+    {
+        if (!activeRun_) return;
+        ++activeRun_->duplicateToolActions;
+        const auto definition = std::find_if(
+            availableTools_.cbegin(), availableTools_.cend(),
+            [&action](const agent::ToolDefinition& candidate)
+            { return candidate.qualifiedName == action.toolName; });
+        if (definition == availableTools_.cend()) return;
+        const auto kind = operationKind(*definition, dependencies_.toolRisk);
+        if (kind == ToolOperationKind::Mutation)
+            ++activeRun_->duplicateMutationActions;
+        if (kind == ToolOperationKind::ReadOnly &&
+            isDiscoveryToolName(action.toolName))
+            ++activeRun_->redundantDiscoveryCalls;
+    };
+
     const auto signature = toolCallSignature(action);
     if (!lastFailedToolCallSignature_.isEmpty() &&
         signature == lastFailedToolCallSignature_)
     {
+        recordDuplicateToolAction();
         retryNoProgressAction(
             rawAction,
             QStringLiteral(
@@ -667,6 +705,7 @@ void AgentController::handleAction(const agent::Action& action,
             : repeatedCompletedCallError(completedToolCallHistory_, signature);
     if (!repeatedCallError.isEmpty())
     {
+        recordDuplicateToolAction();
         retryNoProgressAction(rawAction, repeatedCallError);
         return;
     }
@@ -682,10 +721,12 @@ void AgentController::handleAction(const agent::Action& action,
             QStringLiteral("Tool is not available: %1").arg(action.toolName));
         return;
     }
+    ++activeRun_->toolValidationAttempts;
     const auto validation =
         dependencies_.validateTool(action.toolName, action.arguments);
     if (!validation.valid)
     {
+        ++activeRun_->toolValidationFailures;
         auto issue = validation.issue;
         if (issue.toolName.isEmpty()) issue.toolName = action.toolName;
         if (issue.instancePath.isEmpty())
@@ -746,6 +787,7 @@ void AgentController::beginCompletionReview(const agent::Action& action,
                                             const QByteArray& rawAction)
 {
     if (!activeRun_) return;
+    ++activeRun_->completionReviewAttempts;
     if (activeRun_->lastReviewedEvidenceRevision ==
         activeRun_->evidenceRevision)
         ++activeRun_->completionReviewsAtRevision;
@@ -909,6 +951,7 @@ void AgentController::handleCompletionReview(const agent::Action& action,
     }
 
     activeRun_->completionSteps = action.completionSteps;
+    ++activeRun_->completionReviewSuccesses;
     activeRun_->awaitingCompletionReview = false;
     activeRun_->completionReviewFailures = 0;
     qInfo().noquote()
@@ -956,6 +999,10 @@ void AgentController::executeTool(const agent::Action& action)
             return;
         }
     }
+    if (!pollableToolCallSignature_.isEmpty() &&
+        signature == pollableToolCallSignature_)
+        ++activeRun_->pollRequests;
+    ++activeRun_->executedToolCalls;
     activeToolAction_ = action;
     activeToolCallSignature_ = signature;
     setState(AgentRun::State::ExecutingTool);
@@ -1201,6 +1248,8 @@ void AgentController::recordEvent(agent::EventType type, const QString& message,
 void AgentController::completeRun(const QString& content)
 {
     if (!activeRun_) return;
+    activeRun_->finishCode.clear();
+    activeRun_->finishMessage.clear();
     setState(AgentRun::State::GeneratingAnswer);
     recordEvent(agent::EventType::AnswerStarted,
                 QStringLiteral("Preparing final answer."));
@@ -1215,6 +1264,8 @@ void AgentController::completeRun(const QString& content)
     lastPollCompletedAtMs_ = 0;
     recordEvent(agent::EventType::Completed,
                 QStringLiteral("Agent run completed."));
+    emit metricsReady(activeRun_->id,
+                      AgentRunMetrics::fromRun(*activeRun_).toJson());
     emit runFinished(activeRun_->id, state_, {}, {});
 }
 
@@ -1223,6 +1274,8 @@ void AgentController::failRun(const QString& code, const QString& message)
     if (!activeRun_ || isTerminal(state_)) return;
     const auto previousState = state_;
     const auto toolRequestId = activeRun_->toolRequestId;
+    activeRun_->finishCode = code;
+    activeRun_->finishMessage = message;
     setState(AgentRun::State::Failed);
     if (runTimer_->isActive()) runTimer_->stop();
     if (pollTimer_->isActive()) pollTimer_->stop();
@@ -1239,6 +1292,8 @@ void AgentController::failRun(const QString& code, const QString& message)
         !toolRequestId.isEmpty() && dependencies_.cancelTool)
         dependencies_.cancelTool(toolRequestId);
     recordEvent(agent::EventType::Failed, message);
+    emit metricsReady(activeRun_->id,
+                      AgentRunMetrics::fromRun(*activeRun_).toJson());
     emit runFinished(activeRun_->id, state_, code, message);
 }
 }  // namespace qtllm::application

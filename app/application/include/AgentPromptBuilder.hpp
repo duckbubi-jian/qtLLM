@@ -24,7 +24,6 @@ class AgentPromptBuilder final
     [[nodiscard]] static bool requiresCompletionReview(
         const QString& userRequest);
     static chat::Message taskPlanMessage(const QString& originalRequest);
-    static chat::Message taskPlanAcceptedMessage(const QJsonArray& steps);
     static chat::Message planTaskActivationMessage(
         const QJsonObject& currentStep, const QJsonArray& completedSteps,
         const QList<QJsonObject>& priorToolEvidence);
@@ -50,16 +49,6 @@ class AgentPromptBuilder final
                                            const QJsonObject& ledgerState,
                                            const QString& verificationReason,
                                            const QString& recoveryGuidance);
-    static chat::Message completionReviewMessage(
-        const QString& originalRequest, const QJsonArray& completionSteps,
-        const QList<QJsonObject>& toolEvidence, const QJsonObject& ledgerState,
-        const QString& verificationReason);
-    static chat::Message completionReviewCorrectionMessage(
-        const QString& errorMessage);
-    static chat::Message completionPlanDriftMessage(
-        const QJsonArray& completionSteps);
-    static chat::Message completionContinuationMessage(
-        const QJsonArray& completionSteps, const QString& nextStep);
     static chat::Message unfinishedFinalMessage(const QString& errorMessage);
     static chat::Message correctionMessage(const QString& errorMessage);
     static chat::Message toolValidationCorrectionMessage(

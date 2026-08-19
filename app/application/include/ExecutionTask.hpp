@@ -103,6 +103,8 @@ class ExecutionTask final : public AgentTask
     [[nodiscard]] bool awaitingReview() const;
     [[nodiscard]] int evidenceStart() const;
     [[nodiscard]] int evidenceEnd() const;
+    [[nodiscard]] int stepReviewAttempts() const;
+    [[nodiscard]] int stepReviewSuccesses() const;
 
     [[nodiscard]] bool hasPendingToolCallReview() const;
 
@@ -138,6 +140,8 @@ class ExecutionTask final : public AgentTask
     bool awaitingStepReview_ = false;
     std::optional<agent::Action> pendingToolCallReview_;
     int planStepReviewFailures_ = 0;
+    int stepReviewAttempts_ = 0;
+    int stepReviewSuccesses_ = 0;
     int toolCallReviewFailures_ = 0;
     int actionRepairFailures_ = 0;
     int prematureFinalFailures_ = 0;

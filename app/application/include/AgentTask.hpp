@@ -85,7 +85,6 @@ class AgentTask
         QString code;
         QString detail;
         int evidenceEnd = 0;
-        bool ordered = false;
         bool toolCallAlreadyRecorded = false;
     };
 
@@ -95,6 +94,8 @@ class AgentTask
     [[nodiscard]] QString id() const;
     [[nodiscard]] QString description() const;
     [[nodiscard]] Kind kind() const;
+    [[nodiscard]] QString kindName() const;
+    [[nodiscard]] static QString kindName(Kind kind);
     [[nodiscard]] Status status() const;
     [[nodiscard]] Snapshot runtimeSnapshot() const;
     [[nodiscard]] virtual Directive completeTaskGeneration(

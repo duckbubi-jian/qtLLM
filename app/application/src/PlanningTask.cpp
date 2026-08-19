@@ -45,7 +45,6 @@ AgentTask::Directive PlanningTask::completeTaskGeneration(
     Directive result;
     result.type = Directive::Type::TasksCreated;
     result.tasks = decision.action.completionSteps;
-    result.ordered = decision.action.orderedPlan.value_or(false);
     return result;
 }
 
@@ -56,12 +55,10 @@ int PlanningTask::repairCount() const
 
 QString PlanningTask::validatePlan(const agent::Action& action) const
 {
-    if (!action.orderedPlan.has_value())
+    if (!action.orderedPlan.value_or(false))
         return QStringLiteral(
             "task_plan must explicitly include ordered=true so the "
             "scheduler can enforce step-by-step execution.");
-
-    if (!*action.orderedPlan) return {};
 
     auto sawNonToolStep = false;
     for (const auto& value : action.completionSteps)

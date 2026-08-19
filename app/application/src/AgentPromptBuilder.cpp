@@ -241,10 +241,9 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools,
                "internal reasoning, a plan, or statements about operations "
                "you still need to perform as final. A tool action has action "
                "set to call_tool, an exact listed tool name, and an arguments "
-               "object. task_plan, review_tool_call, review_plan_step, and "
-               "review_completion are controller-only actions; return one "
-               "only when the latest controller message explicitly requests "
-               "it. When the user "
+               "object. task_plan, review_tool_call, and review_plan_step are "
+               "task-only actions; return one only when the active task "
+               "explicitly requests it. When the user "
                "requests an "
                "external operation and a "
                "matching tool is available, execute it before final. When the "
@@ -330,42 +329,6 @@ chat::Message AgentPromptBuilder::taskPlanMessage(
             "\"ordered\":true}.\n"
             "<original_request>%1</original_request>")
             .arg(originalRequest.trimmed())};
-}
-
-chat::Message AgentPromptBuilder::taskPlanAcceptedMessage(
-    const QJsonArray& steps)
-{
-    return {
-        chat::Role::User,
-        QStringLiteral(
-            "The local controller recorded this task checklist: "
-            "<task_plan>%1</task_plan> The controller is the plan manager: it "
-            "owns the current index and all completion marks. Act only as the "
-            "worker for the first unfinished step. Do not select, start, or "
-            "partially perform a later step, even when it uses the same tool. "
-            "Return one call_tool action when a tool is required, including "
-            "top-level plan_step_id copied exactly from the current step and "
-            "completes_plan_step=false for intermediate calls or true only for "
-            "the final call that should finish the step. Mutating tools must "
-            "be listed in the current step's allowed_tools; a directly "
-            "relevant read-only inspection or recovery tool may be omitted. "
-            "Use this exact "
-            "top-level shape: {\"action\":\"call_tool\",\"tool\":\"...\","
-            "\"arguments\":{},\"plan_step_id\":\"step-1\","
-            "\"completes_plan_step\":false}. Do not add a read-back call "
-            "merely to reconfirm a successful "
-            "terminal mutation whose structured result explicitly confirms "
-            "the requested target and returns its matching stable identity "
-            "or location. Mark that mutation completes_plan_step=true when "
-            "it is the final operation for the current step. Perform a "
-            "read-back only when the controller reports unresolved "
-            "verification or the result does not confirm the requested "
-            "outcome. Do not repeat task_plan. Return final only after every "
-            "checklist item is satisfied; when no unfinished step remains, "
-            "return final now. If a real blocker prevents the current step, "
-            "return blocked with a specific reason and explain what the user "
-            "must provide or change.")
-            .arg(compactJson(steps))};
 }
 
 chat::Message AgentPromptBuilder::planTaskActivationMessage(
@@ -640,99 +603,6 @@ chat::Message AgentPromptBuilder::toolResultMessage(
             .arg(result.serverId + QLatin1Char('.') + result.toolName)
             .arg(evidenceSequence)
             .arg(json, compactJson(ledgerState), guidance)};
-}
-
-chat::Message AgentPromptBuilder::completionReviewMessage(
-    const QString& originalRequest, const QJsonArray& completionSteps,
-    const QList<QJsonObject>& toolEvidence, const QJsonObject& ledgerState,
-    const QString& verificationReason)
-{
-    const auto plan = completionSteps.isEmpty() ? QStringLiteral("[]")
-                                                : compactJson(completionSteps);
-    const auto evidence = compactJson(completionEvidenceSummary(toolEvidence));
-    return {
-        chat::Role::User,
-        QStringLiteral(
-            "Completion review required. Do not return another final action. "
-            "Compare the proposed answer with every explicit outcome and step "
-            "in the original request. Preserve every existing task_plan step "
-            "with the same id, description, and requires_tool value; add a "
-            "missing requested step rather than omitting one. For each step, "
-            "set status to satisfied, pending, or blocked and cite actual "
-            "tool-call sequence numbers in evidence. A requires_tool step is "
-            "satisfied only with successful terminal evidence. Running or "
-            "pending evidence is not terminal. A mutation with pending, "
-            "failed, or unavailable verification cannot satisfy a step. Use "
-            "verdict=complete only when all steps are satisfied and the run "
-            "ledger has no unresolved verification, continue when work "
-            "remains, or blocked only for a real blocker. detail must be a "
-            "completion summary, "
-            "the next concrete step, or a user-facing blocker. Return a valid "
-            "action in this shape, using one allowed verdict and status: "
-            "{\"action\":\"review_completion\",\"verdict\":\"continue\","
-            "\"steps\":[{\"id\":\"step-1\","
-            "\"description\":\"...\",\"requires_tool\":true,"
-            "\"status\":\"pending\",\"evidence\":[1]}],"
-            "\"detail\":\"...\"}. If an unfinished tool call is already "
-            "obvious, you may instead return that call_tool action now.\n"
-            "<original_request>%1</original_request>\n"
-            "<task_plan>%2</task_plan>\n"
-            "<tool_evidence>%3</tool_evidence>\n"
-            "<run_ledger>%4</run_ledger>\n"
-            "<verification_requirement>%5</verification_requirement>")
-            .arg(originalRequest.trimmed(), plan, evidence,
-                 compactJson(ledgerState),
-                 verificationReason.isEmpty() ? QStringLiteral("none")
-                                              : verificationReason)};
-}
-
-chat::Message AgentPromptBuilder::completionReviewCorrectionMessage(
-    const QString& errorMessage)
-{
-    return {
-        chat::Role::User,
-        QStringLiteral(
-            "The completion review was rejected by the local controller: %1 "
-            "Do not return final. Return one corrected review_completion "
-            "action, or a valid call_tool action for an unfinished step. "
-            "Use the exact verdict \"complete\", \"continue\", or "
-            "\"blocked\"; do not use \"completed\". Every step must use "
-            "the keys id, description, requires_tool, status, and evidence, "
-            "where status is exactly \"satisfied\", \"pending\", or "
-            "\"blocked\"; do not use \"complete\" or \"incomplete\" as a "
-            "step status. Evidence is an array of numeric sequence values.")
-            .arg(errorMessage)};
-}
-
-chat::Message AgentPromptBuilder::completionPlanDriftMessage(
-    const QJsonArray& completionSteps)
-{
-    return {
-        chat::Role::User,
-        QStringLiteral(
-            "The completion review replaced or omitted steps from the task "
-            "plan recorded by the local controller. Re-review the existing "
-            "tool evidence against exactly this checklist, preserving every "
-            "id, description, and requires_tool value: "
-            "<task_plan>%1</task_plan> Return exactly one "
-            "review_completion action now. Do not return final, call a tool, "
-            "rename a step, or substitute a new checklist. Use only "
-            "satisfied, pending, or blocked as each step status and cite "
-            "actual numeric evidence sequence values.")
-            .arg(compactJson(completionSteps))};
-}
-
-chat::Message AgentPromptBuilder::completionContinuationMessage(
-    const QJsonArray& completionSteps, const QString& nextStep)
-{
-    return {
-        chat::Role::User,
-        QStringLiteral(
-            "The completion review found unfinished work. Preserve this "
-            "checklist: <task_plan>%1</task_plan> Execute this next step now: "
-            "%2 Return one necessary call_tool action, or final only when a "
-            "new proposed answer is ready for another completion review.")
-            .arg(compactJson(completionSteps), nextStep)};
 }
 
 chat::Message AgentPromptBuilder::unfinishedFinalMessage(

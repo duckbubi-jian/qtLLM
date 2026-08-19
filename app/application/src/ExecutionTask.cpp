@@ -87,6 +87,8 @@ void ExecutionTask::activate(QList<chat::Message> messageSeed,
     pendingToolCallReview_.reset();
     actionRepairFailures_ = 0;
     prematureFinalFailures_ = 0;
+    stepReviewAttempts_ = 0;
+    stepReviewSuccesses_ = 0;
     activateConversation(std::move(messageSeed), requestMessageIndex);
 }
 
@@ -101,6 +103,8 @@ void ExecutionTask::activateDirect(QList<chat::Message> messages)
     pendingToolCallReview_.reset();
     actionRepairFailures_ = 0;
     prematureFinalFailures_ = 0;
+    stepReviewAttempts_ = 0;
+    stepReviewSuccesses_ = 0;
     activateConversation(std::move(messages), requestMessageIndex);
 }
 
@@ -203,6 +207,7 @@ AgentTask::Directive ExecutionTask::completeTaskGeneration(
 
     const auto wasAwaitingReview = awaitingReview();
     const auto wasAwaitingToolCallReview = hasPendingToolCallReview();
+    if (wasAwaitingReview) ++stepReviewAttempts_;
     const auto result =
         handleAction(decision.action, decision.rawAction, toolEvidence,
                      unresolvedVerificationReason);
@@ -225,6 +230,7 @@ AgentTask::Directive ExecutionTask::completeTaskGeneration(
             directive.toolCallAlreadyRecorded = result.toolCallAlreadyRecorded;
             return directive;
         case ActionResult::Type::TaskCompleted:
+            if (wasAwaitingReview) ++stepReviewSuccesses_;
             directive.type = Directive::Type::Completed;
             directive.content = result.content;
             directive.evidenceEnd = result.evidenceEnd;
@@ -680,6 +686,16 @@ int ExecutionTask::evidenceStart() const
 int ExecutionTask::evidenceEnd() const
 {
     return evidenceEnd_;
+}
+
+int ExecutionTask::stepReviewAttempts() const
+{
+    return stepReviewAttempts_;
+}
+
+int ExecutionTask::stepReviewSuccesses() const
+{
+    return stepReviewSuccesses_;
 }
 
 bool ExecutionTask::hasPendingToolCallReview() const

@@ -78,20 +78,6 @@ QString firstToolChoiceForRun(const AgentRun& run)
     return {};
 }
 
-QString taskKindName(AgentTask::Kind kind)
-{
-    switch (kind)
-    {
-        case AgentTask::Kind::Planning:
-            return QStringLiteral("planning");
-        case AgentTask::Kind::Execution:
-            return QStringLiteral("execution");
-        case AgentTask::Kind::Summary:
-            return QStringLiteral("summary");
-    }
-    return QStringLiteral("unknown");
-}
-
 QString taskStatusName(AgentTask::Status status)
 {
     switch (status)
@@ -124,7 +110,7 @@ QJsonObject taskTiming(const AgentTask& task)
     return {
         {QStringLiteral("id"), snapshot.id},
         {QStringLiteral("description"), snapshot.description},
-        {QStringLiteral("kind"), taskKindName(snapshot.kind)},
+        {QStringLiteral("kind"), AgentTask::kindName(snapshot.kind)},
         {QStringLiteral("status"), taskStatusName(snapshot.status)},
         {QStringLiteral("elapsedMilliseconds"), snapshot.elapsedMilliseconds}};
 }
@@ -149,8 +135,11 @@ AgentRunMetrics AgentRunMetrics::fromRun(const AgentRun& run)
     metrics.duplicateMutationActions = run.duplicateMutationActions;
     metrics.redundantDiscoveryCalls = run.redundantDiscoveryCalls;
     metrics.pollRequests = run.pollRequests;
-    metrics.completionReviewAttempts = run.completionReviewAttempts;
-    metrics.completionReviewSuccesses = run.completionReviewSuccesses;
+    for (const auto& task : run.executionTasks)
+    {
+        metrics.completionReviewAttempts += task.stepReviewAttempts();
+        metrics.completionReviewSuccesses += task.stepReviewSuccesses();
+    }
     metrics.contextCompactions = run.contextCompactions;
     metrics.successfulToolResults = run.successfulToolResults;
     metrics.toolEvidenceCount = run.evidenceRevision;
@@ -161,7 +150,7 @@ AgentRunMetrics AgentRunMetrics::fromRun(const AgentRun& run)
                                              run.toolValidationFailures) /
                              static_cast<double>(run.toolValidationAttempts),
                          0.0, 1.0);
-    metrics.completionReviewSucceeded = run.completionReviewSuccesses > 0;
+    metrics.completionReviewSucceeded = metrics.completionReviewSuccesses > 0;
     if (run.planningTask.has_value())
         metrics.taskTimings.append(taskTiming(*run.planningTask));
     if (run.directTask.has_value())

@@ -8,9 +8,10 @@ unit an independent task with its own context, lifecycle, timing, and result,
 while reducing `AgentController` to a scheduler and asynchronous transport
 adapter.
 
-The baseline implementation is commit `a7355a1`, which introduced serial
-`ExecutionTask` execution. This document covers the remaining separation of
-responsibilities; it does not replace
+The baseline implementation began in commit `a7355a1`, which introduced serial
+`ExecutionTask` execution. Commits `502cc67` and `e561a8b` separated the three
+task phases and moved tool-result semantics into execution tasks. This document
+tracks the remaining separation of responsibilities; it does not replace
 [`mcp-agent-runtime-plan.md`](mcp-agent-runtime-plan.md).
 
 ## Target Architecture
@@ -310,11 +311,11 @@ Acceptance criteria:
 
 ### M3: Task-Owned Execution Loop
 
-Status: in progress. `ExecutionTask` owns action parsing, bounded action and
-review repair, tool-result interpretation, task-local recovery guidance, and
-the decision to start current-step evidence review. Schema validation, policy,
-and asynchronous MCP transport remain in the controller pending extraction of
-the generic tool runtime adapter.
+Status: complete for task semantics. `ExecutionTask` owns action parsing,
+bounded action and review repair, tool-result interpretation, task-local
+recovery guidance, and the decision to start current-step evidence review.
+Schema validation, policy, and asynchronous MCP transport remain in the
+controller pending extraction of the generic tool runtime adapter.
 
 - Move ordered action handling from `AgentController` into `ExecutionTask`.
 - Route generation completion, approval resolution, and normalized tool
@@ -334,9 +335,10 @@ Acceptance criteria:
 
 ### M4: PlanningTask And Queue Construction
 
-Status: in progress. The production planning turn and plan repair are owned by
-`PlanningTask`, and queue construction occurs only after its directive. The
-legacy unordered-plan compatibility path remains to be migrated and removed.
+Status: complete. The production planning turn and plan repair are owned by
+`PlanningTask`, queue construction occurs only after its directive, and every
+accepted plan is strictly ordered. The legacy unordered-plan execution path has
+been removed.
 
 - Move initial task-plan parsing and repair into `PlanningTask`.
 - Return validated `TaskSpecification` values through `TasksCreated`.
@@ -367,8 +369,11 @@ Acceptance criteria:
 ### M6: Controller Reduction And UI Projection
 
 Status: in progress. Per-task timing and Activity task boundaries are projected
-from task snapshots/events. Legacy completion-review state and task-semantic
-repair branches still need removal from `AgentController`.
+from task snapshots/events. The legacy global completion-review state machine,
+unordered-plan compatibility path, and controller-owned model token buffer are
+removed. Generic schema validation, duplicate-call protection, authorization,
+and asynchronous tool transport still remain in `AgentController` and are the
+next extraction boundary.
 
 - Remove obsolete plan, review, and ordered-repair fields from `AgentRun` and
   `AgentController`.

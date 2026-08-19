@@ -73,8 +73,9 @@ completion rules.
 
 The current implementation already provides most of the outer loop:
 
-- `AgentController` accepts only structured `task_plan`, `call_tool`,
-  `review_completion`, or `final` actions.
+- `PlanningTask`, serial `ExecutionTask` workers, and `SummaryTask` accept the
+  structured actions valid for their own phase; `AgentController` schedules
+  their directives and transports tool calls without parsing model output.
 - The Host validates tool names and arguments before execution and applies
   `ToolPolicy` independently from the model.
 - Tool calls support approval, cancellation, timeout handling, and ignored late
@@ -83,10 +84,9 @@ The current implementation already provides most of the outer loop:
   path instead of being treated as completion.
 - Canonical call signatures reject repeated successful calls and unchanged
   retries after failures, while permitting legitimate status polling.
-- Tool evidence, task steps, context compaction, and completion review prevent
-  a successful intermediate call from ending a multi-step request early.
-- A malformed completion review can fall back to an already prepared answer
-  only when successful terminal evidence covers every tool-required step.
+- Tool evidence, task-local step review, strict serial scheduling, and context
+  compaction prevent a successful intermediate call from advancing or ending a
+  multi-step request early.
 - The prompt contains a separately budgeted compact tool index that preserves
   qualified names, required nesting, local references, discriminators, exact
   enum and const values, and union branches when full schemas are omitted.
@@ -148,12 +148,13 @@ classify result
                    verify requested effect when required
                               |
                               v
-                  next step or completion review
+                  current-task review, then next task
 ```
 
-The model chooses the next action. The controller owns every transition and
-must never rely on the model to remember whether a call was executed, whether a
-job is terminal, or whether evidence satisfies a task step.
+The model chooses the next action for its active task. Task objects and the
+serial scheduler own every transition and never rely on the model to remember
+whether a call was executed, whether a job is terminal, or whether evidence
+satisfies a task step.
 
 ## Runtime Invariants
 
@@ -303,14 +304,14 @@ Verification should be proportional to risk and contract support:
 - A high-level task tool may return the created object and terminal state in
   one structured result; that can be sufficient when the output schema proves
   the requested fields.
-- When no reliable verification path exists, completion review must describe
-  that limitation instead of inventing success.
+- When no reliable verification path exists, the active task must report or
+  block on that limitation instead of inventing success.
 
 qtLLM must not invent verification mappings or add Shondy-specific conditionals.
 The controller marks a mutation as awaiting verification, exposes the known
 resource state to the model, and accepts a read-back selected from the existing
-catalog. When no reliable existing verification path is available, completion
-review reports that limitation instead of claiming success.
+catalog. When no reliable existing verification path is available, the active
+task reports that limitation instead of claiming success.
 
 ## External Tool Interoperability
 
@@ -399,12 +400,12 @@ Acceptance:
 
 Status: implemented. The controller now keeps bounded run-scoped resource,
 job, and mutation-verification records and carries them through tool results,
-context compaction, and completion review.
+context compaction, and task-local step review.
 
 Deliverables:
 
 - Add run-scoped resource and job records with evidence provenance.
-- Preserve the records in context compaction and completion review.
+- Preserve the records in context compaction and task-local step review.
 - Add verification-step tracking driven by current tool evidence and the
   existing catalog.
 - Reuse known UUIDs and parent-child relationships instead of rediscovering
@@ -415,7 +416,7 @@ Primary code areas:
 - `AgentRun`
 - `AgentContextCompactor`
 - tool-evidence construction
-- completion-review validation
+- execution-task step-review validation
 
 Acceptance:
 
@@ -471,7 +472,7 @@ Implemented acceptance infrastructure:
 
 - Every terminal Agent run exports versioned JSON metrics for tool selection,
   argument validation, targeted repairs, duplicate actions, polling, evidence,
-  context compaction, and completion review.
+  context compaction, and task-local step review.
 - `qtllm-agent-eval` reuses the production Worker, Agent controller, MCP Host,
   validation, policy, and tool result paths in a headless model-matrix runner.
 - File-driven suites define prompts, authorization behavior, and metric
@@ -486,7 +487,7 @@ Deliverables:
   nested, mutation, polling, denial, and recovery scenarios.
 - Record first-attempt tool choice, schema-valid argument rate, targeted repair
   count, redundant discovery count, duplicate mutation count, total tool calls,
-  and completion-review success.
+  and task-step review success.
 - Tune catalog and repair budgets from measured failures rather than adding
   domain-specific prompt rules.
 

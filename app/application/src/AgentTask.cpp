@@ -26,6 +26,25 @@ AgentTask::Kind AgentTask::kind() const
     return kind_;
 }
 
+QString AgentTask::kindName() const
+{
+    return kindName(kind_);
+}
+
+QString AgentTask::kindName(Kind kind)
+{
+    switch (kind)
+    {
+        case Kind::Planning:
+            return QStringLiteral("planning");
+        case Kind::Execution:
+            return QStringLiteral("execution");
+        case Kind::Summary:
+            return QStringLiteral("summary");
+    }
+    return QStringLiteral("unknown");
+}
+
 AgentTask::Status AgentTask::status() const
 {
     return status_;

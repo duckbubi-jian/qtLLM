@@ -108,33 +108,21 @@ class AgentController final : public QObject
     void activateExecutionTask(int index, int evidenceStart);
     void activateSummaryTask();
     void refreshExecutionTaskSnapshots();
-    void handleAction(const agent::Action& action, const QByteArray& rawAction,
-                      bool recordAction = true);
+    void handleToolAction(const agent::Action& action,
+                          const QByteArray& rawAction,
+                          bool recordAction = true);
     void applyTaskDirective(const AgentTask::Directive& directive);
-    void acceptTaskPlan(const QJsonArray& steps, bool ordered);
-    void beginCompletionReview(const agent::Action& action,
-                               const QByteArray& rawAction);
-    void handleCompletionReview(const agent::Action& action,
-                                const QByteArray& rawAction);
-    void retryCompletionReview(const QByteArray& rawAction,
-                               const QString& errorMessage);
-    void retryUnfinishedFinal(const QByteArray& rawAction,
-                              const QString& errorMessage);
-    [[nodiscard]] bool hasSufficientCompletionEvidence() const;
-    [[nodiscard]] QString validateCompletionReview(
-        const agent::Action& action) const;
+    void acceptTaskPlan(const QJsonArray& steps);
     void executeTool(const agent::Action& action);
     void dispatchTool(const agent::Action& action);
-    void retryInvalidAction(const QByteArray& rawAction,
-                            const QString& errorMessage);
     void retryInvalidToolAction(const QByteArray& rawAction,
                                 const agent::ToolValidationIssue& issue,
                                 const agent::ToolDefinition& tool,
                                 const QJsonObject& arguments);
     void retryNoProgressAction(const QByteArray& rawAction,
                                const QString& errorMessage);
-    void retryOrderedPlanAction(const QByteArray& rawAction,
-                                const QString& errorMessage);
+    void retryTaskAction(const QByteArray& rawAction,
+                         const QString& errorMessage);
     void setState(AgentRun::State state);
     void recordEvent(agent::EventType type, const QString& message = {},
                      const QString& toolName = {},
@@ -155,7 +143,6 @@ class AgentController final : public QObject
     std::optional<agent::Action> pendingApproval_;
     std::optional<agent::Action> activeToolAction_;
     std::optional<agent::Action> pendingPollAction_;
-    QByteArray decisionBytes_;
     QString activeToolCallSignature_;
     QString lastFailedToolCallSignature_;
     QString pollableToolCallSignature_;

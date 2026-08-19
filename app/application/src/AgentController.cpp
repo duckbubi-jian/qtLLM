@@ -23,130 +23,10 @@ constexpr auto minimumDecisionTokens = 256;
 constexpr auto runTimeoutMilliseconds = 120'000;
 constexpr auto minimumPollIntervalMilliseconds = 1'000;
 constexpr auto maximumCompletionReviewsPerEvidenceRevision = 2;
-constexpr auto maximumContractFailuresPerTarget = 2;
 constexpr auto maximumConsecutiveDiscoveryCalls = 4;
 constexpr qsizetype maximumDetectedCycleLength = 4;
 constexpr qsizetype maximumLoggedEventDataBytes = 4'096;
-constexpr qsizetype maximumInvalidatedResourceIds = 128;
 constexpr qsizetype maximumProgressActivities = 8;
-
-QString unqualifiedToolName(const QString& qualifiedToolName)
-{
-    return qualifiedToolName.section(QLatin1Char('.'), -1).toLower();
-}
-
-bool isContextResetToolName(const QString& qualifiedToolName)
-{
-    static const QStringList names{
-        QStringLiteral("close_case"), QStringLiteral("load_case"),
-        QStringLiteral("new_case"), QStringLiteral("open_case"),
-        QStringLiteral("switch_case")};
-    return names.contains(unqualifiedToolName(qualifiedToolName));
-}
-
-bool opensContext(const QString& qualifiedToolName)
-{
-    static const QStringList names{QStringLiteral("load_case"),
-                                   QStringLiteral("open_case"),
-                                   QStringLiteral("switch_case")};
-    return names.contains(unqualifiedToolName(qualifiedToolName));
-}
-
-bool closesContext(const QString& qualifiedToolName)
-{
-    return unqualifiedToolName(qualifiedToolName) ==
-           QLatin1String("close_case");
-}
-
-bool explicitlyRequestsContextClose(const QString& request)
-{
-    const auto normalized = request.trimmed().toLower();
-    static const QStringList negativePhrases{
-        QStringLiteral("do not close"),
-        QStringLiteral("don't close"),
-        QStringLiteral("without closing"),
-        QStringLiteral("keep open"),
-        QStringLiteral("\u4e0d\u8981\u5173\u95ed"),
-        QStringLiteral("\u522b\u5173\u95ed"),
-        QStringLiteral("\u4fdd\u6301\u6253\u5f00")};
-    for (const auto& phrase : negativePhrases)
-        if (normalized.contains(phrase)) return false;
-
-    static const QStringList closeTerms{
-        QStringLiteral("close_case"),   QStringLiteral("close"),
-        QStringLiteral("shut"),         QStringLiteral("\u5173\u95ed"),
-        QStringLiteral("\u5173\u6389"), QStringLiteral("\u9000\u51fa")};
-    return std::any_of(closeTerms.cbegin(), closeTerms.cend(),
-                       [&normalized](const QString& term)
-                       { return normalized.contains(term); });
-}
-
-bool isSingleContextOperationRequest(const QString& request,
-                                     const QString& qualifiedToolName)
-{
-    const auto name = unqualifiedToolName(qualifiedToolName);
-    if (name != QLatin1String("open_case") &&
-        name != QLatin1String("load_case") &&
-        name != QLatin1String("switch_case") &&
-        name != QLatin1String("new_case") &&
-        name != QLatin1String("close_case"))
-        return false;
-
-    const auto normalized = request.trimmed().toLower();
-    auto nonEmptyLines = 0;
-    for (const auto& line : normalized.split(QLatin1Char('\n')))
-        if (!line.trimmed().isEmpty()) ++nonEmptyLines;
-    if (nonEmptyLines > 1) return false;
-
-    QStringList operationTerms;
-    if (name == QLatin1String("new_case"))
-        operationTerms = {QStringLiteral("new"), QStringLiteral("create"),
-                          QStringLiteral("\u65b0\u5efa"),
-                          QStringLiteral("\u521b\u5efa")};
-    else if (name == QLatin1String("close_case"))
-        operationTerms = {QStringLiteral("close"), QStringLiteral("shut"),
-                          QStringLiteral("\u5173\u95ed"),
-                          QStringLiteral("\u5173\u6389"),
-                          QStringLiteral("\u9000\u51fa")};
-    else
-        operationTerms = {
-            QStringLiteral("open"),         QStringLiteral("load"),
-            QStringLiteral("switch"),       QStringLiteral("\u6253\u5f00"),
-            QStringLiteral("\u52a0\u8f7d"), QStringLiteral("\u5207\u6362")};
-    const auto mentionsOperation =
-        std::any_of(operationTerms.cbegin(), operationTerms.cend(),
-                    [&normalized](const QString& term)
-                    { return normalized.contains(term); });
-    if (!mentionsOperation) return false;
-
-    static const QStringList additionalOperationTerms{
-        QStringLiteral("open"),         QStringLiteral("load"),
-        QStringLiteral("switch"),       QStringLiteral("new"),
-        QStringLiteral("create"),       QStringLiteral("inspect"),
-        QStringLiteral("list"),         QStringLiteral("check"),
-        QStringLiteral("query"),        QStringLiteral("find"),
-        QStringLiteral("configure"),    QStringLiteral("set "),
-        QStringLiteral("edit"),         QStringLiteral("import"),
-        QStringLiteral("run"),          QStringLiteral("solve"),
-        QStringLiteral("simulate"),     QStringLiteral("read"),
-        QStringLiteral("delete"),       QStringLiteral("close"),
-        QStringLiteral("\u6253\u5f00"), QStringLiteral("\u52a0\u8f7d"),
-        QStringLiteral("\u5207\u6362"), QStringLiteral("\u65b0\u5efa"),
-        QStringLiteral("\u521b\u5efa"), QStringLiteral("\u67e5\u770b"),
-        QStringLiteral("\u5217\u51fa"), QStringLiteral("\u68c0\u67e5"),
-        QStringLiteral("\u67e5\u8be2"), QStringLiteral("\u914d\u7f6e"),
-        QStringLiteral("\u8bbe\u7f6e"), QStringLiteral("\u7f16\u8f91"),
-        QStringLiteral("\u5bfc\u5165"), QStringLiteral("\u8fd0\u884c"),
-        QStringLiteral("\u6c42\u89e3"), QStringLiteral("\u8ba1\u7b97"),
-        QStringLiteral("\u8bfb\u53d6"), QStringLiteral("\u5220\u9664"),
-        QStringLiteral("\u5173\u95ed")};
-    return std::none_of(
-        additionalOperationTerms.cbegin(), additionalOperationTerms.cend(),
-        [&normalized, &operationTerms](const QString& term)
-        {
-            return normalized.contains(term) && !operationTerms.contains(term);
-        });
-}
 
 bool explicitlyRequestsExhaustiveDiscovery(const QString& request)
 {
@@ -162,326 +42,6 @@ bool explicitlyRequestsExhaustiveDiscovery(const QString& request)
     return std::any_of(terms.cbegin(), terms.cend(),
                        [&normalized](const QString& term)
                        { return normalized.contains(term); });
-}
-
-QString stringArgument(const QJsonObject& arguments,
-                       const QStringList& candidateKeys)
-{
-    for (const auto& key : candidateKeys)
-    {
-        const auto value = arguments.value(key);
-        if (value.isString() && !value.toString().trimmed().isEmpty())
-            return value.toString().trimmed();
-    }
-    return {};
-}
-
-QString actionItemType(const agent::Action& action)
-{
-    return stringArgument(action.arguments, {QStringLiteral("item_type"),
-                                             QStringLiteral("object_type"),
-                                             QStringLiteral("model_type")});
-}
-
-QString actionSelector(const agent::Action& action)
-{
-    return stringArgument(
-        action.arguments,
-        {QStringLiteral("name_uuid"), QStringLiteral("object_uuid"),
-         QStringLiteral("resource_uuid"), QStringLiteral("uuid"),
-         QStringLiteral("id")});
-}
-
-QString contractFailureKey(const agent::Action& action)
-{
-    return action.toolName.toCaseFolded() + QLatin1Char('\n') +
-           actionItemType(action).toCaseFolded() + QLatin1Char('\n') +
-           actionSelector(action).toCaseFolded();
-}
-
-QString modelContractKey(const QString& serverId, const QString& itemType,
-                         const QString& selector)
-{
-    return serverId.toCaseFolded() + QLatin1Char('\n') +
-           itemType.toCaseFolded() + QLatin1Char('\n') +
-           selector.toCaseFolded();
-}
-
-QJsonValue toolResultPayload(const agent::ToolResult& result);
-
-bool isValidModelJsonPointer(const QString& path)
-{
-    if (path.isEmpty() || !path.startsWith(QLatin1Char('/'))) return false;
-    for (qsizetype index = 0; index < path.size(); ++index)
-    {
-        if (path.at(index) != QLatin1Char('~')) continue;
-        if (++index >= path.size() || (path.at(index) != QLatin1Char('0') &&
-                                       path.at(index) != QLatin1Char('1')))
-            return false;
-    }
-    return true;
-}
-
-void appendDescribedFieldPaths(const QJsonValue& value, QStringList& paths,
-                               qsizetype depth = 0)
-{
-    if (depth > 12) return;
-    if (value.isString())
-    {
-        const auto path = value.toString().trimmed();
-        if (isValidModelJsonPointer(path) && !paths.contains(path))
-            paths.append(path);
-        return;
-    }
-    if (value.isArray())
-    {
-        for (const auto& entry : value.toArray())
-            appendDescribedFieldPaths(entry, paths, depth + 1);
-        return;
-    }
-    if (!value.isObject()) return;
-
-    const auto object = value.toObject();
-    const auto path = object.value(QStringLiteral("path")).toString().trimmed();
-    if (isValidModelJsonPointer(path) && !paths.contains(path))
-        paths.append(path);
-    for (auto entry = object.constBegin(); entry != object.constEnd(); ++entry)
-    {
-        if (entry.key() == QLatin1String("path")) continue;
-        appendDescribedFieldPaths(entry.value(), paths, depth + 1);
-    }
-}
-
-QStringList describedFieldPaths(const agent::ToolResult& result)
-{
-    QStringList paths;
-    const auto payload = toolResultPayload(result);
-    if (!payload.isObject()) return paths;
-
-    const auto collectFields = [&paths](const auto& self,
-                                        const QJsonValue& value,
-                                        qsizetype depth) -> void
-    {
-        if (depth > 10) return;
-        if (value.isArray())
-        {
-            for (const auto& entry : value.toArray())
-                self(self, entry, depth + 1);
-            return;
-        }
-        if (!value.isObject()) return;
-        const auto object = value.toObject();
-        for (auto entry = object.constBegin(); entry != object.constEnd();
-             ++entry)
-        {
-            const auto key = entry.key().toCaseFolded();
-            if (key == QLatin1String("fields") ||
-                key == QLatin1String("editable_fields") ||
-                key == QLatin1String("editablefields") ||
-                key == QLatin1String("field_paths") ||
-                key == QLatin1String("fieldpaths"))
-                appendDescribedFieldPaths(entry.value(), paths);
-            else
-                self(self, entry.value(), depth + 1);
-        }
-    };
-    collectFields(collectFields, payload, 0);
-    paths.sort(Qt::CaseSensitive);
-    return paths;
-}
-
-QString summarizedAllowedPaths(const QStringList& paths,
-                               const QString& rejectedPath)
-{
-    if (paths.isEmpty()) return {};
-    auto candidatePath = rejectedPath;
-    if (candidatePath.startsWith(QLatin1String("/changes/")))
-        candidatePath = candidatePath.sliced(9);
-    candidatePath.replace(QStringLiteral("~1"), QStringLiteral("/"));
-    candidatePath.replace(QStringLiteral("~0"), QStringLiteral("~"));
-    if (!candidatePath.startsWith(QLatin1Char('/')))
-        candidatePath.prepend(QLatin1Char('/'));
-    const auto leaf = candidatePath.section(QLatin1Char('/'), -1);
-
-    QStringList relevant;
-    for (const auto& path : paths)
-        if (!leaf.isEmpty() && path.section(QLatin1Char('/'), -1) == leaf)
-            relevant.append(path);
-    if (relevant.isEmpty()) relevant = paths;
-    constexpr qsizetype maximumDisplayedPaths = 24;
-    const auto omitted =
-        relevant.size() - std::min(relevant.size(), maximumDisplayedPaths);
-    relevant =
-        relevant.sliced(0, std::min(relevant.size(), maximumDisplayedPaths));
-    auto summary = relevant.join(QStringLiteral(", "));
-    if (omitted > 0)
-        summary += QStringLiteral(
-                       " (and %1 more; call describe_model again "
-                       "to inspect them)")
-                       .arg(omitted);
-    return summary;
-}
-
-bool isContractFailure(const agent::ToolResult& result)
-{
-    auto code = result.errorCode.toLower();
-    code.remove(QLatin1Char('_'));
-    code.remove(QLatin1Char('-'));
-    return code == QLatin1String("invalidargument") ||
-           code == QLatin1String("invalidfield") ||
-           code == QLatin1String("invalidfieldvalue") ||
-           code == QLatin1String("invalidselector") ||
-           code == QLatin1String("invalidtype") ||
-           code == QLatin1String("unknownfield");
-}
-
-QJsonValue toolResultPayload(const agent::ToolResult& result)
-{
-    if (!result.structuredContent.isUndefined() &&
-        !result.structuredContent.isNull())
-        return result.structuredContent;
-    const auto structured =
-        result.result.value(QStringLiteral("structuredContent"));
-    return structured.isUndefined() || structured.isNull()
-               ? QJsonValue(result.result)
-               : structured;
-}
-
-QJsonObject selectedResultObject(const agent::ToolResult& result)
-{
-    auto payload = toolResultPayload(result);
-    if (!payload.isObject()) return {};
-    auto object = payload.toObject();
-    if (object.value(QStringLiteral("result")).isObject())
-        object = object.value(QStringLiteral("result")).toObject();
-    return object;
-}
-
-QString objectIdentityMismatch(const agent::Action& action,
-                               const agent::ToolResult& result)
-{
-    if (unqualifiedToolName(action.toolName) != QLatin1String("get_object"))
-        return {};
-    const auto selector = actionSelector(action);
-    if (selector.isEmpty()) return {};
-    const auto object = selectedResultObject(result);
-    const auto returnedName =
-        object.value(QStringLiteral("name")).toString().trimmed();
-    const auto returnedUuid = stringArgument(
-        object, {QStringLiteral("uuid"), QStringLiteral("object_uuid")});
-    const auto foldedSelector = selector.toCaseFolded();
-    if (returnedName.compare(QStringLiteral("template"), Qt::CaseInsensitive) ==
-            0 &&
-        !foldedSelector.contains(QStringLiteral("template")))
-        return QStringLiteral(
-                   "The tool returned a default template instead of the "
-                   "requested object selector %1.")
-            .arg(selector);
-    if (!returnedName.isEmpty() && !returnedUuid.isEmpty() &&
-        !foldedSelector.contains(returnedName.toCaseFolded()) &&
-        !foldedSelector.contains(returnedUuid.toCaseFolded()))
-        return QStringLiteral(
-                   "The returned object identity (%1, %2) does not match "
-                   "the requested selector %3.")
-            .arg(returnedName, returnedUuid, selector);
-    return {};
-}
-
-QString findStringField(const QJsonValue& value, const QString& field,
-                        qsizetype depth = 0)
-{
-    if (depth > 8) return {};
-    if (value.isArray())
-    {
-        for (const auto& item : value.toArray())
-        {
-            const auto found = findStringField(item, field, depth + 1);
-            if (!found.isEmpty()) return found;
-        }
-        return {};
-    }
-    if (!value.isObject()) return {};
-    const auto object = value.toObject();
-    const auto direct = object.value(field);
-    if (direct.isString() && !direct.toString().trimmed().isEmpty())
-        return direct.toString().trimmed();
-    for (auto item = object.constBegin(); item != object.constEnd(); ++item)
-    {
-        const auto found = findStringField(item.value(), field, depth + 1);
-        if (!found.isEmpty()) return found;
-    }
-    return {};
-}
-
-QString normalizedScope(QString value)
-{
-    value = value.trimmed();
-    value.replace(QLatin1Char('\\'), QLatin1Char('/'));
-    while (value.endsWith(QLatin1Char('/')))
-        value.chop(1);
-    return value.toCaseFolded();
-}
-
-QString requestedContextScope(const agent::Action& action)
-{
-    auto scope =
-        stringArgument(action.arguments, {QStringLiteral("case_path")});
-    if (scope.isEmpty())
-    {
-        auto parent = stringArgument(action.arguments,
-                                     {QStringLiteral("parent_directory")});
-        const auto name =
-            stringArgument(action.arguments, {QStringLiteral("case_name")});
-        if (!parent.isEmpty() && !name.isEmpty())
-        {
-            while (parent.endsWith(QLatin1Char('/')) ||
-                   parent.endsWith(QLatin1Char('\\')))
-                parent.chop(1);
-            scope = parent + QLatin1Char('/') + name;
-        }
-    }
-    return normalizedScope(scope);
-}
-
-QString contextScope(const agent::Action& action,
-                     const agent::ToolResult& result)
-{
-    auto scope =
-        findStringField(toolResultPayload(result), QStringLiteral("case_path"));
-    if (scope.isEmpty()) return requestedContextScope(action);
-    return normalizedScope(scope);
-}
-
-QString findReferencedId(const QJsonValue& value,
-                         const QStringList& invalidatedIds, qsizetype depth = 0)
-{
-    if (depth > 12) return {};
-    if (value.isString())
-    {
-        const auto text = value.toString().toCaseFolded();
-        for (const auto& id : invalidatedIds)
-            if (!id.isEmpty() && text.contains(id.toCaseFolded())) return id;
-        return {};
-    }
-    if (value.isArray())
-    {
-        for (const auto& item : value.toArray())
-        {
-            const auto found =
-                findReferencedId(item, invalidatedIds, depth + 1);
-            if (!found.isEmpty()) return found;
-        }
-        return {};
-    }
-    if (!value.isObject()) return {};
-    const auto object = value.toObject();
-    for (auto item = object.constBegin(); item != object.constEnd(); ++item)
-    {
-        const auto found =
-            findReferencedId(item.value(), invalidatedIds, depth + 1);
-        if (!found.isEmpty()) return found;
-    }
-    return {};
 }
 
 QJsonValue canonicalJsonValue(const QJsonValue& value)
@@ -714,13 +274,6 @@ bool AgentController::start(const QString& userRequest,
     lastPollCompletedAtMs_ = 0;
     completedToolCallHistory_.clear();
     toolEvidence_.clear();
-    contractRecoveries_.clear();
-    contractFailureCounts_.clear();
-    modelContractPaths_.clear();
-    activeContextScope_.clear();
-    invalidatedResourceIds_.clear();
-    contextEstablished_ = false;
-    hasStateChangesInContext_ = false;
     if (pollTimer_->isActive()) pollTimer_->stop();
     if (!runTimer_->isActive()) runTimer_->start();
 
@@ -996,49 +549,6 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
     }
 
     QString recoveryGuidance;
-    auto contractFailuresExhausted = false;
-    if (completedToolAction.has_value() &&
-        normalizedResult.outcome == agent::ToolOutcome::Succeeded)
-    {
-        const auto mismatch =
-            objectIdentityMismatch(*completedToolAction, normalizedResult);
-        if (!mismatch.isEmpty())
-        {
-            normalizedResult.isError = true;
-            normalizedResult.failureKind = agent::ToolFailureKind::Tool;
-            normalizedResult.outcome = agent::ToolOutcome::ToolFailed;
-            normalizedResult.sideEffectState =
-                agent::ToolSideEffectState::KnownFailed;
-            normalizedResult.errorCode =
-                QStringLiteral("object_identity_mismatch");
-            normalizedResult.errorMessage = mismatch;
-            recoveryGuidance = QStringLiteral(
-                "Do not use this result as object evidence. Reuse the "
-                "object identity returned by the creation or listing call; "
-                "do not substitute a geometry-resource identifier.");
-        }
-    }
-    if (completedToolAction.has_value() &&
-        normalizedResult.outcome == agent::ToolOutcome::Succeeded)
-    {
-        const auto contextGuidance = updateContextAfterSuccess(
-            *completedToolAction, normalizedResult, completedOperationKind);
-        if (!contextGuidance.isEmpty())
-            recoveryGuidance +=
-                (recoveryGuidance.isEmpty() ? QString{} : QStringLiteral(" ")) +
-                contextGuidance;
-        captureModelContract(*completedToolAction, normalizedResult);
-        resolveContractRecovery(*completedToolAction);
-    }
-    if (completedToolAction.has_value() && isContractFailure(normalizedResult))
-    {
-        const auto contractGuidance = registerContractFailure(
-            *completedToolAction, normalizedResult, contractFailuresExhausted);
-        if (!contractGuidance.isEmpty())
-            recoveryGuidance +=
-                (recoveryGuidance.isEmpty() ? QString{} : QStringLiteral(" ")) +
-                contractGuidance;
-    }
 
     completedToolCallHistory_.append(completedToolCallSignature);
     const auto outcome = normalizedResult.outcome;
@@ -1050,20 +560,6 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
             ++activeRun_->consecutiveDiscoveryCalls;
         else
             activeRun_->consecutiveDiscoveryCalls = 0;
-    }
-    if (completedToolAction.has_value() &&
-        outcome == agent::ToolOutcome::Succeeded &&
-        isSingleContextOperationRequest(activeRun_->userRequest,
-                                        completedToolAction->toolName))
-    {
-        activeRun_->completedSingleOperationTool =
-            completedToolAction->toolName;
-        recoveryGuidance +=
-            (recoveryGuidance.isEmpty() ? QString{} : QStringLiteral(" ")) +
-            QStringLiteral(
-                "The sole operation requested by the user succeeded. "
-                "Return final next. Do not call another tool, inspect the "
-                "opened context, or perform cleanup.");
     }
     if (inProgress)
     {
@@ -1182,16 +678,6 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
                 normalizedResult.errorMessage.isEmpty()
                     ? QStringLiteral("The tool request was denied.")
                     : normalizedResult.errorMessage);
-        return;
-    }
-    if (contractFailuresExhausted)
-    {
-        failRun(QStringLiteral("invalid_tool_arguments"),
-                QStringLiteral(
-                    "The same tool and target rejected corrected arguments %1 "
-                    "times. Stop guessing field paths and report the contract "
-                    "blocker.")
-                    .arg(maximumContractFailuresPerTarget));
         return;
     }
     requestDecision();
@@ -1378,10 +864,7 @@ void AgentController::handleAction(const agent::Action& action,
         else
         {
             const auto unfinishedReason =
-                activeRun_->completedSingleOperationTool.isEmpty()
-                    ? unfinishedEvidenceReason(toolEvidence_,
-                                               activeRun_->ledger)
-                    : QString{};
+                unfinishedEvidenceReason(toolEvidence_, activeRun_->ledger);
             if (unfinishedReason.isEmpty())
                 completeRun(action.content);
             else
@@ -1439,15 +922,18 @@ void AgentController::handleAction(const agent::Action& action,
         if (action.planStepId.isEmpty() ||
             !action.completesPlanStep.has_value())
         {
-            recordDuplicateToolAction();
-            retryNoProgressAction(
+            const auto missing = action.planStepId.isEmpty()
+                                     ? QStringLiteral("plan_step_id")
+                                     : QStringLiteral("completes_plan_step");
+            retryOrderedPlanAction(
                 rawAction,
                 QStringLiteral(
-                    "An ordered task plan is active. This call must include "
-                    "plan_step_id='%1' and boolean completes_plan_step. Use "
-                    "false for an intermediate call and true only for the "
-                    "final call that should complete the current step.")
-                    .arg(planStepId));
+                    "The current ordered task-plan step is '%1'. The call "
+                    "was not executed because it is missing %2. Return the "
+                    "same necessary call with plan_step_id='%1' and decide "
+                    "whether completes_plan_step is true only if this call "
+                    "finishes the current step; otherwise use false.")
+                    .arg(planStepId, missing));
             return;
         }
         if (action.planStepId != planStepId)
@@ -1474,48 +960,7 @@ void AgentController::handleAction(const agent::Action& action,
                     .arg(step.value(QStringLiteral("description")).toString()));
             return;
         }
-    }
-
-    const auto staleId = staleResourceReference(action.arguments);
-    if (!staleId.isEmpty())
-    {
-        recordDuplicateToolAction();
-        retryNoProgressAction(
-            rawAction,
-            QStringLiteral(
-                "The arguments reuse identifier %1 from an external context "
-                "that was closed or replaced. Use identifiers returned in "
-                "the current context only.")
-                .arg(staleId));
-        return;
-    }
-
-    const auto recoveryError = contractRecoveryError(action);
-    if (!recoveryError.isEmpty())
-    {
-        recordDuplicateToolAction();
-        retryNoProgressAction(rawAction, recoveryError);
-        return;
-    }
-
-    const auto modelPathError = modelContractError(action);
-    if (!modelPathError.isEmpty())
-    {
-        recordDuplicateToolAction();
-        retryNoProgressAction(rawAction, modelPathError);
-        return;
-    }
-
-    if (isSameActiveContextOperation(action))
-    {
-        recordDuplicateToolAction();
-        retryNoProgressAction(
-            rawAction,
-            QStringLiteral(
-                "This case is already open. Do not call the case-opening "
-                "tool again and do not ask for approval; continue with the "
-                "next requested operation."));
-        return;
+        activeRun_->orderedPlanRepairs = 0;
     }
 
     const auto signature = toolCallSignature(action);
@@ -1577,30 +1022,6 @@ void AgentController::handleAction(const agent::Action& action,
         return;
     }
     activeRun_->consecutiveValidationFailures = 0;
-    if (!activeRun_->completedSingleOperationTool.isEmpty())
-    {
-        recordDuplicateToolAction();
-        retryNoProgressAction(
-            rawAction,
-            QStringLiteral(
-                "%1 already completed the user's sole requested operation. "
-                "The next action must be final; no additional tool call is "
-                "within scope.")
-                .arg(activeRun_->completedSingleOperationTool));
-        return;
-    }
-    if (closesContext(action.toolName) && contextEstablished_ &&
-        !explicitlyRequestsContextClose(activeRun_->userRequest))
-    {
-        recordDuplicateToolAction();
-        retryNoProgressAction(
-            rawAction,
-            QStringLiteral(
-                "The user did not request closing the active case. Keep it "
-                "open and return final when the requested work is complete; "
-                "do not close it as inspection or cleanup."));
-        return;
-    }
     const auto candidateOperationKind =
         operationKind(*tool, dependencies_.toolRisk);
     const auto isBreadthDiscovery =
@@ -1610,7 +1031,7 @@ void AgentController::handleAction(const agent::Action& action,
         activeRun_->consecutiveDiscoveryCalls >=
             maximumConsecutiveDiscoveryCalls &&
         !explicitlyRequestsExhaustiveDiscovery(activeRun_->userRequest) &&
-        !isRequiredContractDiscovery(action) && !isStatusPoll)
+        !isStatusPoll)
     {
         recordDuplicateToolAction();
         retryNoProgressAction(
@@ -1633,8 +1054,7 @@ void AgentController::handleAction(const agent::Action& action,
                 QStringLiteral("Local policy denied the tool call."));
         return;
     }
-    if (decision == infrastructure::mcp::ToolDecision::RequireApproval ||
-        requiresContextResetApproval(action))
+    if (decision == infrastructure::mcp::ToolDecision::RequireApproval)
     {
         pendingApproval_ = action;
         setState(AgentRun::State::WaitingForApproval);
@@ -2324,321 +1744,24 @@ void AgentController::retryNoProgressAction(const QByteArray& rawAction,
     requestDecision();
 }
 
-QString AgentController::contractRecoveryError(
-    const agent::Action& action) const
-{
-    const auto recovery =
-        contractRecoveries_.constFind(contractFailureKey(action));
-    if (recovery == contractRecoveries_.cend()) return {};
-    if (recovery->discoveryTool.isEmpty())
-        return QStringLiteral(
-            "The same tool and target already returned an argument "
-            "contract error. No matching contract-discovery tool is "
-            "available, so do not try another field-path variation. "
-            "Use a different supported operation or report the "
-            "blocker.");
-    auto requirement = QStringLiteral(
-                           "The same tool and target already returned an "
-                           "argument contract error. Before retrying %1, call "
-                           "%2")
-                           .arg(recovery->failedTool, recovery->discoveryTool);
-    if (!recovery->itemType.isEmpty())
-        requirement +=
-            QStringLiteral(" with item_type=%1").arg(recovery->itemType);
-    if (!recovery->selector.isEmpty())
-        requirement += QStringLiteral(
-                           " and use the selector required by that model for "
-                           "the target previously identified as %1")
-                           .arg(recovery->selector);
-    return requirement + QStringLiteral(
-                             ". Do not guess another edit shape before the "
-                             "contract lookup succeeds.");
-}
-
-QString AgentController::modelContractError(const agent::Action& action) const
-{
-    if (unqualifiedToolName(action.toolName) != QLatin1String("edit_object"))
-        return {};
-    const auto changesValue = action.arguments.value(QStringLiteral("changes"));
-    if (!changesValue.isObject()) return {};
-
-    QString serverId;
-    const auto definition =
-        std::find_if(availableTools_.cbegin(), availableTools_.cend(),
-                     [&action](const agent::ToolDefinition& candidate)
-                     { return candidate.qualifiedName == action.toolName; });
-    if (definition != availableTools_.cend()) serverId = definition->serverId;
-    const auto itemType = actionItemType(action);
-    const auto selector = actionSelector(action);
-    auto allowedPaths = modelContractPaths_.value(
-        modelContractKey(serverId, itemType, selector));
-    if (allowedPaths.isEmpty())
-        allowedPaths =
-            modelContractPaths_.value(modelContractKey(serverId, itemType, {}));
-
-    for (const auto& path : changesValue.toObject().keys())
-    {
-        const auto diagnosticPath = path.startsWith(QLatin1String("/changes/"));
-        if (!isValidModelJsonPointer(path) || diagnosticPath)
-        {
-            auto message = QStringLiteral(
-                "edit_object changes keys must be model JSON Pointers that "
-                "start with '/', for example "
-                "'/density/isotropic/fixedValue'. The diagnostic "
-                "instance_path '/changes/~1density~1isotropic~1fixedValue' "
-                "describes a location inside the tool arguments; '~1' does "
-                "not replace '/' in the actual changes key. Do not copy an "
-                "instance_path into changes.");
-            const auto summary = summarizedAllowedPaths(allowedPaths, path);
-            if (!summary.isEmpty())
-                message += QStringLiteral(
-                               " Exact paths returned by "
-                               "describe_model for this target: ") +
-                           summary + QLatin1Char('.');
-            return message;
-        }
-        if (!allowedPaths.isEmpty() && !allowedPaths.contains(path))
-        {
-            auto message =
-                QStringLiteral(
-                    "edit_object path '%1' was not returned by "
-                    "describe_model for this target. Use an exact "
-                    "fields[].path "
-                    "model path. Do not insert field values such as "
-                    "'constValue' into the path. Exact allowed paths: ")
-                    .arg(path);
-            message +=
-                summarizedAllowedPaths(allowedPaths, path) + QLatin1Char('.');
-            return message;
-        }
-    }
-    return {};
-}
-
-QString AgentController::registerContractFailure(
-    const agent::Action& action, const agent::ToolResult& result,
-    bool& exhausted)
-{
-    const auto key = contractFailureKey(action);
-    const auto failures = contractFailureCounts_.value(key) + 1;
-    contractFailureCounts_.insert(key, failures);
-    exhausted = failures >= maximumContractFailuresPerTarget;
-
-    QString serverId;
-    const auto failedDefinition =
-        std::find_if(availableTools_.cbegin(), availableTools_.cend(),
-                     [&action](const agent::ToolDefinition& candidate)
-                     { return candidate.qualifiedName == action.toolName; });
-    if (failedDefinition != availableTools_.cend())
-        serverId = failedDefinition->serverId;
-    QString discoveryTool;
-    const auto discovery =
-        std::find_if(availableTools_.cbegin(), availableTools_.cend(),
-                     [&serverId](const agent::ToolDefinition& candidate)
-                     {
-                         return candidate.serverId == serverId &&
-                                unqualifiedToolName(candidate.qualifiedName) ==
-                                    QLatin1String("describe_model");
-                     });
-    if (discovery != availableTools_.cend())
-        discoveryTool = discovery->qualifiedName;
-
-    const ContractRecovery recovery{action.toolName, discoveryTool,
-                                    actionItemType(action),
-                                    actionSelector(action)};
-    contractRecoveries_.insert(key, recovery);
-    if (exhausted)
-        return QStringLiteral(
-            "The argument contract failed again after recovery. The "
-            "controller will stop this run instead of allowing more "
-            "field-path guesses.");
-    if (discoveryTool.isEmpty())
-        return QStringLiteral(
-                   "Error %1 is an argument-contract failure. No matching "
-                   "describe_model tool is available. Do not retry the same "
-                   "tool and target with guessed field paths; use another "
-                   "supported operation or report the blocker.")
-            .arg(result.errorCode);
-    auto guidance =
-        QStringLiteral(
-            "Error %1 is an argument-contract failure. Before retrying %2, "
-            "call %3")
-            .arg(result.errorCode, action.toolName, discoveryTool);
-    if (!recovery.itemType.isEmpty())
-        guidance += QStringLiteral(" with item_type=%1").arg(recovery.itemType);
-    return guidance + QStringLiteral(
-                          ". Use the returned selector and exact JSON "
-                          "Pointer fields[].path or model_path values; do not "
-                          "guess another edit shape. An instance_path such as "
-                          "'/changes/~1density~1isotropic~1fixedValue' is only "
-                          "a diagnostic location in the tool arguments and "
-                          "must never be used as a changes key.");
-}
-
-void AgentController::captureModelContract(const agent::Action& action,
-                                           const agent::ToolResult& result)
-{
-    if (unqualifiedToolName(action.toolName) != QLatin1String("describe_model"))
-        return;
-    const auto paths = describedFieldPaths(result);
-    if (paths.isEmpty()) return;
-
-    QString serverId;
-    const auto definition =
-        std::find_if(availableTools_.cbegin(), availableTools_.cend(),
-                     [&action](const agent::ToolDefinition& candidate)
-                     { return candidate.qualifiedName == action.toolName; });
-    if (definition != availableTools_.cend()) serverId = definition->serverId;
-    const auto itemType = actionItemType(action);
-    if (itemType.isEmpty()) return;
-    modelContractPaths_.insert(
-        modelContractKey(serverId, itemType, actionSelector(action)), paths);
-
-    for (const auto& recovery : std::as_const(contractRecoveries_))
-    {
-        const auto discoverySatisfied =
-            action.toolName == recovery.discoveryTool &&
-            (recovery.itemType.isEmpty() ||
-             recovery.itemType.compare(itemType, Qt::CaseInsensitive) == 0);
-        if (discoverySatisfied)
-            modelContractPaths_.insert(
-                modelContractKey(serverId, itemType, recovery.selector), paths);
-    }
-}
-
-void AgentController::resolveContractRecovery(const agent::Action& action)
-{
-    const auto itemType = actionItemType(action);
-    for (auto recovery = contractRecoveries_.begin();
-         recovery != contractRecoveries_.end();)
-    {
-        const auto discoverySatisfied =
-            !recovery->discoveryTool.isEmpty() &&
-            action.toolName == recovery->discoveryTool &&
-            (recovery->itemType.isEmpty() ||
-             recovery->itemType.compare(itemType, Qt::CaseInsensitive) == 0);
-        if (discoverySatisfied)
-            recovery = contractRecoveries_.erase(recovery);
-        else
-            ++recovery;
-    }
-
-    const auto key = contractFailureKey(action);
-    if (contractFailureCounts_.contains(key))
-    {
-        contractRecoveries_.remove(key);
-        contractFailureCounts_.remove(key);
-    }
-}
-
-bool AgentController::isRequiredContractDiscovery(
-    const agent::Action& action) const
-{
-    const auto itemType = actionItemType(action);
-    return std::any_of(contractRecoveries_.cbegin(), contractRecoveries_.cend(),
-                       [&action, &itemType](const ContractRecovery& recovery)
-                       {
-                           return !recovery.discoveryTool.isEmpty() &&
-                                  action.toolName == recovery.discoveryTool &&
-                                  (recovery.itemType.isEmpty() ||
-                                   recovery.itemType.compare(
-                                       itemType, Qt::CaseInsensitive) == 0);
-                       });
-}
-
-bool AgentController::requiresContextResetApproval(
-    const agent::Action& action) const
-{
-    return isContextResetToolName(action.toolName) &&
-           (contextEstablished_ || hasStateChangesInContext_);
-}
-
-bool AgentController::isSameActiveContextOperation(
-    const agent::Action& action) const
-{
-    if (!contextEstablished_ || activeContextScope_.isEmpty() ||
-        !opensContext(action.toolName))
-        return false;
-    const auto requestedScope = requestedContextScope(action);
-    return !requestedScope.isEmpty() && requestedScope == activeContextScope_;
-}
-
-QString AgentController::updateContextAfterSuccess(
-    const agent::Action& action, const agent::ToolResult& result,
-    ToolOperationKind completedOperationKind)
-{
-    if (!isContextResetToolName(action.toolName))
-    {
-        if (completedOperationKind == ToolOperationKind::Mutation)
-            hasStateChangesInContext_ = true;
-        return {};
-    }
-
-    const auto invalidatesPriorContext =
-        contextEstablished_ || hasStateChangesInContext_;
-    if (invalidatesPriorContext) invalidateContextEvidence();
-
-    if (closesContext(action.toolName))
-    {
-        activeContextScope_.clear();
-        contextEstablished_ = false;
-        hasStateChangesInContext_ = false;
-    }
-    else
-    {
-        activeContextScope_ = contextScope(action, result);
-        contextEstablished_ = true;
-        hasStateChangesInContext_ =
-            unqualifiedToolName(action.toolName) == QLatin1String("new_case");
-    }
-
-    if (!invalidatesPriorContext) return {};
-    recordEvent(
-        agent::EventType::Warning,
-        QStringLiteral(
-            "The active external context changed. Resources and evidence "
-            "from the previous context were invalidated."),
-        action.toolName);
-    return QStringLiteral(
-        "The active external context changed. The local controller removed "
-        "all prior resource identifiers and completion evidence. Do not "
-        "reuse identifiers from before this context transition.");
-}
-
-QString AgentController::staleResourceReference(
-    const QJsonObject& arguments) const
-{
-    return findReferencedId(arguments, invalidatedResourceIds_);
-}
-
-void AgentController::invalidateContextEvidence()
+void AgentController::retryOrderedPlanAction(const QByteArray& rawAction,
+                                             const QString& errorMessage)
 {
     if (!activeRun_) return;
-    for (const auto& resource : activeRun_->ledger.resources())
+    constexpr auto maximumOrderedPlanRepairs = 3;
+    if (activeRun_->orderedPlanRepairs >= maximumOrderedPlanRepairs)
     {
-        if (resource.stableId.isEmpty() ||
-            invalidatedResourceIds_.contains(resource.stableId,
-                                             Qt::CaseInsensitive))
-            continue;
-        invalidatedResourceIds_.append(resource.stableId);
+        failRun(QStringLiteral("invalid_agent_action"), errorMessage);
+        return;
     }
-    while (invalidatedResourceIds_.size() > maximumInvalidatedResourceIds)
-        invalidatedResourceIds_.removeFirst();
-
-    activeRun_->ledger.clear();
-    toolEvidence_.clear();
-    completedToolCallHistory_.clear();
-    contractRecoveries_.clear();
-    contractFailureCounts_.clear();
-    modelContractPaths_.clear();
-    lastFailedToolCallSignature_.clear();
-    pollableToolCallSignature_.clear();
-    lastPollCompletedAtMs_ = 0;
-    ++activeRun_->evidenceRevision;
-    activeRun_->lastReviewedEvidenceRevision = -1;
-    activeRun_->completionReviewsAtRevision = 0;
-    activeRun_->completionReviewFailures = 0;
-    activeRun_->completionPlanDriftRepairs = 0;
+    ++activeRun_->orderedPlanRepairs;
+    activeRun_->inferenceMessages.append(
+        {chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    activeRun_->inferenceMessages.append(
+        AgentPromptBuilder::orderedPlanCorrectionMessage(errorMessage));
+    recordEvent(agent::EventType::RecoveryStarted,
+                QStringLiteral("Repairing ordered task-plan metadata."));
+    requestDecision();
 }
 
 void AgentController::setState(AgentRun::State state)

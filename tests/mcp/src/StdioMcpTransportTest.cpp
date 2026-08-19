@@ -235,6 +235,7 @@ class StdioMcpTransportTest final : public QObject
     void timesOutAndCanCancel();
     void validatesArgumentsBeforeCallingServer();
     void validatesDiscriminatedUnionArguments();
+    void validatesDynamicPropertyNames();
     void appliesLocalToolPolicy();
     void roundTripsServerConfiguration();
     void rejectsInvalidServerIds();
@@ -886,6 +887,66 @@ void StdioMcpTransportTest::validatesDiscriminatedUnionArguments()
         errorMessage));
 }
 
+void StdioMcpTransportTest::validatesDynamicPropertyNames()
+{
+    const QJsonObject schema{
+        {QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("properties"),
+         QJsonObject{
+             {QStringLiteral("updates"),
+              QJsonObject{{QStringLiteral("type"), QStringLiteral("object")},
+                          {QStringLiteral("minProperties"), 1},
+                          {QStringLiteral("propertyNames"),
+                           QJsonObject{{QStringLiteral("pattern"),
+                                        QStringLiteral("^/")}}},
+                          {QStringLiteral("additionalProperties"),
+                           QJsonObject{{QStringLiteral("type"),
+                                        QStringLiteral("number")}}}}}}},
+        {QStringLiteral("required"), QJsonArray{QStringLiteral("updates")}}};
+    const agent::ToolDefinition tool{QStringLiteral("fake.update_fields"),
+                                     QStringLiteral("fake"),
+                                     QStringLiteral("update_fields"),
+                                     QStringLiteral("Update fields"), schema};
+    infrastructure::mcp::ToolRegistry registry;
+    QString errorMessage;
+    QVERIFY(registry.replaceServerTools(QStringLiteral("fake"), {tool},
+                                        errorMessage));
+
+    const auto empty = registry.validateArgumentsDetailed(
+        QStringLiteral("fake.update_fields"),
+        {{QStringLiteral("updates"), QJsonObject{}}});
+    QVERIFY(!empty.valid);
+    QCOMPARE(empty.issue.keyword, QStringLiteral("minProperties"));
+
+    const auto invalid = registry.validateArgumentsDetailed(
+        QStringLiteral("fake.update_fields"),
+        {{QStringLiteral("updates"),
+          QJsonObject{{QStringLiteral("~1density~1fixedValue"), 900.0}}}});
+    QVERIFY(!invalid.valid);
+    QCOMPARE(invalid.issue.instancePath, QStringLiteral("arguments.updates"));
+    QCOMPARE(invalid.issue.schemaPath,
+             QStringLiteral("#/properties/updates/propertyNames/pattern"));
+    QCOMPARE(invalid.issue.keyword, QStringLiteral("propertyNames"));
+    QVERIFY(invalid.issue.message.contains(QStringLiteral("must match")));
+
+    const auto valid = registry.validateArgumentsDetailed(
+        QStringLiteral("fake.update_fields"),
+        {{QStringLiteral("updates"),
+          QJsonObject{{QStringLiteral("/density/fixedValue"), 900.0}}}});
+    QVERIFY(valid.valid);
+
+    const auto invalidValue = registry.validateArgumentsDetailed(
+        QStringLiteral("fake.update_fields"),
+        {{QStringLiteral("updates"),
+          QJsonObject{{QStringLiteral("/density/fixedValue"),
+                       QStringLiteral("900")}}}});
+    QVERIFY(!invalidValue.valid);
+    QCOMPARE(invalidValue.issue.instancePath,
+             QStringLiteral("arguments.updates./density/fixedValue"));
+    QCOMPARE(invalidValue.issue.schemaPath,
+             QStringLiteral("#/properties/updates/additionalProperties/type"));
+}
+
 void StdioMcpTransportTest::appliesLocalToolPolicy()
 {
     infrastructure::mcp::ToolPolicy policy;
@@ -912,14 +973,22 @@ void StdioMcpTransportTest::appliesLocalToolPolicy()
         QStringLiteral("thirdparty.read_text_file"));
     QCOMPARE(unknownRule.risk, infrastructure::mcp::ToolRisk::ModifiesData);
     QVERIFY(!unknownRule.alwaysAllow);
-    const auto closeCaseRule = infrastructure::mcp::defaultToolPolicyRule(
-        QStringLiteral("shondy-mcp.close_case"));
-    QCOMPARE(closeCaseRule.risk, infrastructure::mcp::ToolRisk::Destructive);
-    QVERIFY(!closeCaseRule.alwaysAllow);
-    const auto newCaseRule = infrastructure::mcp::defaultToolPolicyRule(
-        QStringLiteral("shondy-mcp.new_case"));
-    QCOMPARE(newCaseRule.risk, infrastructure::mcp::ToolRisk::CreatesData);
-    QVERIFY(!newCaseRule.alwaysAllow);
+    const auto unknownDomainRule = infrastructure::mcp::defaultToolPolicyRule(
+        QStringLiteral("domain-server.change_context"));
+    QCOMPARE(unknownDomainRule.risk,
+             infrastructure::mcp::ToolRisk::ModifiesData);
+    QVERIFY(!unknownDomainRule.alwaysAllow);
+    const auto annotatedReadRule = infrastructure::mcp::defaultToolPolicyRule(
+        QStringLiteral("domain-server.inspect_state"),
+        {{QStringLiteral("readOnlyHint"), true}});
+    QCOMPARE(annotatedReadRule.risk, infrastructure::mcp::ToolRisk::ReadOnly);
+    QVERIFY(!annotatedReadRule.alwaysAllow);
+    const auto annotatedDestructiveRule =
+        infrastructure::mcp::defaultToolPolicyRule(
+            QStringLiteral("domain-server.change_state"),
+            {{QStringLiteral("destructiveHint"), true}});
+    QCOMPARE(annotatedDestructiveRule.risk,
+             infrastructure::mcp::ToolRisk::Destructive);
 }
 
 void StdioMcpTransportTest::roundTripsServerConfiguration()

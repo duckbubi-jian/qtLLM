@@ -42,7 +42,7 @@ feature differences have dedicated Fake Server coverage.
 | Tools | `tools/list` | Supported |
 | Tools | Cursor pagination and atomic snapshots | Supported |
 | Tools | `tools/call` | Supported |
-| Tools | Input schema validation | Supported subset including local `$ref`, `const`, type unions, `allOf`, `anyOf`, and `oneOf` |
+| Tools | Input schema validation | Supported subset including local `$ref`, `const`, type unions, `allOf`, `anyOf`, `oneOf`, `propertyNames`, `minProperties`, `maxProperties`, string `pattern`, and object-schema `additionalProperties` |
 | Tools | Output schema and annotations | Supported |
 | Tools | List-changed notification and refresh coalescing | Supported |
 | Results | Text content and raw result preservation | Supported |
@@ -105,6 +105,8 @@ feature differences have dedicated Fake Server coverage.
   path, schema path, validation keyword, and readable message. The focused
   correction prompt receives that diagnostic together with the rejected
   arguments and the failed tool's bounded contract.
+- Dynamic object keys are validated through standard `propertyNames` schemas;
+  qtLLM does not hard-code a Server name, tool name, or JSON Pointer field.
 - Agent runs keep a bounded run-scoped ledger of resource identifiers, parent
   relationships, asynchronous jobs, and mutation verification evidence. The
   ledger survives context compaction and unresolved verification prevents a

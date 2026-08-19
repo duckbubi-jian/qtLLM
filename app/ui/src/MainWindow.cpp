@@ -370,7 +370,7 @@ MainWindow::MainWindow(const QString& settingsFilePath, QWidget* parent)
                 for (const auto& tool : tools)
                 {
                     auto rule = infrastructure::mcp::defaultToolPolicyRule(
-                        tool.qualifiedName);
+                        tool.qualifiedName, tool.annotations);
                     if (alwaysAllowed.contains(tool.qualifiedName))
                         rule.alwaysAllow = true;
                     toolPolicy_.setRule(tool.qualifiedName, rule);

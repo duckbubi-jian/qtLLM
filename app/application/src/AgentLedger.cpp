@@ -141,6 +141,76 @@ QJsonValue resultPayload(const agent::ToolResult& result)
     return result.result;
 }
 
+void collectSemanticTokens(const QJsonValue& value, QStringList& identities,
+                           QStringList& names, qsizetype depth,
+                           qsizetype& visited);
+bool intersects(const QStringList& left, const QStringList& right);
+
+bool explicitlyConfirmsSuccess(const QJsonValue& value)
+{
+    if (!value.isObject()) return false;
+
+    const auto object = value.toObject();
+    for (auto entry = object.constBegin(); entry != object.constEnd(); ++entry)
+    {
+        const auto key = normalizedKey(entry.key());
+        if ((key == QLatin1String("ok") || key == QLatin1String("success") ||
+             key == QLatin1String("succeeded")) &&
+            entry.value().isBool() && entry.value().toBool())
+            return true;
+    }
+    return false;
+}
+
+bool hasStableResultLocator(const QJsonValue& value, qsizetype depth = 0)
+{
+    if (depth > maximumTraversalDepth) return false;
+    if (value.isArray())
+    {
+        for (const auto& entry : value.toArray())
+            if (hasStableResultLocator(entry, depth + 1)) return true;
+        return false;
+    }
+    if (!value.isObject()) return false;
+
+    const auto object = value.toObject();
+    for (auto entry = object.constBegin(); entry != object.constEnd(); ++entry)
+    {
+        if (scalarText(entry.value()).isEmpty()) continue;
+        const auto key = normalizedKey(entry.key());
+        const auto isDiagnosticPath = key == QLatin1String("fieldpath") ||
+                                      key == QLatin1String("modelpath") ||
+                                      key == QLatin1String("instancepath") ||
+                                      key == QLatin1String("schemapath");
+        if (identityKeyScore(entry.key()) >= 0 ||
+            (!isDiagnosticPath && (key.endsWith(QStringLiteral("path")) ||
+                                   key.endsWith(QStringLiteral("uri")))))
+            return true;
+    }
+    for (auto entry = object.constBegin(); entry != object.constEnd(); ++entry)
+        if (hasStableResultLocator(entry.value(), depth + 1)) return true;
+    return false;
+}
+
+bool structuredResultConfirmsTarget(const agent::Action& action,
+                                    const QJsonValue& payload)
+{
+    if (!explicitlyConfirmsSuccess(payload) || !hasStableResultLocator(payload))
+        return false;
+
+    QStringList requestedIds;
+    QStringList requestedNames;
+    auto visited = qsizetype{0};
+    collectSemanticTokens(action.arguments, requestedIds, requestedNames, 0,
+                          visited);
+    QStringList resultIds;
+    QStringList resultNames;
+    visited = 0;
+    collectSemanticTokens(payload, resultIds, resultNames, 0, visited);
+    return intersects(requestedIds, resultIds) ||
+           intersects(requestedNames, resultNames);
+}
+
 void collectResources(const QJsonValue& value, const QString& path,
                       const QString& serverId, const QString& tool,
                       int evidenceSequence, qsizetype depth, qsizetype& visited,
@@ -549,7 +619,8 @@ void AgentLedger::recordToolResult(int evidenceSequence,
     const auto targetIds = currentIds;
     const auto targetNames = currentNames;
     const auto selfVerified =
-        outputSchemaValidated && !extractedResources.isEmpty();
+        (outputSchemaValidated && !extractedResources.isEmpty()) ||
+        structuredResultConfirmsTarget(action, payload);
     const auto hasVerificationTarget =
         !targetIds.isEmpty() || !targetNames.isEmpty();
     verifications_.append(

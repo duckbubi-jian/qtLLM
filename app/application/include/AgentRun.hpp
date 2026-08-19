@@ -52,6 +52,7 @@ struct AgentRun
     int lastReviewedEvidenceRevision = -1;
     int completionReviewsAtRevision = 0;
     int taskPlanFailures = 0;
+    int orderedPlanRepairs = 0;
     int completionReviewFailures = 0;
     int completionPlanDriftRepairs = 0;
     bool taskPlanRequired = false;
@@ -68,7 +69,6 @@ struct AgentRun
     QList<agent::Event> events;
     QList<chat::Message> inferenceMessages;
     QString toolRequestId;
-    QString completedSingleOperationTool;
     QString finishCode;
     QString finishMessage;
     AgentLedger ledger;

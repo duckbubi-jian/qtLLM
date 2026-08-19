@@ -154,6 +154,9 @@ QJsonValue compactJson(const QJsonValue& value, qsizetype maximumBytes)
 
 QJsonValue resultPayload(const agent::ToolResult& result)
 {
+    if (!result.structuredContent.isUndefined() &&
+        !result.structuredContent.isNull())
+        return result.structuredContent;
     const auto structured =
         result.result.value(QStringLiteral("structuredContent"));
     if (structured.isObject() || structured.isArray()) return structured;

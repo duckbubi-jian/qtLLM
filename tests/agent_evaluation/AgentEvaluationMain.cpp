@@ -469,7 +469,7 @@ class EvaluationRunner final : public QObject
                         toolPolicy_.setRule(
                             tool.qualifiedName,
                             infrastructure::mcp::defaultToolPolicyRule(
-                                tool.qualifiedName));
+                                tool.qualifiedName, tool.annotations));
                     markServerReady(serverId);
                 });
         connect(&mcpManager_,

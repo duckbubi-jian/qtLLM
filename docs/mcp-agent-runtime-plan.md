@@ -16,23 +16,24 @@ same:
 1. Update task state and evidence.
 1. Continue, repair, poll, verify, or finish.
 
-This plan changes qtLLM only. Existing MCP Servers, tool schemas, protocol
-behavior, and domain workflows are fixed external inputs and are not delivery
-items. This document defines the internal runtime and the order in which to
-strengthen it for small local models. MCP transport and protocol conformance
-remain documented in
+This implementation plan changes qtLLM only. The companion
+[`mcp-provider-contract.md`](mcp-provider-contract.md) defines the standard
+contract expected from MCP Servers; Server-side implementation remains in the
+owning Server repositories. This document defines the internal runtime and the
+order in which to strengthen it for small local models. MCP transport and
+protocol conformance remain documented in
 [`mcp-protocol-compatibility.md`](mcp-protocol-compatibility.md), while
 unfinished Host-level protocol work remains in
 [`mcp-host-improvement-plan.md`](mcp-host-improvement-plan.md).
 
 ## Product Boundary
 
-The change boundary is the qtLLM repository. No MCP Server source, Server tool
-definition, Server configuration, domain workflow, or protocol extension is
-required by this plan. Adopting a coding-agent-style loop does not add built-in
-shell, patch, repository, or compiler tools. It also does not add memory,
-network access, multi-Agent orchestration, or Shondy-specific workflows to
-qtLLM.
+The code-change boundary is the qtLLM repository. MCP Server source and domain
+workflows are maintained separately, while their public schemas and results
+must satisfy the provider contract for deterministic Agent behavior. Adopting
+a coding-agent-style loop does not add built-in shell, patch, repository, or
+compiler tools. It also does not add memory, network access, multi-Agent
+orchestration, or Shondy-specific workflows to qtLLM.
 
 The division of responsibility is:
 
@@ -41,12 +42,14 @@ The division of responsibility is:
 | Model | Interpret intent, choose the next supplied tool, fill its arguments, and write the final answer. |
 | Agent runtime | Own the loop, task state, retries, polling, evidence, verification, and termination. |
 | qtLLM tool adapter | Discover existing tools, validate schemas, enforce policy, execute calls, and preserve results. |
-| External tool provider | Remain unchanged; its current schema, descriptions, results, and limitations are treated as input. |
+| External tool provider | Publish complete standard schemas, annotations, structured results, and actionable errors; domain contracts remain provider-owned. |
 
 External descriptions, annotations, examples, instructions, and results remain
-untrusted guidance. qtLLM may summarize existing metadata but does not require
-providers to add any. Guidance cannot override local schema validation,
-authorization, roots, or tool policy.
+untrusted guidance. Guidance cannot override local schema validation,
+authorization, roots, or tool policy. Providers that need deterministic Agent
+behavior must meet the standard contract in
+[`mcp-provider-contract.md`](mcp-provider-contract.md); qtLLM does not replace
+missing domain contracts with tool-name or field-name heuristics.
 
 ## Comparison With a Coding Agent
 
@@ -309,9 +312,9 @@ resource state to the model, and accepts a read-back selected from the existing
 catalog. When no reliable existing verification path is available, completion
 review reports that limitation instead of claiming success.
 
-## Fixed External Tool Assumptions
+## External Tool Interoperability
 
-The runtime must work with the tool providers as they exist today:
+The runtime remains conservative when a provider has incomplete metadata:
 
 - Tool names, schemas, descriptions, enum values, and nesting may be complex or
   inconsistent with nearby descriptive APIs.
@@ -324,7 +327,9 @@ The runtime must work with the tool providers as they exist today:
 - Missing domain semantics remain unknown. qtLLM improves contract presentation
   and recovery but does not guess business rules.
 
-These constraints are acceptance inputs, not requests for MCP Server changes.
+These constraints cannot justify Host-side business heuristics. Provider gaps
+that prevent reliable execution should be fixed against the provider contract
+in the owning MCP Server.
 
 ## Delivery Plan
 
@@ -488,7 +493,7 @@ Deliverables:
 Acceptance:
 
 - Both model classes complete the common workflows defined in the existing Host
-  acceptance plan without changing an external tool provider.
+  acceptance plan without adding provider-specific branches to qtLLM.
 - The small model completes the inlet fixture with no duplicate mutation, no
   invalid nested listing, and no more than one validation repair.
 - Failures are attributable to model decision, Host contract delivery,
@@ -519,8 +524,8 @@ milestones.
 
 ## Explicitly Deferred
 
-- Any MCP Server source, tool schema, result format, configuration, or domain
-  workflow change.
+- MCP Server source and domain workflow implementation inside the qtLLM
+  repository. Provider contract fixes belong to the owning Server.
 - New MCP protocol capabilities, transports, or Server-side metadata.
 - Built-in coding tools, shell execution, repository editing, and test runners.
 - Cross-conversation or persistent Agent memory.
@@ -534,7 +539,7 @@ milestones.
 ## Completion Criteria
 
 This plan is complete when qtLLM can use both a small and a larger local model
-to execute representative workflows against unchanged external tools with
+to execute representative workflows against standards-compliant external tools with
 deterministic local validation, bounded targeted repair, correct asynchronous
 behavior, resource reuse, mutation verification, and evidence-backed
 termination. Success is measured by the final external state and recorded

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QHash>
+#include <QJsonObject>
 #include <QMetaType>
 #include <QString>
 
@@ -31,7 +32,7 @@ struct ToolPolicyRule
 };
 
 [[nodiscard]] ToolPolicyRule defaultToolPolicyRule(
-    const QString& qualifiedToolName);
+    const QString& qualifiedToolName, const QJsonObject& annotations = {});
 
 class ToolPolicy final
 {

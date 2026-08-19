@@ -46,5 +46,7 @@ class AgentPromptBuilder final
         const agent::ToolDefinition& tool, const QJsonObject& arguments,
         const agent::ToolValidationIssue& issue);
     static chat::Message noProgressMessage(const QString& errorMessage);
+    static chat::Message orderedPlanCorrectionMessage(
+        const QString& errorMessage);
 };
 }  // namespace qtllm::application

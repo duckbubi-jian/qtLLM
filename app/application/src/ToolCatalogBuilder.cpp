@@ -99,17 +99,34 @@ QJsonObject schemaSummary(const QJsonObject& schema, const QJsonObject& root,
             result.insert(QStringLiteral("ref"), reference);
     }
 
-    for (const auto& key : {QStringLiteral("type"), QStringLiteral("const"),
-                            QStringLiteral("enum"), QStringLiteral("required"),
-                            QStringLiteral("discriminator")})
+    for (const auto& key :
+         {QStringLiteral("type"), QStringLiteral("const"),
+          QStringLiteral("enum"), QStringLiteral("required"),
+          QStringLiteral("discriminator"), QStringLiteral("minimum"),
+          QStringLiteral("maximum"), QStringLiteral("minLength"),
+          QStringLiteral("maxLength"), QStringLiteral("minItems"),
+          QStringLiteral("maxItems"), QStringLiteral("minProperties"),
+          QStringLiteral("maxProperties"), QStringLiteral("pattern")})
     {
         if (schema.contains(key)) result.insert(key, schema.value(key));
     }
-    if (schema.value(QStringLiteral("additionalProperties")).isBool() &&
-        !schema.value(QStringLiteral("additionalProperties")).toBool())
-        result.insert(QStringLiteral("additionalProperties"), false);
-
     if (depth >= maximumSchemaSummaryDepth) return result;
+
+    const auto propertyNames = schema.value(QStringLiteral("propertyNames"));
+    if (propertyNames.isObject())
+        result.insert(QStringLiteral("propertyNames"),
+                      schemaSummary(propertyNames.toObject(), root, depth + 1,
+                                    activeReferences));
+
+    const auto additionalProperties =
+        schema.value(QStringLiteral("additionalProperties"));
+    if (additionalProperties.isBool())
+        result.insert(QStringLiteral("additionalProperties"),
+                      additionalProperties);
+    else if (additionalProperties.isObject())
+        result.insert(QStringLiteral("additionalProperties"),
+                      schemaSummary(additionalProperties.toObject(), root,
+                                    depth + 1, activeReferences));
 
     const auto properties = schema.value(QStringLiteral("properties"));
     if (properties.isObject())
@@ -191,9 +208,18 @@ QJsonObject ToolCatalogBuilder::compactDefinition(
     auto result = minimalIndexEntry(tool);
     result.insert(QStringLiteral("arguments"),
                   schemaSummary(tool.inputSchema, tool.inputSchema, 0, {}));
-    if (tool.annotations.value(QStringLiteral("readOnlyHint")).isBool())
-        result.insert(QStringLiteral("readOnly"),
-                      tool.annotations.value(QStringLiteral("readOnlyHint")));
+    for (const auto& annotation :
+         {std::pair{QStringLiteral("readOnlyHint"), QStringLiteral("readOnly")},
+          std::pair{QStringLiteral("destructiveHint"),
+                    QStringLiteral("destructive")},
+          std::pair{QStringLiteral("idempotentHint"),
+                    QStringLiteral("idempotent")},
+          std::pair{QStringLiteral("openWorldHint"),
+                    QStringLiteral("openWorld")}})
+    {
+        const auto value = tool.annotations.value(annotation.first);
+        if (value.isBool()) result.insert(annotation.second, value);
+    }
     return result;
 }
 

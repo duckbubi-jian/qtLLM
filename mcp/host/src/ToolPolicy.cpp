@@ -4,21 +4,22 @@
 
 namespace qtllm::infrastructure::mcp
 {
-ToolPolicyRule defaultToolPolicyRule(const QString& qualifiedToolName)
+ToolPolicyRule defaultToolPolicyRule(const QString& qualifiedToolName,
+                                     const QJsonObject& annotations)
 {
     const auto separator = qualifiedToolName.indexOf(QLatin1Char('.'));
     const auto serverId =
         separator > 0 ? qualifiedToolName.left(separator) : QString{};
     const auto toolName = separator > 0 ? qualifiedToolName.mid(separator + 1)
                                         : qualifiedToolName;
-    static const QSet<QString> contextResetTools{
-        QStringLiteral("close_case"), QStringLiteral("load_case"),
-        QStringLiteral("open_case"), QStringLiteral("switch_case")};
-    if (contextResetTools.contains(toolName.toLower()))
-        return {ToolRisk::Destructive, true, false};
-    if (toolName.compare(QStringLiteral("new_case"), Qt::CaseInsensitive) == 0)
-        return {ToolRisk::CreatesData, true, false};
-    if (serverId != QLatin1String("filesystem")) return {};
+    if (serverId != QLatin1String("filesystem"))
+    {
+        if (annotations.value(QStringLiteral("destructiveHint")).toBool())
+            return {ToolRisk::Destructive, true, false};
+        if (annotations.value(QStringLiteral("readOnlyHint")).toBool())
+            return {ToolRisk::ReadOnly, true, false};
+        return {};
+    }
 
     static const QSet<QString> readOnlyTools{
         QStringLiteral("read_file"),

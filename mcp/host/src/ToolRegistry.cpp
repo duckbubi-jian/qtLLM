@@ -3,6 +3,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonValue>
+#include <QRegularExpression>
 #include <QStringList>
 
 #include <cmath>
@@ -436,6 +437,30 @@ bool validateValue(const QJsonValue& value, const QJsonObject& schema,
     if (value.isObject())
     {
         const auto object = value.toObject();
+        const auto minimumProperties =
+            schema.value(QStringLiteral("minProperties"));
+        const auto maximumProperties =
+            schema.value(QStringLiteral("maxProperties"));
+        if (minimumProperties.isDouble() &&
+            object.size() < minimumProperties.toInteger())
+        {
+            assignIssue(
+                issue, path,
+                childSchemaPath(schemaPath, QStringLiteral("minProperties")),
+                QStringLiteral("minProperties"),
+                QStringLiteral("%1 has too few properties.").arg(path));
+            return false;
+        }
+        if (maximumProperties.isDouble() &&
+            object.size() > maximumProperties.toInteger())
+        {
+            assignIssue(
+                issue, path,
+                childSchemaPath(schemaPath, QStringLiteral("maxProperties")),
+                QStringLiteral("maxProperties"),
+                QStringLiteral("%1 has too many properties.").arg(path));
+            return false;
+        }
         const auto required = schema.value(QStringLiteral("required"));
         if (required.isArray())
         {
@@ -458,8 +483,33 @@ bool validateValue(const QJsonValue& value, const QJsonObject& schema,
 
         const auto properties =
             schema.value(QStringLiteral("properties")).toObject();
-        if (schema.value(QStringLiteral("additionalProperties")).isBool() &&
-            !schema.value(QStringLiteral("additionalProperties")).toBool())
+        const auto propertyNames =
+            schema.value(QStringLiteral("propertyNames"));
+        if (propertyNames.isObject())
+        {
+            for (auto item = object.constBegin(); item != object.constEnd();
+                 ++item)
+            {
+                agent::ToolValidationIssue propertyIssue;
+                if (validateValue(
+                        item.key(), propertyNames.toObject(), root, path,
+                        childSchemaPath(schemaPath,
+                                        QStringLiteral("propertyNames")),
+                        propertyIssue, depth + 1))
+                    continue;
+                propertyIssue.instancePath = path;
+                propertyIssue.keyword = QStringLiteral("propertyNames");
+                propertyIssue.message =
+                    QStringLiteral("Property name %1 at %2 is invalid. %3")
+                        .arg(compactJson(item.key()), path,
+                             propertyIssue.message);
+                issue = std::move(propertyIssue);
+                return false;
+            }
+        }
+        const auto additionalProperties =
+            schema.value(QStringLiteral("additionalProperties"));
+        if (additionalProperties.isBool() && !additionalProperties.toBool())
         {
             for (auto item = object.constBegin(); item != object.constEnd();
                  ++item)
@@ -475,6 +525,21 @@ bool validateValue(const QJsonValue& value, const QJsonObject& schema,
                         QStringLiteral("%1 is not allowed.").arg(extraPath));
                     return false;
                 }
+            }
+        }
+        else if (additionalProperties.isObject())
+        {
+            for (auto item = object.constBegin(); item != object.constEnd();
+                 ++item)
+            {
+                if (properties.contains(item.key())) continue;
+                if (!validateValue(
+                        item.value(), additionalProperties.toObject(), root,
+                        path + QLatin1Char('.') + item.key(),
+                        childSchemaPath(schemaPath,
+                                        QStringLiteral("additionalProperties")),
+                        issue, depth + 1))
+                    return false;
             }
         }
         for (auto property = properties.constBegin();
@@ -548,6 +613,25 @@ bool validateValue(const QJsonValue& value, const QJsonObject& schema,
                 QStringLiteral("maxLength"),
                 QStringLiteral("%1 is too long.").arg(path));
             return false;
+        }
+        const auto pattern = schema.value(QStringLiteral("pattern"));
+        if (pattern.isString())
+        {
+            const QRegularExpression expression(pattern.toString());
+            if (!expression.isValid() ||
+                !expression.match(value.toString()).hasMatch())
+            {
+                assignIssue(
+                    issue, path,
+                    childSchemaPath(schemaPath, QStringLiteral("pattern")),
+                    QStringLiteral("pattern"),
+                    expression.isValid()
+                        ? QStringLiteral("%1 must match pattern %2.")
+                              .arg(path, compactJson(pattern))
+                        : QStringLiteral("%1 uses an invalid schema pattern.")
+                              .arg(path));
+                return false;
+            }
         }
     }
     else if (value.isDouble())

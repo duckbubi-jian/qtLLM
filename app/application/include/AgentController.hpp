@@ -11,7 +11,6 @@
 #include "ToolValidation.hpp"
 
 #include <QByteArray>
-#include <QHash>
 #include <QJsonObject>
 #include <QObject>
 #include <QStringList>
@@ -97,14 +96,6 @@ class AgentController final : public QObject
     void conversationCleared();
 
    private:
-    struct ContractRecovery
-    {
-        QString failedTool;
-        QString discoveryTool;
-        QString itemType;
-        QString selector;
-    };
-
     static bool isTerminal(AgentRun::State state);
     void requestDecision();
     void compactContextIfNeeded();
@@ -133,28 +124,9 @@ class AgentController final : public QObject
                                 const QJsonObject& arguments);
     void retryNoProgressAction(const QByteArray& rawAction,
                                const QString& errorMessage);
-    [[nodiscard]] QString contractRecoveryError(
-        const agent::Action& action) const;
-    [[nodiscard]] QString modelContractError(const agent::Action& action) const;
-    [[nodiscard]] QString registerContractFailure(
-        const agent::Action& action, const agent::ToolResult& result,
-        bool& exhausted);
-    void captureModelContract(const agent::Action& action,
-                              const agent::ToolResult& result);
-    void resolveContractRecovery(const agent::Action& action);
-    [[nodiscard]] bool isRequiredContractDiscovery(
-        const agent::Action& action) const;
-    [[nodiscard]] bool isSameActiveContextOperation(
-        const agent::Action& action) const;
-    [[nodiscard]] bool requiresContextResetApproval(
-        const agent::Action& action) const;
-    [[nodiscard]] QString updateContextAfterSuccess(
-        const agent::Action& action, const agent::ToolResult& result,
-        ToolOperationKind operationKind);
+    void retryOrderedPlanAction(const QByteArray& rawAction,
+                                const QString& errorMessage);
     [[nodiscard]] QString advanceTaskPlanAfterToolResult(int evidenceSequence);
-    [[nodiscard]] QString staleResourceReference(
-        const QJsonObject& arguments) const;
-    void invalidateContextEvidence();
     void setState(AgentRun::State state);
     void recordEvent(agent::EventType type, const QString& message = {},
                      const QString& toolName = {},
@@ -179,13 +151,6 @@ class AgentController final : public QObject
     qint64 lastPollCompletedAtMs_ = 0;
     QStringList completedToolCallHistory_;
     QList<QJsonObject> toolEvidence_;
-    QHash<QString, ContractRecovery> contractRecoveries_;
-    QHash<QString, int> contractFailureCounts_;
-    QHash<QString, QStringList> modelContractPaths_;
-    QString activeContextScope_;
-    QStringList invalidatedResourceIds_;
-    bool contextEstablished_ = false;
-    bool hasStateChangesInContext_ = false;
     QTimer* runTimer_ = nullptr;
     QTimer* pollTimer_ = nullptr;
 };

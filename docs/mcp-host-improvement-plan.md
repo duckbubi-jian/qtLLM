@@ -9,7 +9,9 @@
 - Refer to
   [`mcp-agent-runtime-plan.md`](mcp-agent-runtime-plan.md) for the controlled
   Agent loop, small-model tool contracts, runtime state, and delivery order.
-  That plan changes qtLLM only; external MCP Server changes are out of scope.
+  That implementation plan changes qtLLM only. Provider-owned schema and
+  result requirements are documented separately in
+  [`mcp-provider-contract.md`](mcp-provider-contract.md).
 - The product target is a general-purpose, offline-first stdio MCP Host, not a
   coding agent. Reusing a coding-agent-style control loop does not add built-in
   coding tools or coding-specific workflows.

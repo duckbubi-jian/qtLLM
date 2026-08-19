@@ -165,7 +165,7 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools,
                               "finish that step; "
                               "never call a later step before the current "
                               "step is verified. "
-                              "active cases "
+                              "active external resources "
                               "and sessions between steps; "
                               "do not close and reopen the "
                               "same resource merely to "
@@ -176,11 +176,11 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools,
                               "result satisfies the last explicit outcome, "
                               "return final; do not inventory unrelated "
                               "resource types or perform cleanup. When the "
-                              "user's only "
-                              "request is to open, create, switch, or close a "
-                              "case, return final immediately after that "
-                              "operation succeeds. Do not inventory item "
-                              "types or close an opened case as cleanup. ");
+                              "user requests only one external operation, "
+                              "return final immediately after its successful "
+                              "terminal result. Do not add discovery, "
+                              "read-back, or cleanup unless the result leaves "
+                              "a requested outcome unresolved. ");
     QString omissionNotice;
     if (catalog.omittedToolCount > 0)
         omissionNotice +=
@@ -310,8 +310,16 @@ chat::Message AgentPromptBuilder::taskPlanAcceptedMessage(
             "the final call that should finish the step. Use this exact "
             "top-level shape: {\"action\":\"call_tool\",\"tool\":\"...\","
             "\"arguments\":{},\"plan_step_id\":\"step-1\","
-            "\"completes_plan_step\":false}. Do not "
-            "repeat task_plan. Return final only after every checklist item "
+            "\"completes_plan_step\":false}. Do not add a read-back call "
+            "merely to reconfirm a successful "
+            "terminal mutation whose structured result explicitly confirms "
+            "the requested target and returns its matching stable identity "
+            "or location. Mark that mutation completes_plan_step=true when "
+            "it is the final operation for the current step. Perform a "
+            "read-back only when the controller reports unresolved "
+            "verification or the result does not confirm the requested "
+            "outcome. Do not repeat task_plan. Return final only after every "
+            "checklist item "
             "is satisfied or a real blocker must be reported.")
             .arg(compactJson(steps))};
 }
@@ -557,6 +565,9 @@ chat::Message AgentPromptBuilder::toolValidationCorrectionMessage(
             "Structured validation issue: "
             "<validation_issue>%2</validation_issue> "
             "Rejected arguments: %3. "
+            "instancePath and schemaPath only locate the validation error; "
+            "never copy either diagnostic path into an argument value or "
+            "dynamic property name. "
             "Correct this tool call from the supplied contract; do not call "
             "list or describe merely to rediscover its schema. Copy exact "
             "enum and const spellings, preserve the required nesting, and "
@@ -579,6 +590,22 @@ chat::Message AgentPromptBuilder::noProgressMessage(const QString& errorMessage)
             "valid in the conversation or agent_progress evidence. Return "
             "one meaningfully different action for an unfinished step, or "
             "return final now. Do not repeat the skipped action.")
+            .arg(errorMessage)};
+}
+
+chat::Message AgentPromptBuilder::orderedPlanCorrectionMessage(
+    const QString& errorMessage)
+{
+    return {
+        chat::Role::User,
+        QStringLiteral(
+            "The previous call_tool action was not executed because its "
+            "ordered task-plan metadata was incomplete: %1 Return exactly "
+            "one corrected call_tool action for the current step. Include "
+            "the exact current plan_step_id and choose "
+            "completes_plan_step=true only if this call finishes that step; "
+            "otherwise choose false. Do not return final or call a later "
+            "step.")
             .arg(errorMessage)};
 }
 }  // namespace qtllm::application

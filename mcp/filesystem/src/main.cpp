@@ -193,7 +193,7 @@ Json stringProperty(const std::string& description)
     return {{"type", "string"}, {"description", description}};
 }
 
-Json objectSchema(Json properties,
+Json objectSchema(Json properties = Json::object(),
                   const std::vector<std::string>& required = {})
 {
     Json schema{{"type", "object"},
@@ -244,7 +244,7 @@ Json toolDefinitions()
          toolDefinition("get_file_info", "Get file or directory metadata.",
                         objectSchema({{"path", path}}, {"path"})),
          toolDefinition("list_allowed_directories",
-                        "List authorized filesystem roots.", objectSchema({})),
+                        "List authorized filesystem roots.", objectSchema()),
          toolDefinition("create_directory", "Create a directory tree.",
                         objectSchema({{"path", path}}, {"path"})),
          toolDefinition("write_file", "Atomically create or replace a file.",

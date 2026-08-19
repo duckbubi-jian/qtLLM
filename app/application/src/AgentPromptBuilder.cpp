@@ -125,6 +125,11 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools,
                               "Detailed tool schemas and whose "
                               "arguments match its "
                               "contract. "
+                              "Every call_tool action must include a "
+                              "top-level string plan_step_id and boolean "
+                              "completes_plan_step. When no task_plan is "
+                              "active, use plan_step_id=\"\" and "
+                              "completes_plan_step=false. "
                               "Never invent or emit a "
                               "placeholder tool name. After "
                               "a tool result, use the result "
@@ -600,11 +605,13 @@ chat::Message AgentPromptBuilder::orderedPlanCorrectionMessage(
         chat::Role::User,
         QStringLiteral(
             "The previous call_tool action was not executed because its "
-            "ordered task-plan metadata was incomplete: %1 Return exactly "
-            "one corrected call_tool action for the current step. Include "
-            "the exact current plan_step_id and choose "
-            "completes_plan_step=true only if this call finishes that step; "
-            "otherwise choose false. Do not return final or call a later "
+            "ordered task-plan selection or metadata was invalid: %1 Return "
+            "an action only for the current step. If it requires a tool, "
+            "return exactly one corrected call_tool action with the exact "
+            "current plan_step_id and choose completes_plan_step=true only "
+            "if this call finishes that step; otherwise choose false. If the "
+            "current step requires no tool, do not call one; return final "
+            "only after preparing the requested report. Never call a later "
             "step.")
             .arg(errorMessage)};
 }

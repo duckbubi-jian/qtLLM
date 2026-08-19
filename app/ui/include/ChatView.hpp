@@ -1,6 +1,5 @@
 #pragma once
 
-#include <QList>
 #include <QString>
 #include <QWidget>
 
@@ -26,16 +25,6 @@ enum class ModelBadgeState
     Verified,
     Unverified,
     Invalid
-};
-
-struct McpServerPresentation
-{
-    QString serverId;
-    QString displayName;
-    QString detail;
-    bool enabled = false;
-    bool builtIn = false;
-    bool available = true;
 };
 
 class ChatView final : public QWidget
@@ -66,7 +55,6 @@ class ChatView final : public QWidget
     void setAgentModeSelected(bool selected);
     void setModeSelectionEnabled(bool enabled);
     void setMcpSelectionEnabled(bool enabled);
-    void setMcpServers(const QList<McpServerPresentation>& servers);
     void setConversationVisible(bool visible);
     void setStatusText(const QString& text);
 
@@ -82,8 +70,6 @@ class ChatView final : public QWidget
     void promptSubmitted();
     void modeChanged(bool agentMode);
     void manageMcpServersRequested();
-    void builtInFilesystemMcpToggled(bool enabled);
-    void externalMcpServerToggled(const QString& serverId, bool enabled);
 
    protected:
     bool eventFilter(QObject* watched, QEvent* event) override;
@@ -99,7 +85,6 @@ class ChatView final : public QWidget
     QString modelInformation_;
     ModelBadgeState modelBadgeState_ = ModelBadgeState::Neutral;
     QString workspacePath_;
-    QList<McpServerPresentation> mcpServers_;
     QMenu* mcpMenu_ = nullptr;
     bool primaryActionStops_ = false;
 };

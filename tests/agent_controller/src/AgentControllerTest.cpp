@@ -1592,13 +1592,19 @@ void AgentControllerTest::advancesPlanOneStepPerTerminalToolResult()
                                    QStringLiteral("Report the result"), false)};
     controller.receiveToken(orderedTaskPlanAction(plan));
     controller.completeGeneration(false);
+    controller.activeRun()->stagnationRecoveries = 1;
     controller.receiveToken(QByteArrayLiteral(
         R"({"action":"call_tool","tool":"fake.inspect","arguments":{},"plan_step_id":"report","completes_plan_step":true})"));
     controller.completeGeneration(false);
     QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
     QCOMPARE(toolCallCount, 0);
+    QCOMPARE(controller.activeRun()->stagnationRecoveries, 1);
+    QCOMPARE(controller.activeRun()->orderedPlanRepairs, 1);
+    QCOMPARE(controller.activeRun()->duplicateToolActions, 0);
     QVERIFY(generatedMessages.constLast().content.contains(
         QStringLiteral("current unfinished step is 'create'")));
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("Create the case")));
 
     controller.receiveToken(QByteArrayLiteral(
         R"({"action":"call_tool","tool":"fake.create","arguments":{"name":"case"},"plan_step_id":"create","completes_plan_step":false})"));

@@ -1498,10 +1498,6 @@ void MainWindow::buildUi()
             &MainWindow::openWorkspaceDirectory);
     connect(chatView_, &ChatView::manageMcpServersRequested, this,
             &MainWindow::showMcpControlPanel);
-    connect(chatView_, &ChatView::builtInFilesystemMcpToggled, this,
-            &MainWindow::setBuiltInFilesystemMcpEnabled);
-    connect(chatView_, &ChatView::externalMcpServerToggled, this,
-            &MainWindow::setExternalMcpServerEnabled);
     connect(chatView_, &ChatView::modelLoadRequested, this,
             &MainWindow::loadSelectedModel);
     connect(chatView_, &ChatView::primaryActionRequested, this,
@@ -1798,52 +1794,6 @@ void MainWindow::loadMcpServers()
 
 void MainWindow::refreshMcpServerMenu()
 {
-    const auto detailFor = [this](const QString& serverId, bool enabled)
-    {
-        if (!enabled) return tr("Off");
-        const auto snapshot = mcpManager_.serverSnapshot(serverId);
-        if (!snapshot) return tr("Unavailable");
-        using infrastructure::mcp::McpServerState;
-        switch (snapshot->state)
-        {
-            case McpServerState::Stopped:
-                return tr("Stopped");
-            case McpServerState::Starting:
-                return tr("Starting");
-            case McpServerState::Initializing:
-                return tr("Initializing");
-            case McpServerState::Ready:
-                return tr("%n tools", nullptr,
-                          static_cast<int>(snapshot->toolCount));
-            case McpServerState::Degraded:
-                return tr("Degraded - %n tools", nullptr,
-                          static_cast<int>(snapshot->toolCount));
-            case McpServerState::Failed:
-                return tr("Failed");
-            case McpServerState::Stopping:
-                return tr("Stopping");
-        }
-        return tr("Unavailable");
-    };
-
-    QList<McpServerPresentation> presentations;
-    const auto builtInAvailable = !filesystemConfiguredExternally_;
-    const auto builtInEnabled =
-        builtInAvailable && settingsStore_.builtInFilesystemMcpEnabled();
-    presentations.append(
-        {QStringLiteral("builtin-filesystem"), tr("Built-in filesystem"),
-         builtInAvailable
-             ? detailFor(QStringLiteral("filesystem"), builtInEnabled)
-             : tr("Replaced by external filesystem"),
-         builtInEnabled, true, builtInAvailable});
-
-    for (const auto& config : mcpConfigurations_)
-    {
-        presentations.append({config.serverId, config.serverId,
-                              detailFor(config.serverId, config.enabled),
-                              config.enabled, false, true});
-    }
-    chatView_->setMcpServers(presentations);
     refreshMcpControlPanel();
 }
 

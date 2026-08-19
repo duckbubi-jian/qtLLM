@@ -22,7 +22,6 @@
 #include <QStackedWidget>
 #include <QStyle>
 #include <QTabBar>
-#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 
@@ -142,6 +141,7 @@ ChatView::ChatView(QWidget* parent)
     ui_->mcpMenuButton->setText({});
     ui_->mcpMenuButton->setIcon(style()->standardIcon(QStyle::SP_DriveNetIcon));
     ui_->mcpMenuButton->setIconSize(QSize(16, 16));
+    rebuildMcpMenu();
 
     connect(ui_->modelReloadAction, &QAction::triggered, this,
             &ChatView::modelFolderRequested);
@@ -285,12 +285,6 @@ void ChatView::setMcpSelectionEnabled(bool enabled)
     ui_->mcpMenuButton->setEnabled(enabled);
 }
 
-void ChatView::setMcpServers(const QList<McpServerPresentation>& servers)
-{
-    mcpServers_ = servers;
-    rebuildMcpMenu();
-}
-
 void ChatView::setAgentModeSelected(bool selected)
 {
     const QSignalBlocker blocker(ui_->agentModeSwitch);
@@ -336,35 +330,6 @@ void ChatView::rebuildMcpMenu()
     manageAction->setIcon(style()->standardIcon(QStyle::SP_ComputerIcon));
     connect(manageAction, &QAction::triggered, this,
             &ChatView::manageMcpServersRequested);
-    mcpMenu_->addSeparator();
-
-    for (const auto& server : mcpServers_)
-    {
-        auto label = server.displayName;
-        if (!server.detail.isEmpty())
-            label += QStringLiteral(" (%1)").arg(server.detail);
-        auto* action = mcpMenu_->addAction(label);
-        action->setObjectName(
-            QStringLiteral("mcpServerAction_%1").arg(server.serverId));
-        action->setCheckable(true);
-        action->setChecked(server.enabled);
-        action->setEnabled(server.available);
-        action->setData(server.serverId);
-        connect(action, &QAction::toggled, this,
-                [this, server](bool enabled)
-                {
-                    QTimer::singleShot(
-                        0, this,
-                        [this, server, enabled]
-                        {
-                            if (server.builtIn)
-                                emit builtInFilesystemMcpToggled(enabled);
-                            else
-                                emit externalMcpServerToggled(server.serverId,
-                                                              enabled);
-                        });
-                });
-    }
 }
 
 bool ChatView::eventFilter(QObject* watched, QEvent* event)

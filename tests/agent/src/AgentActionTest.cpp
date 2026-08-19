@@ -27,12 +27,14 @@ void AgentActionTest::parsesToolCall()
     QVERIFY2(
         agent::parseAction(
             QByteArrayLiteral(
-                R"({"action":"call_tool","tool":"files.read","arguments":{"path":"README.md"}})"),
+                R"({"action":"call_tool","tool":"files.read","arguments":{"path":"README.md"},"plan_step_id":"","completes_plan_step":false})"),
             action, errorMessage),
         qPrintable(errorMessage));
     QCOMPARE(action.type, agent::ActionType::CallTool);
     QCOMPARE(action.toolName, QStringLiteral("files.read"));
     QVERIFY(action.planStepId.isEmpty());
+    QVERIFY(action.completesPlanStep.has_value());
+    QVERIFY(!*action.completesPlanStep);
     QCOMPARE(action.arguments.value(QStringLiteral("path")).toString(),
              QStringLiteral("README.md"));
     QVERIFY(action.content.isEmpty());
@@ -171,6 +173,10 @@ void AgentActionTest::providesGenerationGrammar()
     QVERIFY(grammar.contains("ordered"));
     QVERIFY(grammar.contains("plan_step_id"));
     QVERIFY(grammar.contains("completes_plan_step"));
+    QVERIFY(grammar.contains(QByteArrayLiteral(
+        "object ws \",\" ws \"\\\"plan_step_id\\\"\" ws \":\" ws string")));
+    QVERIFY(!grammar.contains(
+        QByteArrayLiteral("object (ws \",\" ws \"\\\"plan_step_id\\\"\"")));
     QVERIFY(grammar.contains("review_completion"));
     QVERIFY(grammar.contains("review-status ::="));
     QVERIFY(grammar.contains("\"\\\"satisfied\\\"\""));

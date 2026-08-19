@@ -2358,6 +2358,13 @@ void StdioMcpTransportTest::builtInFilesystemWritesCppFile()
     QTRY_COMPARE_WITH_TIMEOUT(toolsSpy.count(), 1, 2'000);
     QVERIFY(manager.registry().find(QStringLiteral("filesystem.write_file")) !=
             nullptr);
+    const auto* listRoots = manager.registry().find(
+        QStringLiteral("filesystem.list_allowed_directories"));
+    QVERIFY(listRoots != nullptr);
+    const auto properties =
+        listRoots->inputSchema.value(QStringLiteral("properties"));
+    QVERIFY(properties.isObject());
+    QVERIFY(properties.toObject().isEmpty());
 
     const auto cppPath =
         QDir(workspaceRoot).filePath(QStringLiteral("示例.cpp"));

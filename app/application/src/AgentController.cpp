@@ -933,20 +933,20 @@ void AgentController::handleAction(const agent::Action& action,
         }
         if (action.planStepId != planStepId)
         {
-            recordDuplicateToolAction();
-            retryNoProgressAction(
+            retryOrderedPlanAction(
                 rawAction,
                 QStringLiteral(
                     "This call targets plan_step_id '%1', but the current "
-                    "unfinished step is '%2'. Execute checklist steps in "
-                    "order and use the current step id.")
-                    .arg(action.planStepId, planStepId));
+                    "unfinished step is '%2' (%3). Execute checklist steps "
+                    "in order, choose an operation that advances that step, "
+                    "and use the current step id.")
+                    .arg(action.planStepId, planStepId,
+                         step.value(QStringLiteral("description")).toString()));
             return;
         }
         if (!step.value(QStringLiteral("requires_tool")).toBool())
         {
-            recordDuplicateToolAction();
-            retryNoProgressAction(
+            retryOrderedPlanAction(
                 rawAction,
                 QStringLiteral(
                     "The current task-plan step '%1' does not require a tool. "
@@ -1755,7 +1755,7 @@ void AgentController::retryOrderedPlanAction(const QByteArray& rawAction,
     activeRun_->inferenceMessages.append(
         AgentPromptBuilder::orderedPlanCorrectionMessage(errorMessage));
     recordEvent(agent::EventType::RecoveryStarted,
-                QStringLiteral("Repairing ordered task-plan metadata."));
+                QStringLiteral("Repairing an ordered task-plan action."));
     requestDecision();
 }
 

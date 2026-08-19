@@ -743,43 +743,18 @@ void AssistantResponseTest::managesMcpServersFromAgentMenu()
     QVERIFY(menu != nullptr);
     QVERIFY(button->isHidden());
 
-    view.setMcpServers({{QStringLiteral("builtin-filesystem"),
-                         QStringLiteral("Built-in filesystem"),
-                         QStringLiteral("7 tools"), true, true, true},
-                        {QStringLiteral("external"), QStringLiteral("external"),
-                         QStringLiteral("Off"), false, false, true}});
     view.setAgentModeSelected(true);
     QVERIFY(!button->isHidden());
     QCOMPARE(button->popupMode(), QToolButton::InstantPopup);
     QCOMPARE(button->menu(), menu);
 
-    auto* builtInAction = menu->findChild<QAction*>(
-        QStringLiteral("mcpServerAction_builtin-filesystem"));
-    auto* externalAction =
-        menu->findChild<QAction*>(QStringLiteral("mcpServerAction_external"));
     auto* manageAction =
         menu->findChild<QAction*>(QStringLiteral("manageMcpServersAction"));
-    QVERIFY(builtInAction != nullptr);
-    QVERIFY(externalAction != nullptr);
     QVERIFY(manageAction != nullptr);
-    QCOMPARE(menu->actions().size(), 4);
+    QCOMPARE(menu->actions().size(), 1);
     QCOMPARE(menu->actions().constFirst(), manageAction);
-    QVERIFY(menu->actions().at(1)->isSeparator());
-    QVERIFY(builtInAction->isCheckable());
-    QVERIFY(builtInAction->isChecked());
-    QVERIFY(!externalAction->isChecked());
 
-    QSignalSpy builtInSpy(&view, &ui::ChatView::builtInFilesystemMcpToggled);
-    QSignalSpy externalSpy(&view, &ui::ChatView::externalMcpServerToggled);
     QSignalSpy manageSpy(&view, &ui::ChatView::manageMcpServersRequested);
-    builtInAction->trigger();
-    QTRY_COMPARE(builtInSpy.count(), 1);
-    QCOMPARE(builtInSpy.constFirst().constFirst().toBool(), false);
-    externalAction->trigger();
-    QTRY_COMPARE(externalSpy.count(), 1);
-    QCOMPARE(externalSpy.constFirst().at(0).toString(),
-             QStringLiteral("external"));
-    QCOMPARE(externalSpy.constFirst().at(1).toBool(), true);
     manageAction->trigger();
     QCOMPARE(manageSpy.count(), 1);
 

@@ -320,7 +320,7 @@ QByteArray actionGrammar()
 {
     return QByteArrayLiteral(R"GBNF(
 root ::= ws (call-tool | task-plan | review-completion | final) ws
-call-tool ::= "{" ws "\"action\"" ws ":" ws "\"call_tool\"" ws "," ws "\"tool\"" ws ":" ws string ws "," ws "\"arguments\"" ws ":" ws object (ws "," ws "\"plan_step_id\"" ws ":" ws string)? (ws "," ws "\"completes_plan_step\"" ws ":" ws boolean)? ws "}"
+call-tool ::= "{" ws "\"action\"" ws ":" ws "\"call_tool\"" ws "," ws "\"tool\"" ws ":" ws string ws "," ws "\"arguments\"" ws ":" ws object ws "," ws "\"plan_step_id\"" ws ":" ws string ws "," ws "\"completes_plan_step\"" ws ":" ws boolean ws "}"
 task-plan ::= "{" ws "\"action\"" ws ":" ws "\"task_plan\"" ws "," ws "\"steps\"" ws ":" ws array ws "," ws "\"ordered\"" ws ":" ws "true" ws "}"
 review-completion ::= "{" ws "\"action\"" ws ":" ws "\"review_completion\"" ws "," ws "\"verdict\"" ws ":" ws completion-verdict ws "," ws "\"steps\"" ws ":" ws review-steps ws "," ws "\"detail\"" ws ":" ws string ws "}"
 completion-verdict ::= "\"complete\"" | "\"continue\"" | "\"blocked\""

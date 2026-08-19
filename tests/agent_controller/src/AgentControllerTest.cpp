@@ -274,9 +274,17 @@ void AgentControllerTest::toolRuntimeOwnsCatalogValidationPolicyAndRisk()
     action.arguments = {{QStringLiteral("value"), 7}};
     QVERIFY(runtime.validate(action).valid);
     QCOMPARE(validationCount, 1);
-    QCOMPARE(runtime.policyDecision(action),
+    QCOMPARE(runtime.authorize(action),
              infrastructure::mcp::ToolDecision::RequireApproval);
     QCOMPARE(policyCount, 1);
+    QVERIFY(runtime.pendingApproval().has_value());
+    QCOMPARE(runtime.pendingApproval()->toolName,
+             QStringLiteral("provider.mutate"));
+    const auto approvedAction = runtime.resolveApproval(true);
+    QVERIFY(approvedAction.has_value());
+    QCOMPARE(approvedAction->arguments.value(QStringLiteral("value")).toInt(),
+             7);
+    QVERIFY(!runtime.pendingApproval().has_value());
 }
 
 void AgentControllerTest::toolRuntimeOwnsDuplicateCallGuard()

@@ -77,9 +77,9 @@ The current implementation already provides most of the outer loop:
   structured actions valid for their own phase; `AgentController` schedules
   their directives and transports tool calls without parsing model output.
 - `AgentToolRuntime` owns generic catalog lookup, risk classification, schema
-  validation, policy decisions, and task-local duplicate-call protection. It
-  does not interpret plan structure. Planning can read the catalog but cannot
-  call MCP.
+  validation, policy and approval state, and task-local duplicate-call
+  protection. It does not interpret plan structure. Planning can read the
+  catalog but cannot call MCP.
 - The Host validates tool names and arguments before execution and applies
   `ToolPolicy` independently from the model.
 - Tool calls support approval, cancellation, timeout handling, and ignored late

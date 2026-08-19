@@ -159,7 +159,7 @@ bool AgentController::start(const QString& userRequest,
     }
     activeRun_ = std::move(run);
     preset_ = preset;
-    pendingApproval_.reset();
+    toolRuntime_.clearPendingApproval();
     activeToolAction_.reset();
     pendingPollAction_.reset();
     activeToolCallSignature_.clear();
@@ -199,7 +199,7 @@ void AgentController::cancel()
     setState(AgentRun::State::Cancelled);
     if (runTimer_->isActive()) runTimer_->stop();
     if (pollTimer_->isActive()) pollTimer_->stop();
-    pendingApproval_.reset();
+    toolRuntime_.clearPendingApproval();
     activeToolAction_.reset();
     pendingPollAction_.reset();
     pollableToolCallSignature_.clear();
@@ -222,17 +222,16 @@ void AgentController::cancel()
 void AgentController::resolveApproval(bool approved)
 {
     if (!hasActiveRun() || state_ != AgentRun::State::WaitingForApproval ||
-        !pendingApproval_.has_value())
+        !toolRuntime_.pendingApproval().has_value())
         return;
-    const auto action = *pendingApproval_;
-    pendingApproval_.reset();
+    const auto action = toolRuntime_.resolveApproval(approved);
     if (!approved)
     {
         failRun(QStringLiteral("approval_denied"),
                 QStringLiteral("The requested tool call was rejected."));
         return;
     }
-    executeTool(action);
+    executeTool(*action);
 }
 
 bool AgentController::clearConversation()
@@ -356,7 +355,7 @@ AgentProgressSnapshot AgentController::progressSnapshot() const
                 QStringLiteral("Waiting for the model response");
             break;
         case AgentRun::State::WaitingForApproval:
-            snapshot.operation = toolOperation(pendingApproval_);
+            snapshot.operation = toolOperation(toolRuntime_.pendingApproval());
             snapshot.waitingReason =
                 QStringLiteral("Waiting for your approval");
             break;
@@ -1017,7 +1016,7 @@ void AgentController::applyTaskDirective(const AgentTask::Directive& directive)
 void AgentController::dispatchTool(const agent::Action& action)
 {
     if (!activeRun_) return;
-    const auto decision = toolRuntime_.policyDecision(action);
+    const auto decision = toolRuntime_.authorize(action);
     if (decision == infrastructure::mcp::ToolDecision::Deny)
     {
         failRun(QStringLiteral("tool_denied"),
@@ -1027,7 +1026,6 @@ void AgentController::dispatchTool(const agent::Action& action)
     if (decision == infrastructure::mcp::ToolDecision::RequireApproval)
     {
         if (auto* task = currentExecutionTask()) task->awaitApproval();
-        pendingApproval_ = action;
         setState(AgentRun::State::WaitingForApproval);
         recordEvent(agent::EventType::ApprovalRequested,
                     QStringLiteral("Tool call requires approval."),
@@ -1350,7 +1348,7 @@ void AgentController::failRun(const QString& code, const QString& message)
     setState(AgentRun::State::Failed);
     if (runTimer_->isActive()) runTimer_->stop();
     if (pollTimer_->isActive()) pollTimer_->stop();
-    pendingApproval_.reset();
+    toolRuntime_.clearPendingApproval();
     activeToolAction_.reset();
     pendingPollAction_.reset();
     pollableToolCallSignature_.clear();

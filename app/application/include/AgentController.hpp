@@ -136,7 +136,6 @@ class AgentController final : public QObject
     std::optional<AgentRun> activeRun_;
     models::InferencePreset preset_;
     QList<chat::Message> conversationMessages_;
-    std::optional<agent::Action> pendingApproval_;
     std::optional<agent::Action> activeToolAction_;
     std::optional<agent::Action> pendingPollAction_;
     QString activeToolCallSignature_;

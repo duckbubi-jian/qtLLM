@@ -377,8 +377,10 @@ unordered-plan compatibility path, and controller-owned model token buffer are
 removed. Generic tool lookup, risk classification, schema validation, policy
 decisions, and task-local duplicate-call protection now live in
 `AgentToolRuntime`. Queue construction and task boundaries remain outside it.
-Approval state, asynchronous MCP transport, and polling still remain in
-`AgentController` and are the next extraction boundary.
+Policy-driven approval state also lives in `AgentToolRuntime`; the controller
+only projects that state to the UI and forwards the user's decision.
+Asynchronous MCP transport and polling still remain in `AgentController` and
+are the next extraction boundary.
 
 - Remove obsolete plan, review, and ordered-repair fields from `AgentRun` and
   `AgentController`.

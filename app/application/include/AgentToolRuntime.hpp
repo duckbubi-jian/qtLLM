@@ -57,8 +57,11 @@ class AgentToolRuntime final
         const QString& qualifiedName) const;
     [[nodiscard]] agent::ToolValidationResult validate(
         const agent::Action& action) const;
-    [[nodiscard]] infrastructure::mcp::ToolDecision policyDecision(
-        const agent::Action& action) const;
+    [[nodiscard]] infrastructure::mcp::ToolDecision authorize(
+        const agent::Action& action);
+    [[nodiscard]] const std::optional<agent::Action>& pendingApproval() const;
+    [[nodiscard]] std::optional<agent::Action> resolveApproval(bool approved);
+    void clearPendingApproval();
     [[nodiscard]] QString callSignature(const agent::Action& action) const;
     [[nodiscard]] CallGuardResult guardCall(const agent::Action& action,
                                             bool isStatusPoll) const;
@@ -72,6 +75,7 @@ class AgentToolRuntime final
 
     Dependencies dependencies_;
     QList<agent::ToolDefinition> tools_;
+    std::optional<agent::Action> pendingApproval_;
     QString lastFailedCallSignature_;
     QStringList completedCallHistory_;
 };

@@ -110,11 +110,32 @@ agent::ToolValidationResult AgentToolRuntime::validate(
     return dependencies_.validate(action.toolName, action.arguments);
 }
 
-infrastructure::mcp::ToolDecision AgentToolRuntime::policyDecision(
-    const agent::Action& action) const
+infrastructure::mcp::ToolDecision AgentToolRuntime::authorize(
+    const agent::Action& action)
 {
+    pendingApproval_.reset();
     if (!dependencies_.policy) return infrastructure::mcp::ToolDecision::Deny;
-    return dependencies_.policy(action.toolName);
+    const auto decision = dependencies_.policy(action.toolName);
+    if (decision == infrastructure::mcp::ToolDecision::RequireApproval)
+        pendingApproval_ = action;
+    return decision;
+}
+
+const std::optional<agent::Action>& AgentToolRuntime::pendingApproval() const
+{
+    return pendingApproval_;
+}
+
+std::optional<agent::Action> AgentToolRuntime::resolveApproval(bool approved)
+{
+    auto action = std::exchange(pendingApproval_, std::nullopt);
+    if (!approved) action.reset();
+    return action;
+}
+
+void AgentToolRuntime::clearPendingApproval()
+{
+    pendingApproval_.reset();
 }
 
 QString AgentToolRuntime::callSignature(const agent::Action& action) const

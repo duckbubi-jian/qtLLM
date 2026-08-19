@@ -75,6 +75,8 @@ class MainWindow final : public QMainWindow
     void stopGeneration();
     void clearConversation();
     void updateState(infrastructure::WorkerClient::State state);
+    void updateGenerationProgress(int generatedTokens, double tokensPerSecond,
+                                  qint64 contextMilliseconds);
     void appendToken(const QByteArray& bytes);
     void finishGeneration(bool cancelled, const QJsonObject& metrics);
     void showError(const QString& code, const QString& message);
@@ -106,6 +108,7 @@ class MainWindow final : public QMainWindow
         const application::AgentProgressSnapshot& snapshot);
     void appendAgentAnswer(const QString& answer);
     void updateAgentState(application::AgentRun::State state);
+    [[nodiscard]] QString generationPhaseText() const;
     void loadMcpServers();
     void refreshMcpServerMenu();
     void refreshMcpControlPanel();

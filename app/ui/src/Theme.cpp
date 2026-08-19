@@ -380,96 +380,75 @@ QTextBrowser#assistantMessageBody {
 QWidget#agentProgressCard {
     margin: 6px 12px;
     color: #202124;
-    background: #f8fafc;
-    border: 1px solid #cbd5e1;
-    border-radius: 6px;
+    background: #f7f9fc;
+    border: 1px solid #d8e0ea;
+    border-radius: 5px;
 }
 QWidget#agentProgressCard[progressState="terminal"] {
-    background: #f6f8fa;
-    border-color: #d7dbe0;
+    background: #fafbfc;
+    border-color: #e1e5ea;
 }
-QToolButton#agentProgressToggle {
-    min-width: 24px;
-    max-width: 24px;
+QToolButton#agentProgressStateToggle {
     min-height: 24px;
-    max-height: 24px;
-    padding: 0;
-    background: transparent;
+    padding: 0 8px 0 4px;
+    color: #30445f;
+    background: #eaf2fc;
     border: none;
-}
-QToolButton#agentProgressToggle:hover {
-    background: #e8eef5;
     border-radius: 4px;
-}
-QLabel#agentProgressTitle {
     font-weight: 600;
+    text-align: left;
 }
-QLabel#agentProgressElapsed,
-QLabel#agentProgressSummary,
-QLabel#agentProgressCounts,
-QLabel#agentProgressWaiting,
-QLabel#agentProgressActivityItem {
-    color: #64748b;
+QToolButton#agentProgressStateToggle:hover {
+    background: #e1ecf9;
 }
 QLabel#agentProgressElapsed {
+    min-height: 24px;
+    padding: 0 6px;
+    color: #526174;
+    background: #e9eef5;
+    border: none;
+    border-radius: 4px;
     font-family: "Cascadia Mono", "Consolas", monospace;
 }
-QLabel#agentProgressOperation {
-    color: #334155;
-    font-weight: 600;
+QWidget#agentProgressPlan {
+    background: #fbfcfe;
+    border-top: 1px solid #e2e8f0;
 }
 QLabel#agentProgressFinish {
     color: #991b1b;
 }
 QWidget#agentProgressStep {
     background: transparent;
+    border-bottom: 1px solid #edf1f5;
 }
-QWidget#agentProgressStep[stepStatus="current"] QLabel#agentProgressStepDescription {
-    color: #1d4ed8;
-    font-weight: 600;
-}
-QWidget#agentProgressStep[stepStatus="completed"] QLabel#agentProgressStepDescription {
-    color: #166534;
-}
-QWidget#agentProgressStep[stepStatus="blocked"] QLabel#agentProgressStepDescription {
-    color: #991b1b;
-}
-QWidget#agentProgressStep[stepStatus="pending"] QLabel#agentProgressStepDescription {
-    color: #64748b;
-}
-QToolButton#agentProgressActivityToggle {
-    min-height: 26px;
-    padding: 0 5px;
+QLabel#agentProgressStepDescription {
     color: #475569;
-    background: transparent;
-    border: none;
-}
-QToolButton#agentProgressActivityToggle:hover {
-    color: #202124;
-    background: #eef1f4;
-    border-radius: 4px;
-}
-QWidget#agentProgressActivity {
-    background: transparent;
-    border-left: 2px solid #d7dbe0;
 }
 QWidget#toolApprovalCard {
-    margin: 8px 12px;
-    background: #fffaf0;
-    border: 1px solid #e5b94f;
-    border-radius: 6px;
+    margin: 5px 12px;
+    background: #f8fafc;
+    border: 1px solid #d9e1ea;
+    border-radius: 5px;
 }
 QWidget#toolApprovalCard[riskLevel="read"] {
-    background: #f4f8ff;
-    border-color: #8bb4e8;
+    background: #f7f9fc;
+    border-color: #cbd8e8;
 }
 QWidget#toolApprovalCard[riskLevel="destructive"] {
     background: #fff5f4;
     border-color: #d6655a;
 }
-QLabel#toolApprovalHeading {
+QToolButton#toolApprovalToggle {
+    min-height: 24px;
+    padding: 0 4px;
     color: #202124;
+    background: transparent;
+    border: none;
     font-weight: 600;
+}
+QToolButton#toolApprovalToggle:hover {
+    background: #edf1f6;
+    border-radius: 4px;
 }
 QLabel#toolApprovalDescription,
 QLabel#toolApprovalArgumentLabel {
@@ -478,6 +457,19 @@ QLabel#toolApprovalArgumentLabel {
 QLabel#toolApprovalArgumentLabel {
     font-size: 9pt;
     font-weight: 600;
+}
+QToolButton#toolApprovalArgumentsToggle {
+    min-height: 24px;
+    padding: 0 4px;
+    color: #475569;
+    background: transparent;
+    border: none;
+    font-weight: 600;
+}
+QToolButton#toolApprovalArgumentsToggle:hover {
+    color: #1f2937;
+    background: #f1f5f9;
+    border-radius: 4px;
 }
 QLabel#toolApprovalName {
     color: #334155;

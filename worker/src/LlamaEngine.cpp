@@ -140,8 +140,10 @@ bool tokenize(const llama_vocab* vocabulary, const QByteArray& prompt,
 bool preparePrompt(const llama_model* model, const llama_vocab* vocabulary,
                    const WorkerOptions& options, QByteArray& formattedPrompt,
                    std::vector<llama_token>& promptTokens,
-                   int& discardedMessages, QString& errorMessage)
+                   int& maximumGeneratedTokens, int& discardedMessages,
+                   QString& errorMessage)
 {
+    maximumGeneratedTokens = options.maxTokens;
     auto messages = requestMessages(options);
     const auto historyStart =
         !messages.isEmpty() && messages.constFirst().role == chat::Role::System
@@ -166,6 +168,26 @@ bool preparePrompt(const llama_model* model, const llama_vocab* vocabulary,
         messages.removeAt(historyStart);
         messages.removeAt(historyStart);
         discardedMessages += 2;
+    }
+
+    const auto availableResponseTokens =
+        options.contextSize - static_cast<int>(promptTokens.size());
+    const auto minimumStructuredResponseTokens =
+        std::min(options.maxTokens, 256);
+    if (options.responseMode == inference::ResponseMode::AgentAction &&
+        availableResponseTokens >= minimumStructuredResponseTokens)
+    {
+        maximumGeneratedTokens =
+            std::min(options.maxTokens, availableResponseTokens);
+        logging::warning(
+            QStringLiteral(
+                "Agent response budget reduced from %1 to %2 tokens because "
+                "the compacted prompt uses %3 of %4 context tokens.")
+                .arg(options.maxTokens)
+                .arg(maximumGeneratedTokens)
+                .arg(promptTokens.size())
+                .arg(options.contextSize));
+        return true;
     }
 
     errorMessage =
@@ -515,22 +537,25 @@ bool LlamaEngine::generate(const WorkerOptions& options,
 
     QByteArray formattedPrompt;
     std::vector<llama_token> promptTokens;
+    auto maximumGeneratedTokens = options.maxTokens;
     auto discardedMessages = 0;
     if (!preparePrompt(impl_->model.get(), vocabulary, options, formattedPrompt,
-                       promptTokens, discardedMessages, errorMessage))
+                       promptTokens, maximumGeneratedTokens, discardedMessages,
+                       errorMessage))
     {
         return false;
     }
 
     logging::info(
-        QStringLiteral(
-            "llama.cpp prompt prepared: messages=%1 promptTokens=%2 "
-            "discardedMessages=%3 context=%4 maxTokens=%5 grammarBytes=%6")
+        QStringLiteral("llama.cpp prompt prepared: messages=%1 promptTokens=%2 "
+                       "discardedMessages=%3 context=%4 requestedMaxTokens=%5 "
+                       "effectiveMaxTokens=%6 grammarBytes=%7")
             .arg(requestMessages(options).size())
             .arg(promptTokens.size())
             .arg(discardedMessages)
             .arg(options.contextSize)
             .arg(options.maxTokens)
+            .arg(maximumGeneratedTokens)
             .arg(options.grammar.toUtf8().size()));
 
     auto contextParameters = llama_context_default_params();
@@ -627,7 +652,7 @@ bool LlamaEngine::generate(const WorkerOptions& options,
 
     int generatedTokens = 0;
     qint64 firstTokenMilliseconds = -1;
-    while (generatedTokens < options.maxTokens)
+    while (generatedTokens < maximumGeneratedTokens)
     {
         if (shouldAbort(&cancellationState))
         {
@@ -652,7 +677,7 @@ bool LlamaEngine::generate(const WorkerOptions& options,
             firstTokenMilliseconds = responseTimer.elapsed();
         }
         ++generatedTokens;
-        if (generatedTokens == options.maxTokens)
+        if (generatedTokens == maximumGeneratedTokens)
         {
             break;
         }

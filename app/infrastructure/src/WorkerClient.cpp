@@ -28,6 +28,10 @@ WorkerClient::WorkerClient(QObject* parent) : QObject(parent)
     connect(&process_, &QProcess::finished, this, &WorkerClient::onFinished);
     connect(&process_, &QProcess::errorOccurred, this,
             &WorkerClient::onProcessError);
+    generationProgressTimer_.setInterval(200);
+    generationProgressTimer_.setTimerType(Qt::CoarseTimer);
+    connect(&generationProgressTimer_, &QTimer::timeout, this,
+            &WorkerClient::emitGenerationProgress);
 }
 
 WorkerClient::~WorkerClient()
@@ -162,6 +166,12 @@ void WorkerClient::generate(const QList<chat::Message>& messages,
             .arg(maxTokens)
             .arg(threads));
 
+    generationRequestTimer_.restart();
+    tokenGenerationTimer_.invalidate();
+    liveGeneratedTokens_ = 0;
+    firstTokenMilliseconds_ = -1;
+    generationProgressTimer_.start();
+
     QJsonArray serializedMessages;
     for (const auto& message : messages)
     {
@@ -278,6 +288,7 @@ void WorkerClient::onReadyReadStandardError()
 
 void WorkerClient::onFinished(int exitCode, QProcess::ExitStatus exitStatus)
 {
+    generationProgressTimer_.stop();
     helloRequestId_.clear();
     loadRequestId_.clear();
     unloadRequestId_.clear();
@@ -403,6 +414,13 @@ void WorkerClient::handleMessage(const protocol::Message& message)
     else if (message.type == QLatin1String(protocol::message_type::token) &&
              message.requestId == generationRequestId_)
     {
+        if (!tokenGenerationTimer_.isValid())
+        {
+            firstTokenMilliseconds_ = generationRequestTimer_.elapsed();
+            tokenGenerationTimer_.start();
+        }
+        ++liveGeneratedTokens_;
+        if (liveGeneratedTokens_ == 1) emitGenerationProgress();
         emit tokenReceived(
             QByteArray::fromBase64(message.payload.value(QStringLiteral("data"))
                                        .toString()
@@ -412,6 +430,7 @@ void WorkerClient::handleMessage(const protocol::Message& message)
                  QLatin1String(protocol::message_type::generationFinished) &&
              message.requestId == generationRequestId_)
     {
+        generationProgressTimer_.stop();
         generationRequestId_.clear();
         setState(State::ModelReady);
         emit generationFinished(
@@ -443,11 +462,30 @@ void WorkerClient::handleMessage(const protocol::Message& message)
         }
         else if (message.requestId == generationRequestId_)
         {
+            generationProgressTimer_.stop();
             generationRequestId_.clear();
             setState(State::ModelReady);
         }
         emit errorOccurred(code, errorMessage);
     }
+}
+
+void WorkerClient::emitGenerationProgress()
+{
+    if (state_ != State::Generating || !generationRequestTimer_.isValid())
+        return;
+
+    const auto tokenMilliseconds =
+        tokenGenerationTimer_.isValid() ? tokenGenerationTimer_.elapsed() : 0;
+    const auto tokensPerSecond =
+        liveGeneratedTokens_ > 1 && tokenMilliseconds > 0
+            ? (liveGeneratedTokens_ - 1) * 1000.0 / tokenMilliseconds
+            : 0.0;
+    const auto contextMilliseconds = firstTokenMilliseconds_ >= 0
+                                         ? firstTokenMilliseconds_
+                                         : generationRequestTimer_.elapsed();
+    emit generationProgress(liveGeneratedTokens_, tokensPerSecond,
+                            contextMilliseconds);
 }
 
 void WorkerClient::setState(State state)

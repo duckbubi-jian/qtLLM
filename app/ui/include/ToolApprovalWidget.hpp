@@ -6,7 +6,9 @@
 #include <QWidget>
 
 class QLabel;
+class QPlainTextEdit;
 class QPushButton;
+class QToolButton;
 
 namespace qtllm::ui
 {
@@ -37,6 +39,11 @@ class ToolApprovalWidget final : public QWidget
     void setResolvedState(const QString& status, bool approved);
 
     QLabel* statusLabel_ = nullptr;
+    QWidget* details_ = nullptr;
+    QToolButton* detailsToggle_ = nullptr;
+    QLabel* descriptionLabel_ = nullptr;
+    QPlainTextEdit* argumentView_ = nullptr;
+    QToolButton* argumentToggle_ = nullptr;
     QPushButton* allowButton_ = nullptr;
     QPushButton* alwaysAllowButton_ = nullptr;
     QPushButton* rejectButton_ = nullptr;

@@ -23,6 +23,23 @@ bool hasOnlyKeys(const QJsonObject& object,
     return true;
 }
 
+QString normalizedReviewStatus(QString status)
+{
+    status = status.trimmed().toCaseFolded();
+    if (status == QLatin1String("satisfied") ||
+        status == QLatin1String("pending") ||
+        status == QLatin1String("blocked"))
+        return status;
+    if (status == QLatin1String("complete") ||
+        status == QLatin1String("completed") || status == QLatin1String("done"))
+        return QStringLiteral("satisfied");
+    if (status == QLatin1String("incomplete") ||
+        status == QLatin1String("unfinished") ||
+        status == QLatin1String("todo"))
+        return QStringLiteral("pending");
+    return {};
+}
+
 bool parsePlanSteps(const QJsonArray& values, QJsonArray& steps,
                     QString& errorMessage)
 {
@@ -80,8 +97,8 @@ bool parseReviewSteps(const QJsonArray& values, QJsonArray& steps,
         const auto description =
             step.value(QStringLiteral("description")).toString().trimmed();
         const auto requiresTool = step.value(QStringLiteral("requires_tool"));
-        const auto status =
-            step.value(QStringLiteral("status")).toString().trimmed();
+        const auto status = normalizedReviewStatus(
+            step.value(QStringLiteral("status")).toString());
         const auto evidence = step.value(QStringLiteral("evidence"));
         if (!value.isObject() ||
             !hasOnlyKeys(
@@ -90,10 +107,7 @@ bool parseReviewSteps(const QJsonArray& values, QJsonArray& steps,
                        QStringLiteral("status"), QStringLiteral("evidence")}) ||
             id.isEmpty() || id.size() > 64 || description.isEmpty() ||
             description.size() > 256 || !requiresTool.isBool() ||
-            (status != QLatin1String("satisfied") &&
-             status != QLatin1String("pending") &&
-             status != QLatin1String("blocked")) ||
-            !evidence.isArray() || ids.contains(id))
+            status.isEmpty() || !evidence.isArray() || ids.contains(id))
         {
             errorMessage = QStringLiteral(
                 "Each review_completion step requires the original id, "
@@ -155,21 +169,42 @@ bool parseAction(const QByteArray& json, Action& action, QString& errorMessage)
     {
         const auto toolValue = object.value(QStringLiteral("tool"));
         const auto argumentsValue = object.value(QStringLiteral("arguments"));
-        if (!hasOnlyKeys(object,
-                         {QStringLiteral("action"), QStringLiteral("tool"),
-                          QStringLiteral("arguments")}) ||
-            !toolValue.isString() || toolValue.toString().trimmed().isEmpty() ||
-            !argumentsValue.isObject())
+        const auto planStepId = object.value(QStringLiteral("plan_step_id"));
+        const auto completesPlanStep =
+            object.value(QStringLiteral("completes_plan_step"));
+        auto hasOnlyCallKeys = true;
+        for (auto item = object.constBegin(); item != object.constEnd(); ++item)
+            hasOnlyCallKeys =
+                hasOnlyCallKeys &&
+                (item.key() == QLatin1String("action") ||
+                 item.key() == QLatin1String("tool") ||
+                 item.key() == QLatin1String("arguments") ||
+                 item.key() == QLatin1String("plan_step_id") ||
+                 item.key() == QLatin1String("completes_plan_step"));
+        const auto hasValidKeys = hasOnlyCallKeys && object.size() >= 3 &&
+                                  object.size() <= 5 &&
+                                  object.contains(QStringLiteral("action")) &&
+                                  object.contains(QStringLiteral("tool")) &&
+                                  object.contains(QStringLiteral("arguments"));
+        if (!hasValidKeys || !toolValue.isString() ||
+            toolValue.toString().trimmed().isEmpty() ||
+            !argumentsValue.isObject() ||
+            (!planStepId.isUndefined() && !planStepId.isString()) ||
+            (!completesPlanStep.isUndefined() && !completesPlanStep.isBool()))
         {
             errorMessage = QStringLiteral(
                 "call_tool requires only non-empty tool and object arguments "
-                "properties.");
+                "properties, plus optional string plan_step_id and boolean "
+                "completes_plan_step.");
             return false;
         }
 
         action = {};
         action.type = ActionType::CallTool;
         action.toolName = toolValue.toString().trimmed();
+        action.planStepId = planStepId.toString().trimmed();
+        if (!completesPlanStep.isUndefined())
+            action.completesPlanStep = completesPlanStep.toBool();
         action.arguments = argumentsValue.toObject();
         return true;
     }
@@ -177,10 +212,17 @@ bool parseAction(const QByteArray& json, Action& action, QString& errorMessage)
     if (actionValue.toString() == QStringLiteral("task_plan"))
     {
         const auto stepsValue = object.value(QStringLiteral("steps"));
+        const auto orderedValue = object.value(QStringLiteral("ordered"));
+        auto hasOnlyPlanKeys = true;
+        for (auto item = object.constBegin(); item != object.constEnd(); ++item)
+            hasOnlyPlanKeys =
+                hasOnlyPlanKeys && (item.key() == QLatin1String("action") ||
+                                    item.key() == QLatin1String("steps") ||
+                                    item.key() == QLatin1String("ordered"));
         QJsonArray steps;
-        if (!hasOnlyKeys(object,
-                         {QStringLiteral("action"), QStringLiteral("steps")}) ||
+        if (!hasOnlyPlanKeys || object.size() < 2 || object.size() > 3 ||
             !stepsValue.isArray() ||
+            (!orderedValue.isUndefined() && !orderedValue.isBool()) ||
             !parsePlanSteps(stepsValue.toArray(), steps, errorMessage))
         {
             if (errorMessage.isEmpty())
@@ -191,6 +233,8 @@ bool parseAction(const QByteArray& json, Action& action, QString& errorMessage)
         action = {};
         action.type = ActionType::TaskPlan;
         action.completionSteps = std::move(steps);
+        if (!orderedValue.isUndefined())
+            action.orderedPlan = orderedValue.toBool();
         return true;
     }
 
@@ -276,11 +320,18 @@ QByteArray actionGrammar()
 {
     return QByteArrayLiteral(R"GBNF(
 root ::= ws (call-tool | task-plan | review-completion | final) ws
-call-tool ::= "{" ws "\"action\"" ws ":" ws "\"call_tool\"" ws "," ws "\"tool\"" ws ":" ws string ws "," ws "\"arguments\"" ws ":" ws object ws "}"
-task-plan ::= "{" ws "\"action\"" ws ":" ws "\"task_plan\"" ws "," ws "\"steps\"" ws ":" ws array ws "}"
-review-completion ::= "{" ws "\"action\"" ws ":" ws "\"review_completion\"" ws "," ws "\"verdict\"" ws ":" ws string ws "," ws "\"steps\"" ws ":" ws array ws "," ws "\"detail\"" ws ":" ws string ws "}"
+call-tool ::= "{" ws "\"action\"" ws ":" ws "\"call_tool\"" ws "," ws "\"tool\"" ws ":" ws string ws "," ws "\"arguments\"" ws ":" ws object (ws "," ws "\"plan_step_id\"" ws ":" ws string)? (ws "," ws "\"completes_plan_step\"" ws ":" ws boolean)? ws "}"
+task-plan ::= "{" ws "\"action\"" ws ":" ws "\"task_plan\"" ws "," ws "\"steps\"" ws ":" ws array ws "," ws "\"ordered\"" ws ":" ws "true" ws "}"
+review-completion ::= "{" ws "\"action\"" ws ":" ws "\"review_completion\"" ws "," ws "\"verdict\"" ws ":" ws completion-verdict ws "," ws "\"steps\"" ws ":" ws review-steps ws "," ws "\"detail\"" ws ":" ws string ws "}"
+completion-verdict ::= "\"complete\"" | "\"continue\"" | "\"blocked\""
+review-steps ::= "[" ws review-step (ws "," ws review-step)* ws "]"
+review-step ::= "{" ws "\"id\"" ws ":" ws string ws "," ws "\"description\"" ws ":" ws string ws "," ws "\"requires_tool\"" ws ":" ws boolean ws "," ws "\"status\"" ws ":" ws review-status ws "," ws "\"evidence\"" ws ":" ws evidence-array ws "}"
+review-status ::= "\"satisfied\"" | "\"pending\"" | "\"blocked\""
+evidence-array ::= "[" ws (positive-integer (ws "," ws positive-integer)*)? ws "]"
+positive-integer ::= [1-9] [0-9]*
 final ::= "{" ws "\"action\"" ws ":" ws "\"final\"" ws "," ws "\"content\"" ws ":" ws string ws "}"
 value ::= object | array | string | number | "true" | "false" | "null"
+boolean ::= "true" | "false"
 object ::= "{" ws (member (ws "," ws member)*)? ws "}"
 member ::= string ws ":" ws value
 array ::= "[" ws (value (ws "," ws value)*)? ws "]"

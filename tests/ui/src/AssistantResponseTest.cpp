@@ -75,6 +75,7 @@ class AssistantResponseTest final : public QObject
     void separatesModelLocationAndReloadActions();
     void presentsComputeSettingsOnStartPage();
     void placesModelControlsInComposerAndMergesPrimaryAction();
+    void showsLiveGenerationThroughput();
     void configuresSingleAndCustomGpuPlacement();
 
    private:
@@ -369,11 +370,20 @@ void AssistantResponseTest::showsInlineToolApprovalAndRedactsSecrets()
 
     auto* arguments = approval.findChild<QPlainTextEdit*>(
         QStringLiteral("toolApprovalArguments"));
+    auto* argumentsToggle = approval.findChild<QToolButton*>(
+        QStringLiteral("toolApprovalArgumentsToggle"));
+    auto* approvalToggle =
+        approval.findChild<QToolButton*>(QStringLiteral("toolApprovalToggle"));
+    auto* approvalDetails =
+        approval.findChild<QWidget*>(QStringLiteral("toolApprovalDetails"));
     auto* allow =
         approval.findChild<QPushButton*>(QStringLiteral("allowToolButton"));
     auto* alwaysAllow = approval.findChild<QPushButton*>(
         QStringLiteral("alwaysAllowToolButton"));
     QVERIFY(arguments != nullptr);
+    QVERIFY(argumentsToggle != nullptr);
+    QVERIFY(approvalToggle != nullptr);
+    QVERIFY(approvalDetails != nullptr);
     QVERIFY(allow != nullptr);
     QVERIFY(alwaysAllow != nullptr);
     QVERIFY(!alwaysAllow->isVisible());
@@ -383,6 +393,13 @@ void AssistantResponseTest::showsInlineToolApprovalAndRedactsSecrets()
     QVERIFY(
         !arguments->toPlainText().contains(QStringLiteral("do-not-display")));
     QVERIFY(!arguments->toPlainText().contains(QStringLiteral("also-hidden")));
+    approvalToggle->click();
+    QVERIFY(approvalDetails->isHidden());
+    approvalToggle->click();
+    QVERIFY(!approvalDetails->isHidden());
+    QVERIFY(!arguments->isVisible());
+    argumentsToggle->click();
+    QVERIFY(arguments->isVisible());
 
     allow->click();
     QCOMPARE(decisionSpy.count(), 1);
@@ -420,6 +437,8 @@ void AssistantResponseTest::showsStructuredAgentProgressUntilRunEnds()
     auto progressWidgets = window.findChildren<ui::AgentProgressWidget*>();
     QCOMPARE(progressWidgets.size(), 1);
     auto* progress = progressWidgets.constFirst();
+    QVERIFY(progress->findChild<QWidget*>(
+                QStringLiteral("agentProgressActivity")) == nullptr);
 
     application::AgentProgressSnapshot running;
     running.runId = QStringLiteral("run-id");
@@ -447,39 +466,42 @@ void AssistantResponseTest::showsStructuredAgentProgressUntilRunEnds()
                                Qt::ISODate)}};
     emit controller->progressChanged(running);
 
-    auto* title =
-        progress->findChild<QLabel*>(QStringLiteral("agentProgressTitle"));
+    auto* stateToggle = progress->findChild<QToolButton*>(
+        QStringLiteral("agentProgressStateToggle"));
     auto* elapsed =
         progress->findChild<QLabel*>(QStringLiteral("agentProgressElapsed"));
-    auto* summary =
-        progress->findChild<QLabel*>(QStringLiteral("agentProgressSummary"));
-    auto* operation =
-        progress->findChild<QLabel*>(QStringLiteral("agentProgressOperation"));
-    auto* activityToggle = progress->findChild<QToolButton*>(
-        QStringLiteral("agentProgressActivityToggle"));
-    QVERIFY(title != nullptr);
+    QVERIFY(stateToggle != nullptr);
     QVERIFY(elapsed != nullptr);
-    QVERIFY(summary != nullptr);
-    QVERIFY(operation != nullptr);
-    QVERIFY(activityToggle != nullptr);
-    QCOMPARE(title->text(), QStringLiteral("Agent working"));
     QCOMPARE(elapsed->text(), QStringLiteral("01:05"));
-    QVERIFY(summary->text().contains(QStringLiteral("3 steps, 1 complete")));
-    QVERIFY(operation->text().contains(QStringLiteral("shondy.create_inlet")));
+    QVERIFY(stateToggle->text().startsWith(QStringLiteral("Agent working")));
+    QVERIFY(
+        stateToggle->toolTip().contains(QStringLiteral("shondy.create_inlet")));
     const auto stepLabels = progress->findChildren<QLabel*>(
         QStringLiteral("agentProgressStepDescription"));
     QCOMPARE(stepLabels.size(), 3);
     for (const auto* label : stepLabels)
+    {
         QVERIFY(!label->text().contains(QStringLiteral("do-not-display")));
+        QVERIFY(!label->wordWrap());
+        QVERIFY(!label->toolTip().isEmpty());
+    }
     const auto stepRows =
         progress->findChildren<QWidget*>(QStringLiteral("agentProgressStep"));
     QCOMPARE(stepRows.size(), 3);
+    QCOMPARE(stepLabels.at(0)->toolTip(),
+             QStringLiteral("1. Inspect the workspace"));
+    QVERIFY(stepLabels.at(1)->text().startsWith(QStringLiteral("2. ")));
+    QVERIFY(stepLabels.at(2)->text().startsWith(QStringLiteral("3. ")));
     for (const auto* row : stepRows)
+    {
         QVERIFY(
             !row->accessibleName().contains(QStringLiteral("do-not-display")));
+        QCOMPARE(row->height(), 28);
+    }
     window.resize(720, 520);
     window.show();
     QCoreApplication::processEvents();
+    QVERIFY(stateToggle->geometry().right() < elapsed->geometry().left());
     auto* conversationScroll =
         window.findChild<QScrollArea*>(QStringLiteral("conversationScroll"));
     QVERIFY(conversationScroll != nullptr);
@@ -488,14 +510,9 @@ void AssistantResponseTest::showsStructuredAgentProgressUntilRunEnds()
         QVERIFY(label->mapTo(progress, QPoint(label->width(), 0)).x() <=
                 progress->contentsRect().right() + 1);
 
-    activityToggle->click();
-    const auto activityItems = progress->findChildren<QLabel*>(
-        QStringLiteral("agentProgressActivityItem"));
-    QCOMPARE(activityItems.size(), 1);
-    QVERIFY(!activityItems.constFirst()->text().contains(
-        QStringLiteral("do-not-display")));
-    QVERIFY(activityItems.constFirst()->text().contains(
-        QStringLiteral("[redacted]")));
+    stateToggle->click();
+    QVERIFY(progress->findChild<QWidget*>(QStringLiteral("agentProgressPlan"))
+                ->isHidden());
 
     application::AgentProgressSnapshot completed = running;
     completed.state = application::AgentRun::State::Completed;
@@ -504,8 +521,8 @@ void AssistantResponseTest::showsStructuredAgentProgressUntilRunEnds()
     emit controller->progressChanged(completed);
     emit controller->finalAnswerReady(QStringLiteral("run-id"),
                                       QStringLiteral("Done."));
-    QCOMPARE(title->text(), QStringLiteral("Agent complete"));
-    QVERIFY(!progress->isExpanded());
+    QCOMPARE(stateToggle->text(), QStringLiteral("Agent complete"));
+    QVERIFY(!stateToggle->isChecked());
     emit controller->runFinished(QStringLiteral("run-id"),
                                  application::AgentRun::State::Completed, {},
                                  {});
@@ -513,7 +530,7 @@ void AssistantResponseTest::showsStructuredAgentProgressUntilRunEnds()
     QCOMPARE(window.findChildren<ui::MessageWidget*>().size(), 2);
 
     emit controller->progressChanged(running);
-    QCOMPARE(title->text(), QStringLiteral("Agent complete"));
+    QCOMPARE(stateToggle->text(), QStringLiteral("Agent complete"));
 
     emit controller->userRequestAccepted(QStringLiteral("next-run"),
                                          QStringLiteral("try again"));
@@ -526,9 +543,11 @@ void AssistantResponseTest::showsStructuredAgentProgressUntilRunEnds()
     failed.finishCode = QStringLiteral("tool_failed");
     failed.finishMessage =
         QStringLiteral("Request failed; token=do-not-display");
-    emit controller->progressChanged(failed);
-    auto* failedTitle = failedProgress->findChild<QLabel*>(
-        QStringLiteral("agentProgressTitle"));
+    emit controller->runFinished(QStringLiteral("next-run"),
+                                 application::AgentRun::State::Failed,
+                                 failed.finishCode, failed.finishMessage);
+    auto* failedTitle = failedProgress->findChild<QToolButton*>(
+        QStringLiteral("agentProgressStateToggle"));
     auto* failedFinish = failedProgress->findChild<QLabel*>(
         QStringLiteral("agentProgressFinish"));
     QVERIFY(failedTitle != nullptr);
@@ -536,10 +555,6 @@ void AssistantResponseTest::showsStructuredAgentProgressUntilRunEnds()
     QCOMPARE(failedTitle->text(), QStringLiteral("Agent failed"));
     QVERIFY(!failedFinish->text().contains(QStringLiteral("do-not-display")));
     QVERIFY(failedFinish->text().contains(QStringLiteral("[redacted]")));
-    emit controller->runFinished(QStringLiteral("next-run"),
-                                 application::AgentRun::State::Failed,
-                                 QStringLiteral("generation_failed"),
-                                 QStringLiteral("Generation failed."));
     QVERIFY(prompt->toPlainText().isEmpty());
 }
 
@@ -1461,6 +1476,28 @@ void AssistantResponseTest::
         Q_ARG(qtllm::infrastructure::WorkerClient::State,
               qtllm::infrastructure::WorkerClient::State::LoadingModel)));
     QCOMPARE(guideStatus->text(), QStringLiteral("Loading model..."));
+}
+
+void AssistantResponseTest::showsLiveGenerationThroughput()
+{
+    ui::MainWindow window(settingsFilePath());
+    auto* statusLabel =
+        window.findChild<QLabel*>(QStringLiteral("statusLabel"));
+    QVERIFY(statusLabel != nullptr);
+
+    QVERIFY(QMetaObject::invokeMethod(
+        &window, "updateState", Qt::DirectConnection,
+        Q_ARG(qtllm::infrastructure::WorkerClient::State,
+              qtllm::infrastructure::WorkerClient::State::Generating)));
+    QCOMPARE(statusLabel->text(),
+             QStringLiteral("Generating \u00b7 processing context 0.0s"));
+
+    QVERIFY(QMetaObject::invokeMethod(
+        &window, "updateGenerationProgress", Qt::DirectConnection,
+        Q_ARG(int, 48), Q_ARG(double, 12.35), Q_ARG(qint64, qint64{8'400})));
+    QCOMPARE(statusLabel->text(),
+             QStringLiteral("Generating \u00b7 context 8.4s \u00b7 48 tokens "
+                            "\u00b7 12.4 tok/s"));
 }
 }  // namespace qtllm::tests
 

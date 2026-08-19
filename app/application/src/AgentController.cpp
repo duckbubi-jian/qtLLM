@@ -44,6 +44,14 @@ bool isContextResetToolName(const QString& qualifiedToolName)
     return names.contains(unqualifiedToolName(qualifiedToolName));
 }
 
+bool opensContext(const QString& qualifiedToolName)
+{
+    static const QStringList names{QStringLiteral("load_case"),
+                                   QStringLiteral("open_case"),
+                                   QStringLiteral("switch_case")};
+    return names.contains(unqualifiedToolName(qualifiedToolName));
+}
+
 bool closesContext(const QString& qualifiedToolName)
 {
     return unqualifiedToolName(qualifiedToolName) ==
@@ -191,6 +199,129 @@ QString contractFailureKey(const agent::Action& action)
            actionSelector(action).toCaseFolded();
 }
 
+QString modelContractKey(const QString& serverId, const QString& itemType,
+                         const QString& selector)
+{
+    return serverId.toCaseFolded() + QLatin1Char('\n') +
+           itemType.toCaseFolded() + QLatin1Char('\n') +
+           selector.toCaseFolded();
+}
+
+QJsonValue toolResultPayload(const agent::ToolResult& result);
+
+bool isValidModelJsonPointer(const QString& path)
+{
+    if (path.isEmpty() || !path.startsWith(QLatin1Char('/'))) return false;
+    for (qsizetype index = 0; index < path.size(); ++index)
+    {
+        if (path.at(index) != QLatin1Char('~')) continue;
+        if (++index >= path.size() || (path.at(index) != QLatin1Char('0') &&
+                                       path.at(index) != QLatin1Char('1')))
+            return false;
+    }
+    return true;
+}
+
+void appendDescribedFieldPaths(const QJsonValue& value, QStringList& paths,
+                               qsizetype depth = 0)
+{
+    if (depth > 12) return;
+    if (value.isString())
+    {
+        const auto path = value.toString().trimmed();
+        if (isValidModelJsonPointer(path) && !paths.contains(path))
+            paths.append(path);
+        return;
+    }
+    if (value.isArray())
+    {
+        for (const auto& entry : value.toArray())
+            appendDescribedFieldPaths(entry, paths, depth + 1);
+        return;
+    }
+    if (!value.isObject()) return;
+
+    const auto object = value.toObject();
+    const auto path = object.value(QStringLiteral("path")).toString().trimmed();
+    if (isValidModelJsonPointer(path) && !paths.contains(path))
+        paths.append(path);
+    for (auto entry = object.constBegin(); entry != object.constEnd(); ++entry)
+    {
+        if (entry.key() == QLatin1String("path")) continue;
+        appendDescribedFieldPaths(entry.value(), paths, depth + 1);
+    }
+}
+
+QStringList describedFieldPaths(const agent::ToolResult& result)
+{
+    QStringList paths;
+    const auto payload = toolResultPayload(result);
+    if (!payload.isObject()) return paths;
+
+    const auto collectFields = [&paths](const auto& self,
+                                        const QJsonValue& value,
+                                        qsizetype depth) -> void
+    {
+        if (depth > 10) return;
+        if (value.isArray())
+        {
+            for (const auto& entry : value.toArray())
+                self(self, entry, depth + 1);
+            return;
+        }
+        if (!value.isObject()) return;
+        const auto object = value.toObject();
+        for (auto entry = object.constBegin(); entry != object.constEnd();
+             ++entry)
+        {
+            const auto key = entry.key().toCaseFolded();
+            if (key == QLatin1String("fields") ||
+                key == QLatin1String("editable_fields") ||
+                key == QLatin1String("editablefields") ||
+                key == QLatin1String("field_paths") ||
+                key == QLatin1String("fieldpaths"))
+                appendDescribedFieldPaths(entry.value(), paths);
+            else
+                self(self, entry.value(), depth + 1);
+        }
+    };
+    collectFields(collectFields, payload, 0);
+    paths.sort(Qt::CaseSensitive);
+    return paths;
+}
+
+QString summarizedAllowedPaths(const QStringList& paths,
+                               const QString& rejectedPath)
+{
+    if (paths.isEmpty()) return {};
+    auto candidatePath = rejectedPath;
+    if (candidatePath.startsWith(QLatin1String("/changes/")))
+        candidatePath = candidatePath.sliced(9);
+    candidatePath.replace(QStringLiteral("~1"), QStringLiteral("/"));
+    candidatePath.replace(QStringLiteral("~0"), QStringLiteral("~"));
+    if (!candidatePath.startsWith(QLatin1Char('/')))
+        candidatePath.prepend(QLatin1Char('/'));
+    const auto leaf = candidatePath.section(QLatin1Char('/'), -1);
+
+    QStringList relevant;
+    for (const auto& path : paths)
+        if (!leaf.isEmpty() && path.section(QLatin1Char('/'), -1) == leaf)
+            relevant.append(path);
+    if (relevant.isEmpty()) relevant = paths;
+    constexpr qsizetype maximumDisplayedPaths = 24;
+    const auto omitted =
+        relevant.size() - std::min(relevant.size(), maximumDisplayedPaths);
+    relevant =
+        relevant.sliced(0, std::min(relevant.size(), maximumDisplayedPaths));
+    auto summary = relevant.join(QStringLiteral(", "));
+    if (omitted > 0)
+        summary += QStringLiteral(
+                       " (and %1 more; call describe_model again "
+                       "to inspect them)")
+                       .arg(omitted);
+    return summary;
+}
+
 bool isContractFailure(const agent::ToolResult& result)
 {
     auto code = result.errorCode.toLower();
@@ -291,22 +422,33 @@ QString normalizedScope(QString value)
     return value.toCaseFolded();
 }
 
+QString requestedContextScope(const agent::Action& action)
+{
+    auto scope =
+        stringArgument(action.arguments, {QStringLiteral("case_path")});
+    if (scope.isEmpty())
+    {
+        auto parent = stringArgument(action.arguments,
+                                     {QStringLiteral("parent_directory")});
+        const auto name =
+            stringArgument(action.arguments, {QStringLiteral("case_name")});
+        if (!parent.isEmpty() && !name.isEmpty())
+        {
+            while (parent.endsWith(QLatin1Char('/')) ||
+                   parent.endsWith(QLatin1Char('\\')))
+                parent.chop(1);
+            scope = parent + QLatin1Char('/') + name;
+        }
+    }
+    return normalizedScope(scope);
+}
+
 QString contextScope(const agent::Action& action,
                      const agent::ToolResult& result)
 {
     auto scope =
         findStringField(toolResultPayload(result), QStringLiteral("case_path"));
-    if (scope.isEmpty())
-        scope = stringArgument(action.arguments, {QStringLiteral("case_path")});
-    if (scope.isEmpty())
-    {
-        const auto parent = stringArgument(
-            action.arguments, {QStringLiteral("parent_directory")});
-        const auto name =
-            stringArgument(action.arguments, {QStringLiteral("case_name")});
-        if (!parent.isEmpty() && !name.isEmpty())
-            scope = parent + QLatin1Char('/') + name;
-    }
+    if (scope.isEmpty()) return requestedContextScope(action);
     return normalizedScope(scope);
 }
 
@@ -574,6 +716,7 @@ bool AgentController::start(const QString& userRequest,
     toolEvidence_.clear();
     contractRecoveries_.clear();
     contractFailureCounts_.clear();
+    modelContractPaths_.clear();
     activeContextScope_.clear();
     invalidatedResourceIds_.clear();
     contextEstablished_ = false;
@@ -884,6 +1027,7 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
             recoveryGuidance +=
                 (recoveryGuidance.isEmpty() ? QString{} : QStringLiteral(" ")) +
                 contextGuidance;
+        captureModelContract(*completedToolAction, normalizedResult);
         resolveContractRecovery(*completedToolAction);
     }
     if (completedToolAction.has_value() && isContractFailure(normalizedResult))
@@ -943,6 +1087,30 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
         ++activeRun_->evidenceRevision;
         activeRun_->completionReviewsAtRevision = 0;
         activeRun_->completionReviewFailures = 0;
+        activeRun_->completionPlanDriftRepairs = 0;
+    }
+    if (activeRun_->orderedTaskPlan && completedToolAction.has_value() &&
+        outcome == agent::ToolOutcome::Succeeded && !inProgress &&
+        evidenceSequence > 0 &&
+        completedToolAction->completesPlanStep.value_or(false))
+    {
+        const auto planGuidance =
+            advanceTaskPlanAfterToolResult(evidenceSequence);
+        if (!planGuidance.isEmpty())
+            recoveryGuidance +=
+                (recoveryGuidance.isEmpty() ? QString{} : QStringLiteral(" ")) +
+                planGuidance;
+    }
+    else if (activeRun_->orderedTaskPlan && completedToolAction.has_value() &&
+             !inProgress && !completedToolAction->planStepId.isEmpty())
+    {
+        recoveryGuidance +=
+            (recoveryGuidance.isEmpty() ? QString{} : QStringLiteral(" ")) +
+            QStringLiteral(
+                "Task-plan step '%1' remains current. Use the same "
+                "plan_step_id for the next necessary call; do not advance to "
+                "a later step yet.")
+                .arg(completedToolAction->planStepId);
     }
     if (outcome != agent::ToolOutcome::Succeeded && !inProgress)
         lastFailedToolCallSignature_ = completedToolCallSignature;
@@ -1070,6 +1238,9 @@ void AgentController::compactContextIfNeeded()
         return;
     const QJsonObject completionState{
         {QStringLiteral("steps"), activeRun_->completionSteps},
+        {QStringLiteral("ordered"), activeRun_->orderedTaskPlan},
+        {QStringLiteral("currentStepEvidenceStart"),
+         activeRun_->currentPlanStepEvidenceStart},
         {QStringLiteral("evidenceRevision"), activeRun_->evidenceRevision},
         {QStringLiteral("lastReviewedEvidenceRevision"),
          activeRun_->lastReviewedEvidenceRevision},
@@ -1156,7 +1327,53 @@ void AgentController::handleAction(const agent::Action& action,
 
     if (action.type == agent::ActionType::Final)
     {
-        if (!activeRun_->completionSteps.isEmpty())
+        if (activeRun_->orderedTaskPlan)
+        {
+            QString unfinishedToolStep;
+            for (const auto& value : activeRun_->completionSteps)
+            {
+                const auto step = value.toObject();
+                if (step.value(QStringLiteral("status")).toString() !=
+                        QLatin1String("satisfied") &&
+                    step.value(QStringLiteral("requires_tool")).toBool())
+                {
+                    unfinishedToolStep =
+                        step.value(QStringLiteral("description")).toString();
+                    break;
+                }
+            }
+            if (!unfinishedToolStep.isEmpty())
+            {
+                retryUnfinishedFinal(
+                    rawAction,
+                    QStringLiteral(
+                        "Ordered task-plan step '%1' has not been verified. "
+                        "Complete the current step before returning final.")
+                        .arg(unfinishedToolStep));
+                return;
+            }
+            const auto verificationReason =
+                activeRun_->ledger.unresolvedVerificationReason();
+            if (!verificationReason.isEmpty())
+            {
+                retryUnfinishedFinal(rawAction, verificationReason);
+                return;
+            }
+            for (qsizetype index = 0;
+                 index < activeRun_->completionSteps.size(); ++index)
+            {
+                auto step = activeRun_->completionSteps.at(index).toObject();
+                if (step.value(QStringLiteral("status")).toString() ==
+                    QLatin1String("satisfied"))
+                    continue;
+                step.insert(QStringLiteral("status"),
+                            QStringLiteral("satisfied"));
+                step.insert(QStringLiteral("evidence"), QJsonArray{});
+                activeRun_->completionSteps.replace(index, step);
+            }
+            completeRun(action.content);
+        }
+        else if (!activeRun_->completionSteps.isEmpty())
             beginCompletionReview(action, rawAction);
         else
         {
@@ -1172,6 +1389,20 @@ void AgentController::handleAction(const agent::Action& action,
         }
         return;
     }
+
+    const auto nextPlanStep = [this]() -> QJsonObject
+    {
+        if (!activeRun_) return {};
+        for (const auto& value : activeRun_->completionSteps)
+        {
+            const auto step = value.toObject();
+            const auto status = step.value(QStringLiteral("status")).toString();
+            if (status != QLatin1String("satisfied") &&
+                status != QLatin1String("blocked"))
+                return step;
+        }
+        return {};
+    };
 
     ++activeRun_->toolActionAttempts;
     const auto recordDuplicateToolAction = [this, &action]
@@ -1190,6 +1421,60 @@ void AgentController::handleAction(const agent::Action& action,
             isDiscoveryToolName(action.toolName))
             ++activeRun_->redundantDiscoveryCalls;
     };
+
+    if (activeRun_->orderedTaskPlan && !activeRun_->completionSteps.isEmpty())
+    {
+        const auto step = nextPlanStep();
+        if (step.isEmpty())
+        {
+            recordDuplicateToolAction();
+            retryNoProgressAction(
+                rawAction,
+                QStringLiteral(
+                    "All task-plan steps are already verified. Do not execute "
+                    "another tool; return final."));
+            return;
+        }
+        const auto planStepId = step.value(QStringLiteral("id")).toString();
+        if (action.planStepId.isEmpty() ||
+            !action.completesPlanStep.has_value())
+        {
+            recordDuplicateToolAction();
+            retryNoProgressAction(
+                rawAction,
+                QStringLiteral(
+                    "An ordered task plan is active. This call must include "
+                    "plan_step_id='%1' and boolean completes_plan_step. Use "
+                    "false for an intermediate call and true only for the "
+                    "final call that should complete the current step.")
+                    .arg(planStepId));
+            return;
+        }
+        if (action.planStepId != planStepId)
+        {
+            recordDuplicateToolAction();
+            retryNoProgressAction(
+                rawAction,
+                QStringLiteral(
+                    "This call targets plan_step_id '%1', but the current "
+                    "unfinished step is '%2'. Execute checklist steps in "
+                    "order and use the current step id.")
+                    .arg(action.planStepId, planStepId));
+            return;
+        }
+        if (!step.value(QStringLiteral("requires_tool")).toBool())
+        {
+            recordDuplicateToolAction();
+            retryNoProgressAction(
+                rawAction,
+                QStringLiteral(
+                    "The current task-plan step '%1' does not require a tool. "
+                    "Complete or report that step first; do not execute a "
+                    "later tool step out of order.")
+                    .arg(step.value(QStringLiteral("description")).toString()));
+            return;
+        }
+    }
 
     const auto staleId = staleResourceReference(action.arguments);
     if (!staleId.isEmpty())
@@ -1210,6 +1495,26 @@ void AgentController::handleAction(const agent::Action& action,
     {
         recordDuplicateToolAction();
         retryNoProgressAction(rawAction, recoveryError);
+        return;
+    }
+
+    const auto modelPathError = modelContractError(action);
+    if (!modelPathError.isEmpty())
+    {
+        recordDuplicateToolAction();
+        retryNoProgressAction(rawAction, modelPathError);
+        return;
+    }
+
+    if (isSameActiveContextOperation(action))
+    {
+        recordDuplicateToolAction();
+        retryNoProgressAction(
+            rawAction,
+            QStringLiteral(
+                "This case is already open. Do not call the case-opening "
+                "tool again and do not ask for approval; continue with the "
+                "next requested operation."));
         return;
     }
 
@@ -1347,7 +1652,43 @@ void AgentController::acceptTaskPlan(const agent::Action& action,
                                      const QByteArray& rawAction)
 {
     if (!activeRun_) return;
+    if (!action.orderedPlan.has_value())
+    {
+        retryTaskPlan(
+            rawAction,
+            QStringLiteral(
+                "task_plan must explicitly include ordered=true so the "
+                "controller can enforce step-by-step execution."));
+        return;
+    }
+    if (*action.orderedPlan)
+    {
+        auto sawNonToolStep = false;
+        for (const auto& value : action.completionSteps)
+        {
+            const auto requiresTool =
+                value.toObject()
+                    .value(QStringLiteral("requires_tool"))
+                    .toBool();
+            if (!requiresTool)
+                sawNonToolStep = true;
+            else if (sawNonToolStep)
+            {
+                retryTaskPlan(
+                    rawAction,
+                    QStringLiteral(
+                        "An ordered task plan cannot place a tool-required "
+                        "step after a non-tool step. Keep all external "
+                        "operations in user order and reserve non-tool steps "
+                        "for the trailing final response."));
+                return;
+            }
+        }
+    }
     activeRun_->completionSteps = action.completionSteps;
+    activeRun_->orderedTaskPlan = *action.orderedPlan;
+    activeRun_->currentPlanStepEvidenceStart =
+        static_cast<int>(toolEvidence_.size() + 1);
     activeRun_->taskPlanRequired = false;
     activeRun_->taskPlanFailures = 0;
     qInfo().noquote() << QStringLiteral(
@@ -1437,6 +1778,16 @@ QString AgentController::validateCompletionReview(
                            "Completion step %1 changed its recorded "
                            "description or requires_tool value.")
                     .arg(plannedId);
+            const auto recordedStatus =
+                planned.value(QStringLiteral("status")).toString();
+            const auto reviewedStatus =
+                reviewed.value(QStringLiteral("status")).toString();
+            if (recordedStatus == QLatin1String("satisfied") &&
+                reviewedStatus != QLatin1String("satisfied"))
+                return QStringLiteral(
+                           "Completion step %1 was already verified by the "
+                           "controller and cannot be moved back to %2.")
+                    .arg(plannedId, reviewedStatus);
             break;
         }
         if (!found)
@@ -1444,6 +1795,7 @@ QString AgentController::validateCompletionReview(
                 .arg(plannedId);
     }
 
+    auto priorStepUnfinished = false;
     for (const auto& reviewedValue : action.completionSteps)
     {
         const auto reviewed = reviewedValue.toObject();
@@ -1453,6 +1805,11 @@ QString AgentController::validateCompletionReview(
             reviewed.value(QStringLiteral("requires_tool")).toBool();
         const auto sequences =
             reviewed.value(QStringLiteral("evidence")).toArray();
+        if (priorStepUnfinished && status == QLatin1String("satisfied"))
+            return QStringLiteral(
+                       "Completion step %1 cannot be satisfied before all "
+                       "preceding task-plan steps are satisfied.")
+                .arg(id);
         auto hasTerminalSuccess = false;
         auto citesUnverifiedMutation = false;
         for (const auto& sequenceValue : sequences)
@@ -1493,10 +1850,70 @@ QString AgentController::validateCompletionReview(
                        "Completion step %1 cites a mutation whose read-back "
                        "verification is still unresolved.")
                 .arg(id);
+        if (status != QLatin1String("satisfied")) priorStepUnfinished = true;
     }
     if (action.completionVerdict == QLatin1String("complete") &&
         activeRun_->ledger.hasUnresolvedVerification())
         return activeRun_->ledger.unresolvedVerificationReason();
+    return {};
+}
+
+QString AgentController::advanceTaskPlanAfterToolResult(int evidenceSequence)
+{
+    if (!activeRun_ || activeRun_->completionSteps.isEmpty()) return {};
+
+    for (qsizetype index = 0; index < activeRun_->completionSteps.size();
+         ++index)
+    {
+        auto step = activeRun_->completionSteps.at(index).toObject();
+        const auto status = step.value(QStringLiteral("status")).toString();
+        if (status == QLatin1String("satisfied") ||
+            status == QLatin1String("blocked"))
+            continue;
+
+        if (!step.value(QStringLiteral("requires_tool")).toBool())
+            return QStringLiteral(
+                       "The next checklist step is '%1'. It does not require "
+                       "a tool; complete it before requesting another tool "
+                       "call.")
+                .arg(step.value(QStringLiteral("description")).toString());
+
+        if (activeRun_->ledger.hasUnresolvedVerification())
+            return QStringLiteral(
+                       "The current checklist step '%1' cannot advance: %2")
+                .arg(step.value(QStringLiteral("description")).toString())
+                .arg(activeRun_->ledger.unresolvedVerificationReason());
+
+        QJsonArray stepEvidence;
+        for (auto sequence = activeRun_->currentPlanStepEvidenceStart;
+             sequence <= evidenceSequence; ++sequence)
+            stepEvidence.append(sequence);
+        step.insert(QStringLiteral("status"), QStringLiteral("satisfied"));
+        step.insert(QStringLiteral("evidence"), stepEvidence);
+        activeRun_->completionSteps.replace(index, step);
+        activeRun_->currentPlanStepEvidenceStart = evidenceSequence + 1;
+        recordEvent(agent::EventType::TaskStepUpdated,
+                    QStringLiteral("Task plan step verified."), {},
+                    {{QStringLiteral("stepId"),
+                      step.value(QStringLiteral("id")).toString()},
+                     {QStringLiteral("evidenceSequence"), evidenceSequence}});
+        if (index + 1 >= activeRun_->completionSteps.size())
+            return QStringLiteral(
+                       "The final task-plan step '%1' was verified by terminal "
+                       "evidence %2. Return final after preparing the result; "
+                       "do not execute another tool.")
+                .arg(step.value(QStringLiteral("description")).toString())
+                .arg(evidenceSequence);
+
+        const auto next = activeRun_->completionSteps.at(index + 1).toObject();
+        return QStringLiteral(
+                   "The controller verified task-plan step '%1' with terminal "
+                   "evidence %2. The next allowed step is '%3'; do not execute "
+                   "later steps out of order.")
+            .arg(step.value(QStringLiteral("description")).toString())
+            .arg(evidenceSequence)
+            .arg(next.value(QStringLiteral("description")).toString());
+    }
     return {};
 }
 
@@ -1526,28 +1943,117 @@ void AgentController::handleCompletionReview(const agent::Action& action,
                                              const QByteArray& rawAction)
 {
     if (!activeRun_) return;
-    const auto validationError = validateCompletionReview(action);
+    auto normalizedAction = action;
+    QStringList omittedStepIds;
+    QStringList unexpectedStepIds;
+    QJsonArray authoritativeSteps;
+    for (const auto& plannedValue : activeRun_->completionSteps)
+    {
+        const auto planned = plannedValue.toObject();
+        const auto plannedId = planned.value(QStringLiteral("id")).toString();
+        auto reviewed = std::find_if(action.completionSteps.cbegin(),
+                                     action.completionSteps.cend(),
+                                     [&plannedId](const QJsonValue& value)
+                                     {
+                                         return value.toObject()
+                                                    .value(QStringLiteral("id"))
+                                                    .toString() == plannedId;
+                                     });
+        if (reviewed != action.completionSteps.cend())
+        {
+            auto reviewedStep = reviewed->toObject();
+            reviewedStep.insert(QStringLiteral("description"),
+                                planned.value(QStringLiteral("description")));
+            reviewedStep.insert(QStringLiteral("requires_tool"),
+                                planned.value(QStringLiteral("requires_tool")));
+            authoritativeSteps.append(reviewedStep);
+            continue;
+        }
+
+        auto restored = planned;
+        if (!restored.contains(QStringLiteral("status")))
+            restored.insert(QStringLiteral("status"),
+                            QStringLiteral("pending"));
+        if (!restored.contains(QStringLiteral("evidence")))
+            restored.insert(QStringLiteral("evidence"), QJsonArray{});
+        authoritativeSteps.append(restored);
+        omittedStepIds.append(plannedId);
+    }
+    for (const auto& reviewedValue : action.completionSteps)
+    {
+        const auto reviewedId =
+            reviewedValue.toObject().value(QStringLiteral("id")).toString();
+        const auto recorded =
+            std::any_of(activeRun_->completionSteps.cbegin(),
+                        activeRun_->completionSteps.cend(),
+                        [&reviewedId](const QJsonValue& value)
+                        {
+                            return value.toObject()
+                                       .value(QStringLiteral("id"))
+                                       .toString() == reviewedId;
+                        });
+        if (!recorded) unexpectedStepIds.append(reviewedId);
+    }
+    if (!omittedStepIds.isEmpty())
+    {
+        if (activeRun_->completionPlanDriftRepairs >= 1)
+        {
+            retryCompletionReview(
+                rawAction,
+                QStringLiteral(
+                    "Completion review repeatedly replaced or omitted "
+                    "recorded task-plan steps."));
+            return;
+        }
+        ++activeRun_->completionPlanDriftRepairs;
+        activeRun_->inferenceMessages.append(
+            {chat::Role::Assistant, QString::fromUtf8(rawAction)});
+        activeRun_->inferenceMessages.append(
+            AgentPromptBuilder::completionPlanDriftMessage(
+                activeRun_->completionSteps));
+        recordEvent(
+            agent::EventType::RecoveryStarted,
+            QStringLiteral(
+                "Restoring the completion review to the recorded task plan."),
+            {},
+            {{QStringLiteral("omittedStepCount"), omittedStepIds.size()},
+             {QStringLiteral("unexpectedStepCount"),
+              unexpectedStepIds.size()}});
+        requestDecision();
+        return;
+    }
+
+    for (const auto& reviewedValue : action.completionSteps)
+    {
+        const auto reviewedId =
+            reviewedValue.toObject().value(QStringLiteral("id")).toString();
+        if (unexpectedStepIds.contains(reviewedId))
+            authoritativeSteps.append(reviewedValue);
+    }
+    normalizedAction.completionSteps = authoritativeSteps;
+
+    const auto validationError = validateCompletionReview(normalizedAction);
     if (!validationError.isEmpty())
     {
         retryCompletionReview(rawAction, validationError);
         return;
     }
 
-    activeRun_->completionSteps = action.completionSteps;
+    activeRun_->completionSteps = normalizedAction.completionSteps;
     ++activeRun_->completionReviewSuccesses;
     activeRun_->awaitingCompletionReview = false;
     activeRun_->completionReviewFailures = 0;
     qInfo().noquote()
         << QStringLiteral(
                "Agent completion review accepted: run=%1 verdict=%2 steps=%3")
-               .arg(activeRun_->id, action.completionVerdict)
+               .arg(activeRun_->id, normalizedAction.completionVerdict)
                .arg(activeRun_->completionSteps.size());
     recordEvent(
         agent::EventType::TaskStepUpdated,
         QStringLiteral("Task step status updated."), {},
-        {{QStringLiteral("verdict"), action.completionVerdict},
+        {{QStringLiteral("verdict"), normalizedAction.completionVerdict},
          {QStringLiteral("stepCount"), activeRun_->completionSteps.size()}});
-    if (action.completionVerdict == QLatin1String("complete"))
+    if (normalizedAction.completionVerdict == QLatin1String("complete"))
     {
         const auto content =
             std::exchange(activeRun_->pendingFinalCandidate, QString{});
@@ -1555,9 +2061,9 @@ void AgentController::handleCompletionReview(const agent::Action& action,
         return;
     }
     activeRun_->pendingFinalCandidate.clear();
-    if (action.completionVerdict == QLatin1String("blocked"))
+    if (normalizedAction.completionVerdict == QLatin1String("blocked"))
     {
-        completeRun(action.completionDetail);
+        completeRun(normalizedAction.completionDetail);
         return;
     }
 
@@ -1565,7 +2071,7 @@ void AgentController::handleCompletionReview(const agent::Action& action,
         {chat::Role::Assistant, QString::fromUtf8(rawAction)});
     activeRun_->inferenceMessages.append(
         AgentPromptBuilder::completionContinuationMessage(
-            activeRun_->completionSteps, action.completionDetail));
+            activeRun_->completionSteps, normalizedAction.completionDetail));
     requestDecision();
 }
 
@@ -1849,6 +2355,66 @@ QString AgentController::contractRecoveryError(
                              "contract lookup succeeds.");
 }
 
+QString AgentController::modelContractError(const agent::Action& action) const
+{
+    if (unqualifiedToolName(action.toolName) != QLatin1String("edit_object"))
+        return {};
+    const auto changesValue = action.arguments.value(QStringLiteral("changes"));
+    if (!changesValue.isObject()) return {};
+
+    QString serverId;
+    const auto definition =
+        std::find_if(availableTools_.cbegin(), availableTools_.cend(),
+                     [&action](const agent::ToolDefinition& candidate)
+                     { return candidate.qualifiedName == action.toolName; });
+    if (definition != availableTools_.cend()) serverId = definition->serverId;
+    const auto itemType = actionItemType(action);
+    const auto selector = actionSelector(action);
+    auto allowedPaths = modelContractPaths_.value(
+        modelContractKey(serverId, itemType, selector));
+    if (allowedPaths.isEmpty())
+        allowedPaths =
+            modelContractPaths_.value(modelContractKey(serverId, itemType, {}));
+
+    for (const auto& path : changesValue.toObject().keys())
+    {
+        const auto diagnosticPath = path.startsWith(QLatin1String("/changes/"));
+        if (!isValidModelJsonPointer(path) || diagnosticPath)
+        {
+            auto message = QStringLiteral(
+                "edit_object changes keys must be model JSON Pointers that "
+                "start with '/', for example "
+                "'/density/isotropic/fixedValue'. The diagnostic "
+                "instance_path '/changes/~1density~1isotropic~1fixedValue' "
+                "describes a location inside the tool arguments; '~1' does "
+                "not replace '/' in the actual changes key. Do not copy an "
+                "instance_path into changes.");
+            const auto summary = summarizedAllowedPaths(allowedPaths, path);
+            if (!summary.isEmpty())
+                message += QStringLiteral(
+                               " Exact paths returned by "
+                               "describe_model for this target: ") +
+                           summary + QLatin1Char('.');
+            return message;
+        }
+        if (!allowedPaths.isEmpty() && !allowedPaths.contains(path))
+        {
+            auto message =
+                QStringLiteral(
+                    "edit_object path '%1' was not returned by "
+                    "describe_model for this target. Use an exact "
+                    "fields[].path "
+                    "model path. Do not insert field values such as "
+                    "'constValue' into the path. Exact allowed paths: ")
+                    .arg(path);
+            message +=
+                summarizedAllowedPaths(allowedPaths, path) + QLatin1Char('.');
+            return message;
+        }
+    }
+    return {};
+}
+
 QString AgentController::registerContractFailure(
     const agent::Action& action, const agent::ToolResult& result,
     bool& exhausted)
@@ -1902,8 +2468,42 @@ QString AgentController::registerContractFailure(
         guidance += QStringLiteral(" with item_type=%1").arg(recovery.itemType);
     return guidance + QStringLiteral(
                           ". Use the returned selector and exact JSON "
-                          "Pointer field paths; do not guess another edit "
-                          "shape.");
+                          "Pointer fields[].path or model_path values; do not "
+                          "guess another edit shape. An instance_path such as "
+                          "'/changes/~1density~1isotropic~1fixedValue' is only "
+                          "a diagnostic location in the tool arguments and "
+                          "must never be used as a changes key.");
+}
+
+void AgentController::captureModelContract(const agent::Action& action,
+                                           const agent::ToolResult& result)
+{
+    if (unqualifiedToolName(action.toolName) != QLatin1String("describe_model"))
+        return;
+    const auto paths = describedFieldPaths(result);
+    if (paths.isEmpty()) return;
+
+    QString serverId;
+    const auto definition =
+        std::find_if(availableTools_.cbegin(), availableTools_.cend(),
+                     [&action](const agent::ToolDefinition& candidate)
+                     { return candidate.qualifiedName == action.toolName; });
+    if (definition != availableTools_.cend()) serverId = definition->serverId;
+    const auto itemType = actionItemType(action);
+    if (itemType.isEmpty()) return;
+    modelContractPaths_.insert(
+        modelContractKey(serverId, itemType, actionSelector(action)), paths);
+
+    for (const auto& recovery : std::as_const(contractRecoveries_))
+    {
+        const auto discoverySatisfied =
+            action.toolName == recovery.discoveryTool &&
+            (recovery.itemType.isEmpty() ||
+             recovery.itemType.compare(itemType, Qt::CaseInsensitive) == 0);
+        if (discoverySatisfied)
+            modelContractPaths_.insert(
+                modelContractKey(serverId, itemType, recovery.selector), paths);
+    }
 }
 
 void AgentController::resolveContractRecovery(const agent::Action& action)
@@ -1951,6 +2551,16 @@ bool AgentController::requiresContextResetApproval(
 {
     return isContextResetToolName(action.toolName) &&
            (contextEstablished_ || hasStateChangesInContext_);
+}
+
+bool AgentController::isSameActiveContextOperation(
+    const agent::Action& action) const
+{
+    if (!contextEstablished_ || activeContextScope_.isEmpty() ||
+        !opensContext(action.toolName))
+        return false;
+    const auto requestedScope = requestedContextScope(action);
+    return !requestedScope.isEmpty() && requestedScope == activeContextScope_;
 }
 
 QString AgentController::updateContextAfterSuccess(
@@ -2020,6 +2630,7 @@ void AgentController::invalidateContextEvidence()
     completedToolCallHistory_.clear();
     contractRecoveries_.clear();
     contractFailureCounts_.clear();
+    modelContractPaths_.clear();
     lastFailedToolCallSignature_.clear();
     pollableToolCallSignature_.clear();
     lastPollCompletedAtMs_ = 0;
@@ -2027,6 +2638,7 @@ void AgentController::invalidateContextEvidence()
     activeRun_->lastReviewedEvidenceRevision = -1;
     activeRun_->completionReviewsAtRevision = 0;
     activeRun_->completionReviewFailures = 0;
+    activeRun_->completionPlanDriftRepairs = 0;
 }
 
 void AgentController::setState(AgentRun::State state)

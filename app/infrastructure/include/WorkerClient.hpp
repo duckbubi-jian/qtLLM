@@ -7,10 +7,12 @@
 #include "ResponseMode.hpp"
 
 #include <QByteArray>
+#include <QElapsedTimer>
 #include <QList>
 #include <QObject>
 #include <QProcess>
 #include <QString>
+#include <QTimer>
 
 namespace qtllm::infrastructure
 {
@@ -83,6 +85,8 @@ class WorkerClient final : public QObject
     void modelLoadFailed(const QString& code, const QString& message);
     void modelUnloadFailed(const QString& code, const QString& message);
     void tokenReceived(const QByteArray& bytes);
+    void generationProgress(int generatedTokens, double tokensPerSecond,
+                            qint64 contextMilliseconds);
     void generationFinished(bool cancelled, const QJsonObject& metrics);
     void errorOccurred(const QString& code, const QString& message);
     void diagnosticReceived(const QString& text);
@@ -99,6 +103,7 @@ class WorkerClient final : public QObject
    private:
     QString send(const QString& type, const QJsonObject& payload = {});
     void handleMessage(const protocol::Message& message);
+    void emitGenerationProgress();
     void setState(State state);
     void fail(const QString& code, const QString& message);
     [[nodiscard]] QString defaultWorkerPath() const;
@@ -116,6 +121,11 @@ class WorkerClient final : public QObject
     QList<inference::ComputeDevice> computeDevices_;
     QList<inference::ComputeDevice> activeComputeDevices_;
     Capabilities capabilities_;
+    QElapsedTimer generationRequestTimer_;
+    QElapsedTimer tokenGenerationTimer_;
+    QTimer generationProgressTimer_;
+    int liveGeneratedTokens_ = 0;
+    qint64 firstTokenMilliseconds_ = -1;
     bool stopping_ = false;
 };
 }  // namespace qtllm::infrastructure

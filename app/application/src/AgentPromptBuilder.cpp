@@ -156,6 +156,15 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools,
                               "structured action before any "
                               "tool call. Execute one necessary "
                               "operation at a time. Preserve "
+                              "the checklist order. When a task_plan is "
+                              "active, include its current step id as the "
+                              "top-level plan_step_id and a boolean "
+                              "completes_plan_step on every call_tool. Set "
+                              "completes_plan_step=true only on the final "
+                              "call whose successful terminal result should "
+                              "finish that step; "
+                              "never call a later step before the current "
+                              "step is verified. "
                               "active cases "
                               "and sessions between steps; "
                               "do not close and reopen the "
@@ -274,11 +283,15 @@ chat::Message AgentPromptBuilder::taskPlanMessage(
             "Before executing this multi-step request, return exactly one "
             "task_plan action. Include every explicit requested outcome and "
             "ordered operation once. Each step needs a stable short id, a "
-            "concrete description, and requires_tool=true when satisfying it "
-            "requires an external operation or MCP result. Do not call a tool "
+            "concrete, ordered, atomic completion boundary, and "
+            "requires_tool=true when satisfying it "
+            "requires an external operation or MCP result. Use "
+            "requires_tool=false only for trailing answer/report steps after "
+            "all external operations. Do not call a tool "
             "or return final in this decision. Use this shape: "
             "{\"action\":\"task_plan\",\"steps\":[{\"id\":\"step-1\","
-            "\"description\":\"...\",\"requires_tool\":true}]}.\n"
+            "\"description\":\"...\",\"requires_tool\":true}],"
+            "\"ordered\":true}.\n"
             "<original_request>%1</original_request>")
             .arg(originalRequest.trimmed())};
 }
@@ -291,7 +304,13 @@ chat::Message AgentPromptBuilder::taskPlanAcceptedMessage(
         QStringLiteral(
             "The local controller recorded this task checklist: "
             "<task_plan>%1</task_plan> Execute the first unfinished step now. "
-            "Return one call_tool action when a tool is required. Do not "
+            "Return one call_tool action when a tool is required, including "
+            "top-level plan_step_id copied exactly from the current step and "
+            "completes_plan_step=false for intermediate calls or true only for "
+            "the final call that should finish the step. Use this exact "
+            "top-level shape: {\"action\":\"call_tool\",\"tool\":\"...\","
+            "\"arguments\":{},\"plan_step_id\":\"step-1\","
+            "\"completes_plan_step\":false}. Do not "
             "repeat task_plan. Return final only after every checklist item "
             "is satisfied or a real blocker must be reported.")
             .arg(compactJson(steps))};
@@ -303,8 +322,8 @@ chat::Message AgentPromptBuilder::taskPlanCorrectionMessage(
     return {chat::Role::User,
             QStringLiteral(
                 "The task plan was rejected by the local controller: %1 Return "
-                "one corrected task_plan action with every requested step. Do "
-                "not call a tool or return final yet.")
+                "one corrected task_plan action with every requested step and "
+                "ordered=true. Do not call a tool or return final yet.")
                 .arg(errorMessage)};
 }
 
@@ -449,8 +468,28 @@ chat::Message AgentPromptBuilder::completionReviewCorrectionMessage(
             "Use the exact verdict \"complete\", \"continue\", or "
             "\"blocked\"; do not use \"completed\". Every step must use "
             "the keys id, description, requires_tool, status, and evidence, "
-            "where evidence is an array of numeric sequence values.")
+            "where status is exactly \"satisfied\", \"pending\", or "
+            "\"blocked\"; do not use \"complete\" or \"incomplete\" as a "
+            "step status. Evidence is an array of numeric sequence values.")
             .arg(errorMessage)};
+}
+
+chat::Message AgentPromptBuilder::completionPlanDriftMessage(
+    const QJsonArray& completionSteps)
+{
+    return {
+        chat::Role::User,
+        QStringLiteral(
+            "The completion review replaced or omitted steps from the task "
+            "plan recorded by the local controller. Re-review the existing "
+            "tool evidence against exactly this checklist, preserving every "
+            "id, description, and requires_tool value: "
+            "<task_plan>%1</task_plan> Return exactly one "
+            "review_completion action now. Do not return final, call a tool, "
+            "rename a step, or substitute a new checklist. Use only "
+            "satisfied, pending, or blocked as each step status and cite "
+            "actual numeric evidence sequence values.")
+            .arg(compactJson(completionSteps))};
 }
 
 chat::Message AgentPromptBuilder::completionContinuationMessage(

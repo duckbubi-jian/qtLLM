@@ -9,6 +9,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QStyle>
+#include <QToolButton>
 #include <QVBoxLayout>
 
 namespace qtllm::ui
@@ -68,10 +69,11 @@ ToolApprovalWidget::ToolApprovalWidget(infrastructure::mcp::ToolRisk risk,
     const auto presentation = presentationFor(risk);
     setObjectName(QStringLiteral("toolApprovalCard"));
     setProperty("riskLevel", presentation.level);
+    setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
 
     auto* layout = new QVBoxLayout(this);
-    layout->setContentsMargins(14, 12, 14, 12);
-    layout->setSpacing(8);
+    layout->setContentsMargins(10, 8, 10, 8);
+    layout->setSpacing(5);
 
     auto* headingRow = new QHBoxLayout;
     headingRow->setContentsMargins(0, 0, 0, 0);
@@ -79,60 +81,83 @@ ToolApprovalWidget::ToolApprovalWidget(infrastructure::mcp::ToolRisk risk,
     auto* iconLabel = new QLabel(this);
     iconLabel->setPixmap(
         style()->standardIcon(presentation.icon).pixmap(20, 20));
-    headingRow->addWidget(iconLabel, 0, Qt::AlignTop);
-    auto* heading = new QLabel(presentation.title, this);
-    heading->setObjectName(QStringLiteral("toolApprovalHeading"));
-    headingRow->addWidget(heading, 1);
+    headingRow->addWidget(iconLabel);
+    detailsToggle_ = new QToolButton(this);
+    detailsToggle_->setObjectName(QStringLiteral("toolApprovalToggle"));
+    detailsToggle_->setCheckable(true);
+    detailsToggle_->setChecked(true);
+    detailsToggle_->setArrowType(Qt::DownArrow);
+    detailsToggle_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    detailsToggle_->setText(presentation.title);
+    detailsToggle_->setAutoRaise(true);
+    detailsToggle_->setAccessibleName(tr("Tool approval details"));
+    headingRow->addWidget(detailsToggle_);
+    headingRow->addStretch(1);
+    statusLabel_ = new QLabel(this);
+    statusLabel_->setObjectName(QStringLiteral("toolApprovalStatus"));
+    statusLabel_->setVisible(false);
+    headingRow->addWidget(statusLabel_);
     layout->addLayout(headingRow);
 
-    auto* description = new QLabel(presentation.description, this);
-    description->setObjectName(QStringLiteral("toolApprovalDescription"));
-    description->setWordWrap(true);
-    layout->addWidget(description);
+    details_ = new QWidget(this);
+    details_->setObjectName(QStringLiteral("toolApprovalDetails"));
+    auto* detailsLayout = new QVBoxLayout(details_);
+    detailsLayout->setContentsMargins(28, 0, 0, 0);
+    detailsLayout->setSpacing(5);
+    layout->addWidget(details_);
 
-    auto* toolLabel = new QLabel(tr("Tool: %1").arg(toolName), this);
+    descriptionLabel_ = new QLabel(presentation.description, details_);
+    descriptionLabel_->setObjectName(QStringLiteral("toolApprovalDescription"));
+    descriptionLabel_->setWordWrap(true);
+    detailsLayout->addWidget(descriptionLabel_);
+
+    auto* toolLabel = new QLabel(tr("Tool: %1").arg(toolName), details_);
     toolLabel->setObjectName(QStringLiteral("toolApprovalName"));
     toolLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    layout->addWidget(toolLabel);
+    detailsLayout->addWidget(toolLabel);
 
-    auto* argumentLabel = new QLabel(tr("Arguments"), this);
-    argumentLabel->setObjectName(QStringLiteral("toolApprovalArgumentLabel"));
-    layout->addWidget(argumentLabel);
+    argumentToggle_ = new QToolButton(details_);
+    argumentToggle_->setObjectName(
+        QStringLiteral("toolApprovalArgumentsToggle"));
+    argumentToggle_->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    argumentToggle_->setArrowType(Qt::RightArrow);
+    argumentToggle_->setCheckable(true);
+    argumentToggle_->setText(tr("Arguments"));
+    argumentToggle_->setAutoRaise(true);
+    argumentToggle_->setAccessibleName(tr("Tool arguments"));
+    detailsLayout->addWidget(argumentToggle_, 0, Qt::AlignLeft);
 
-    auto* argumentView = new QPlainTextEdit(this);
-    argumentView->setObjectName(QStringLiteral("toolApprovalArguments"));
-    argumentView->setReadOnly(true);
-    argumentView->setLineWrapMode(QPlainTextEdit::WidgetWidth);
-    argumentView->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
-    argumentView->setPlainText(QString::fromUtf8(
+    argumentView_ = new QPlainTextEdit(details_);
+    argumentView_->setObjectName(QStringLiteral("toolApprovalArguments"));
+    argumentView_->setReadOnly(true);
+    argumentView_->setLineWrapMode(QPlainTextEdit::WidgetWidth);
+    argumentView_->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+    argumentView_->setPlainText(QString::fromUtf8(
         QJsonDocument(redactSensitiveValues(arguments).toObject())
             .toJson(QJsonDocument::Indented)));
     const auto visibleLines =
-        qBound(3, argumentView->document()->blockCount(), 8);
-    argumentView->setFixedHeight(
-        visibleLines * argumentView->fontMetrics().lineSpacing() + 18);
-    layout->addWidget(argumentView);
+        qBound(3, argumentView_->document()->blockCount(), 6);
+    argumentView_->setFixedHeight(
+        visibleLines * argumentView_->fontMetrics().lineSpacing() + 14);
+    argumentView_->setVisible(false);
+    detailsLayout->addWidget(argumentView_);
 
     auto* actionRow = new QHBoxLayout;
     actionRow->setContentsMargins(0, 0, 0, 0);
     actionRow->setSpacing(8);
-    statusLabel_ = new QLabel(this);
-    statusLabel_->setObjectName(QStringLiteral("toolApprovalStatus"));
-    statusLabel_->setVisible(false);
-    actionRow->addWidget(statusLabel_);
     actionRow->addStretch();
-    rejectButton_ = new QPushButton(tr("Reject"), this);
+    rejectButton_ = new QPushButton(tr("Reject"), details_);
     rejectButton_->setObjectName(QStringLiteral("rejectToolButton"));
-    allowButton_ = new QPushButton(tr("Allow once"), this);
+    allowButton_ = new QPushButton(tr("Allow once"), details_);
     allowButton_->setObjectName(QStringLiteral("allowToolButton"));
-    alwaysAllowButton_ = new QPushButton(tr("Always allow"), this);
+    alwaysAllowButton_ = new QPushButton(tr("Always allow"), details_);
     alwaysAllowButton_->setObjectName(QStringLiteral("alwaysAllowToolButton"));
     alwaysAllowButton_->setVisible(risk !=
                                    infrastructure::mcp::ToolRisk::Destructive);
     actionRow->addWidget(rejectButton_);
     actionRow->addWidget(allowButton_);
     actionRow->addWidget(alwaysAllowButton_);
-    layout->addLayout(actionRow);
+    detailsLayout->addLayout(actionRow);
 
     connect(allowButton_, &QPushButton::clicked, this,
             [this] { resolve(ToolApprovalDecision::AllowOnce); });
@@ -140,6 +165,20 @@ ToolApprovalWidget::ToolApprovalWidget(infrastructure::mcp::ToolRisk risk,
             [this] { resolve(ToolApprovalDecision::AlwaysAllow); });
     connect(rejectButton_, &QPushButton::clicked, this,
             [this] { resolve(ToolApprovalDecision::DenyOnce); });
+    connect(detailsToggle_, &QToolButton::toggled, this,
+            [this](bool expanded)
+            {
+                detailsToggle_->setArrowType(expanded ? Qt::DownArrow
+                                                      : Qt::RightArrow);
+                details_->setVisible(expanded);
+            });
+    connect(argumentToggle_, &QToolButton::toggled, this,
+            [this](bool expanded)
+            {
+                argumentToggle_->setArrowType(expanded ? Qt::DownArrow
+                                                       : Qt::RightArrow);
+                argumentView_->setVisible(expanded);
+            });
 }
 
 void ToolApprovalWidget::markCancelled()
@@ -175,6 +214,10 @@ void ToolApprovalWidget::setResolvedState(const QString& status, bool approved)
     allowButton_->setVisible(false);
     alwaysAllowButton_->setVisible(false);
     rejectButton_->setVisible(false);
+    descriptionLabel_->setVisible(false);
+    argumentToggle_->setVisible(false);
+    argumentView_->setVisible(false);
+    detailsToggle_->setChecked(false);
     statusLabel_->setText(status);
     statusLabel_->setProperty("approved", approved);
     statusLabel_->style()->unpolish(statusLabel_);

@@ -36,6 +36,8 @@ class AgentPromptBuilder final
         const QString& verificationReason);
     static chat::Message completionReviewCorrectionMessage(
         const QString& errorMessage);
+    static chat::Message completionPlanDriftMessage(
+        const QJsonArray& completionSteps);
     static chat::Message completionContinuationMessage(
         const QJsonArray& completionSteps, const QString& nextStep);
     static chat::Message unfinishedFinalMessage(const QString& errorMessage);

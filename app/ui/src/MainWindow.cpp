@@ -120,6 +120,8 @@ MainWindow::MainWindow(const QString& settingsFilePath, QWidget* parent)
 
     connect(&workerClient_, &infrastructure::WorkerClient::stateChanged, this,
             &MainWindow::updateState);
+    connect(&workerClient_, &infrastructure::WorkerClient::generationProgress,
+            this, &MainWindow::updateGenerationProgress);
     connect(&workerClient_,
             &infrastructure::WorkerClient::computeDevicesChanged, this,
             [this] { updateComputePresentation(); });
@@ -267,10 +269,23 @@ MainWindow::MainWindow(const QString& settingsFilePath, QWidget* parent)
     connect(&agentController_, &application::AgentController::stateChanged,
             this, &MainWindow::updateAgentState);
     connect(&agentController_, &application::AgentController::runFinished, this,
-            [this](const QString&, application::AgentRun::State state,
+            [this](const QString& runId, application::AgentRun::State state,
                    const QString& code, const QString& message)
             {
                 agentRunActive_ = false;
+                if (activeAgentProgress_ != nullptr &&
+                    activeAgentProgress_->snapshot().runId == runId)
+                {
+                    auto terminal = agentController_.progressSnapshot();
+                    if (terminal.runId != runId)
+                        terminal = activeAgentProgress_->snapshot();
+                    terminal.runId = runId;
+                    terminal.state = state;
+                    terminal.finishCode = code;
+                    terminal.finishMessage = message;
+                    lastAgentProgress_ = terminal;
+                    activeAgentProgress_->setSnapshot(terminal);
+                }
                 if (pendingToolApproval_ != nullptr)
                 {
                     pendingToolApproval_->markCancelled();
@@ -1342,12 +1357,55 @@ void MainWindow::updateState(infrastructure::WorkerClient::State state)
             chatView_->setStatusText(tr("Model ready"));
             break;
         case infrastructure::WorkerClient::State::Generating:
-            chatView_->setStatusText(tr("Generating..."));
+            updateGenerationProgress(0, 0.0, 0);
             break;
         case infrastructure::WorkerClient::State::Failed:
             chatView_->setStatusText(tr("Worker unavailable"));
             break;
     }
+}
+
+void MainWindow::updateGenerationProgress(int generatedTokens,
+                                          double tokensPerSecond,
+                                          qint64 contextMilliseconds)
+{
+    const auto phase = generationPhaseText();
+    const auto contextSeconds = contextMilliseconds / 1000.0;
+    if (generatedTokens <= 0)
+    {
+        chatView_->setStatusText(tr("%1 \u00b7 processing context %2s")
+                                     .arg(phase)
+                                     .arg(contextSeconds, 0, 'f', 1));
+        return;
+    }
+
+    if (tokensPerSecond <= 0.0)
+    {
+        chatView_->setStatusText(tr("%1 \u00b7 context %2s \u00b7 %3 tokens")
+                                     .arg(phase)
+                                     .arg(contextSeconds, 0, 'f', 1)
+                                     .arg(generatedTokens));
+        return;
+    }
+
+    chatView_->setStatusText(
+        tr("%1 \u00b7 context %2s \u00b7 %3 tokens \u00b7 %4 tok/s")
+            .arg(phase)
+            .arg(contextSeconds, 0, 'f', 1)
+            .arg(generatedTokens)
+            .arg(tokensPerSecond, 0, 'f', 1));
+}
+
+QString MainWindow::generationPhaseText() const
+{
+    if (agentRunActive_)
+    {
+        if (agentController_.state() ==
+            application::AgentRun::State::GeneratingAnswer)
+            return tr("Answering");
+        return tr("Thinking");
+    }
+    return tr("Generating");
 }
 
 void MainWindow::updatePrimaryAction(bool stopMode)
@@ -1375,19 +1433,29 @@ void MainWindow::finishGeneration(bool cancelled, const QJsonObject& metrics)
         return;
     }
 
+    const auto generatedTokens =
+        metrics.value(QStringLiteral("generatedTokens")).toInt();
+    const auto tokensPerSecond =
+        metrics.value(QStringLiteral("tokensPerSecond")).toDouble();
+    const auto contextValue =
+        metrics.value(QStringLiteral("firstTokenMilliseconds"));
+    const auto contextMilliseconds =
+        contextValue.isDouble() ? contextValue.toInteger() : -1;
     const auto discardedMessages =
         metrics.value(QStringLiteral("discardedMessages")).toInt();
-    chatView_->setStatusText(
-        discardedMessages > 0
-            ? tr("Ready - %1 token/s - %2 earlier messages omitted")
-                  .arg(metrics.value(QStringLiteral("tokensPerSecond"))
-                           .toDouble(),
-                       0, 'f', 1)
-                  .arg(discardedMessages)
-            : tr("Ready - %1 token/s")
-                  .arg(metrics.value(QStringLiteral("tokensPerSecond"))
-                           .toDouble(),
-                       0, 'f', 1));
+    auto status =
+        contextMilliseconds >= 0
+            ? tr("Ready \u00b7 context %1s \u00b7 %2 tokens \u00b7 %3 tok/s")
+                  .arg(contextMilliseconds / 1000.0, 0, 'f', 1)
+                  .arg(generatedTokens)
+                  .arg(tokensPerSecond, 0, 'f', 1)
+            : tr("Ready \u00b7 %1 tokens \u00b7 %2 tok/s")
+                  .arg(generatedTokens)
+                  .arg(tokensPerSecond, 0, 'f', 1);
+    if (discardedMessages > 0)
+        status +=
+            tr(" \u00b7 %1 earlier messages omitted").arg(discardedMessages);
+    chatView_->setStatusText(status);
     updateClearButton();
 }
 

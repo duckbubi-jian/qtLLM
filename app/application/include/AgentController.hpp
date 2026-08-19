@@ -135,17 +135,23 @@ class AgentController final : public QObject
                                const QString& errorMessage);
     [[nodiscard]] QString contractRecoveryError(
         const agent::Action& action) const;
+    [[nodiscard]] QString modelContractError(const agent::Action& action) const;
     [[nodiscard]] QString registerContractFailure(
         const agent::Action& action, const agent::ToolResult& result,
         bool& exhausted);
+    void captureModelContract(const agent::Action& action,
+                              const agent::ToolResult& result);
     void resolveContractRecovery(const agent::Action& action);
     [[nodiscard]] bool isRequiredContractDiscovery(
+        const agent::Action& action) const;
+    [[nodiscard]] bool isSameActiveContextOperation(
         const agent::Action& action) const;
     [[nodiscard]] bool requiresContextResetApproval(
         const agent::Action& action) const;
     [[nodiscard]] QString updateContextAfterSuccess(
         const agent::Action& action, const agent::ToolResult& result,
         ToolOperationKind operationKind);
+    [[nodiscard]] QString advanceTaskPlanAfterToolResult(int evidenceSequence);
     [[nodiscard]] QString staleResourceReference(
         const QJsonObject& arguments) const;
     void invalidateContextEvidence();
@@ -175,6 +181,7 @@ class AgentController final : public QObject
     QList<QJsonObject> toolEvidence_;
     QHash<QString, ContractRecovery> contractRecoveries_;
     QHash<QString, int> contractFailureCounts_;
+    QHash<QString, QStringList> modelContractPaths_;
     QString activeContextScope_;
     QStringList invalidatedResourceIds_;
     bool contextEstablished_ = false;

@@ -53,8 +53,11 @@ struct AgentRun
     int completionReviewsAtRevision = 0;
     int taskPlanFailures = 0;
     int completionReviewFailures = 0;
+    int completionPlanDriftRepairs = 0;
     bool taskPlanRequired = false;
+    bool orderedTaskPlan = false;
     bool awaitingCompletionReview = false;
+    int currentPlanStepEvidenceStart = 1;
     QJsonArray completionSteps;
     QString pendingFinalCandidate;
     int lastPromptTokens = 0;

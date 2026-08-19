@@ -39,6 +39,7 @@ class AgentControllerTest final : public QObject
     void toolCatalogOmitsWholeDefinitions();
     void compactCatalogPreservesComplexOmittedContract();
     void compactCatalogPreservesDynamicKeyContract();
+    void executionTaskOwnsToolResultReview();
     void repairsToolValidationWithFocusedContract();
     void rejectsUnchangedRetryAfterToolError();
     void repairsDynamicPropertyNameValidation();
@@ -488,6 +489,47 @@ void AgentControllerTest::repairsToolValidationWithFocusedContract()
     QCOMPARE(toolCallCount, 1);
     QCOMPARE(controller.activeRun()->consecutiveValidationFailures, 0);
     controller.cancel();
+}
+
+void AgentControllerTest::executionTaskOwnsToolResultReview()
+{
+    const auto specification = planStep(
+        QStringLiteral("step-1"), QStringLiteral("Create the object"), true);
+    application::ExecutionTask task(specification);
+    task.activate({}, {}, {}, 1);
+
+    agent::Action action;
+    action.type = agent::ActionType::CallTool;
+    action.toolName = QStringLiteral("fake.echo");
+    action.planStepId = QStringLiteral("step-1");
+    action.completesPlanStep = true;
+    action.arguments = {{QStringLiteral("name"), QStringLiteral("object")}};
+
+    agent::ToolResult result;
+    result.serverId = QStringLiteral("fake");
+    result.toolName = QStringLiteral("echo");
+    result.outcome = agent::ToolOutcome::Succeeded;
+    result.structuredContent =
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("object")}};
+    const QList<QJsonObject> evidence{
+        {{QStringLiteral("sequence"), 1},
+         {QStringLiteral("outcome"), QStringLiteral("success")},
+         {QStringLiteral("terminal"), true}}};
+
+    task.receiveToolResult(action, result, 1, evidence, {}, {});
+    QVERIFY(task.awaitingReview());
+    QCOMPARE(task.evidenceEnd(), 1);
+    QVERIFY(task.messages().constLast().content.contains(
+        QStringLiteral("review_plan_step")));
+
+    application::ExecutionTask unverifiedTask(specification);
+    unverifiedTask.activate({}, {}, {}, 1);
+    unverifiedTask.receiveToolResult(
+        action, result, 1, evidence, {},
+        QStringLiteral("Read-back verification is pending."));
+    QVERIFY(!unverifiedTask.awaitingReview());
+    QVERIFY(unverifiedTask.messages().constLast().content.contains(
+        QStringLiteral("mutation verification is unresolved")));
 }
 
 void AgentControllerTest::completesMultiStepToolRun()

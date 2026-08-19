@@ -619,8 +619,6 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
                 : operationKind(*definition, dependencies_.toolRisk);
     }
 
-    QString recoveryGuidance;
-
     completedToolCallHistory_.append(completedToolCallSignature);
     const auto outcome = normalizedResult.outcome;
     const auto inProgress = outcome == agent::ToolOutcome::InProgress;
@@ -656,34 +654,6 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
         activeRun_->completionReviewFailures = 0;
         activeRun_->completionPlanDriftRepairs = 0;
     }
-    if (activeRun_->orderedTaskPlan && completedToolAction.has_value() &&
-        outcome == agent::ToolOutcome::Succeeded && !inProgress &&
-        evidenceSequence > 0 &&
-        completedToolAction->completesPlanStep.value_or(false))
-    {
-        beginPlanStepReview(evidenceSequence);
-        recoveryGuidance +=
-            (recoveryGuidance.isEmpty() ? QString{} : QStringLiteral(" ")) +
-            (currentExecutionTask() && currentExecutionTask()->awaitingReview()
-                 ? QStringLiteral(
-                       "The call proposed completion of the current task-plan "
-                       "step. Review that exact step now; it has not advanced "
-                       "yet.")
-                 : QStringLiteral(
-                       "The current task-plan step remains unfinished because "
-                       "its mutation verification is unresolved."));
-    }
-    else if (activeRun_->orderedTaskPlan && completedToolAction.has_value() &&
-             !inProgress && !completedToolAction->planStepId.isEmpty())
-    {
-        recoveryGuidance +=
-            (recoveryGuidance.isEmpty() ? QString{} : QStringLiteral(" ")) +
-            QStringLiteral(
-                "Task-plan step '%1' remains current. Use the same "
-                "plan_step_id for the next necessary call; do not advance to "
-                "a later step yet.")
-                .arg(completedToolAction->planStepId);
-    }
     if (outcome != agent::ToolOutcome::Succeeded && !inProgress)
         lastFailedToolCallSignature_ = completedToolCallSignature;
     else
@@ -701,16 +671,16 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
                 normalizedResult.serverId + QLatin1Char('.') +
                     normalizedResult.toolName,
                 normalizedResult.result);
-    auto resultMessage = AgentPromptBuilder::toolResultMessage(
-        normalizedResult, evidenceSequence, activeRun_->ledger.snapshot(),
-        activeRun_->ledger.unresolvedVerificationReason(), recoveryGuidance);
-    if (auto* task = currentExecutionTask(); task && task->hasConversation())
-        task->appendToolResult(
-            std::move(resultMessage), toolEvidence_,
-            activeRun_->ledger.snapshot(),
+    if (auto* task = currentExecutionTask();
+        task && task->hasConversation() && completedToolAction.has_value())
+        task->receiveToolResult(
+            *completedToolAction, normalizedResult, evidenceSequence,
+            toolEvidence_, activeRun_->ledger.snapshot(),
             activeRun_->ledger.unresolvedVerificationReason());
     else
-        decisionMessages().append(std::move(resultMessage));
+        decisionMessages().append(AgentPromptBuilder::toolResultMessage(
+            normalizedResult, evidenceSequence, activeRun_->ledger.snapshot(),
+            activeRun_->ledger.unresolvedVerificationReason(), {}));
 
     const auto uncertainDispatch = normalizedResult.sideEffectState ==
                                    agent::ToolSideEffectState::Uncertain;
@@ -1546,14 +1516,6 @@ QString AgentController::validateCompletionReview(
         activeRun_->ledger.hasUnresolvedVerification())
         return activeRun_->ledger.unresolvedVerificationReason();
     return {};
-}
-
-void AgentController::beginPlanStepReview(int evidenceSequence)
-{
-    auto* task = currentExecutionTask();
-    if (!activeRun_ || !task || activeRun_->ledger.hasUnresolvedVerification())
-        return;
-    task->beginReview(evidenceSequence);
 }
 
 bool AgentController::hasSufficientCompletionEvidence() const

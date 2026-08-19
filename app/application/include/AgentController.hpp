@@ -116,7 +116,6 @@ class AgentController final : public QObject
                                const QByteArray& rawAction);
     void handleCompletionReview(const agent::Action& action,
                                 const QByteArray& rawAction);
-    void beginPlanStepReview(int evidenceSequence);
     void retryCompletionReview(const QByteArray& rawAction,
                                const QString& errorMessage);
     void retryUnfinishedFinal(const QByteArray& rawAction,

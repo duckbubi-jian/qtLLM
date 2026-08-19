@@ -292,7 +292,7 @@ Status: complete in `a7355a1`.
 
 ### M2: Common AgentTask Lifecycle
 
-Status: pending.
+Status: complete in `a985caf` and `502cc67`.
 
 - Add the abstract `AgentTask` base.
 - Move common messages, token buffering, coarse status, cancellation, and
@@ -310,7 +310,11 @@ Acceptance criteria:
 
 ### M3: Task-Owned Execution Loop
 
-Status: pending.
+Status: in progress. `ExecutionTask` owns action parsing, bounded action and
+review repair, tool-result interpretation, task-local recovery guidance, and
+the decision to start current-step evidence review. Schema validation, policy,
+and asynchronous MCP transport remain in the controller pending extraction of
+the generic tool runtime adapter.
 
 - Move ordered action handling from `AgentController` into `ExecutionTask`.
 - Route generation completion, approval resolution, and normalized tool
@@ -330,7 +334,9 @@ Acceptance criteria:
 
 ### M4: PlanningTask And Queue Construction
 
-Status: pending.
+Status: in progress. The production planning turn and plan repair are owned by
+`PlanningTask`, and queue construction occurs only after its directive. The
+legacy unordered-plan compatibility path remains to be migrated and removed.
 
 - Move initial task-plan parsing and repair into `PlanningTask`.
 - Return validated `TaskSpecification` values through `TasksCreated`.
@@ -345,7 +351,7 @@ Acceptance criteria:
 
 ### M5: SummaryTask
 
-Status: pending.
+Status: complete in `502cc67`.
 
 - Remove final-answer mode from the last `ExecutionTask`.
 - Create `SummaryTask` after all required execution tasks complete.
@@ -360,7 +366,9 @@ Acceptance criteria:
 
 ### M6: Controller Reduction And UI Projection
 
-Status: pending.
+Status: in progress. Per-task timing and Activity task boundaries are projected
+from task snapshots/events. Legacy completion-review state and task-semantic
+repair branches still need removal from `AgentController`.
 
 - Remove obsolete plan, review, and ordered-repair fields from `AgentRun` and
   `AgentController`.

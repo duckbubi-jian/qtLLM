@@ -416,11 +416,43 @@ void ExecutionTask::beginReview(int evidenceEnd)
     setStatus(Status::Running);
 }
 
-void ExecutionTask::appendToolResult(chat::Message resultMessage,
-                                     const QList<QJsonObject>& toolEvidence,
-                                     const QJsonObject& ledgerState,
-                                     const QString& verificationReason)
+void ExecutionTask::receiveToolResult(const agent::Action& action,
+                                      const agent::ToolResult& result,
+                                      int evidenceSequence,
+                                      const QList<QJsonObject>& toolEvidence,
+                                      const QJsonObject& ledgerState,
+                                      const QString& verificationReason)
 {
+    QString recoveryGuidance;
+    const auto inProgress = result.outcome == agent::ToolOutcome::InProgress;
+    if (managedPlan_ && result.outcome == agent::ToolOutcome::Succeeded &&
+        !inProgress && evidenceSequence > 0 &&
+        action.completesPlanStep.value_or(false))
+    {
+        if (verificationReason.isEmpty()) beginReview(evidenceSequence);
+        recoveryGuidance =
+            awaitingReview()
+                ? QStringLiteral(
+                      "The call proposed completion of the current task-plan "
+                      "step. Review that exact step now; it has not advanced "
+                      "yet.")
+                : QStringLiteral(
+                      "The current task-plan step remains unfinished because "
+                      "its mutation verification is unresolved.");
+    }
+    else if (managedPlan_ && !inProgress && !action.planStepId.isEmpty())
+    {
+        recoveryGuidance =
+            QStringLiteral(
+                "Task-plan step '%1' remains current. Use the same "
+                "plan_step_id for the next necessary call; do not advance to "
+                "a later step yet.")
+                .arg(action.planStepId);
+    }
+
+    auto resultMessage = AgentPromptBuilder::toolResultMessage(
+        result, evidenceSequence, ledgerState, verificationReason,
+        recoveryGuidance);
     if (awaitingReview())
     {
         const auto reviewMessage = AgentPromptBuilder::planStepReviewMessage(

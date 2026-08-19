@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AgentTask.hpp"
+#include "ToolResult.hpp"
 
 #include <QByteArray>
 #include <QJsonArray>
@@ -89,11 +90,12 @@ class ExecutionTask final : public AgentTask
 
     void awaitTool();
     void awaitApproval();
-    void beginReview(int evidenceEnd);
-    void appendToolResult(chat::Message resultMessage,
-                          const QList<QJsonObject>& toolEvidence,
-                          const QJsonObject& ledgerState,
-                          const QString& verificationReason);
+    void receiveToolResult(const agent::Action& action,
+                           const agent::ToolResult& result,
+                           int evidenceSequence,
+                           const QList<QJsonObject>& toolEvidence,
+                           const QJsonObject& ledgerState,
+                           const QString& verificationReason);
     [[nodiscard]] bool repairAction(const QByteArray& rawAction,
                                     const QString& errorMessage);
     void markBlocked();
@@ -106,6 +108,7 @@ class ExecutionTask final : public AgentTask
 
    private:
     [[nodiscard]] QString activity() const override;
+    void beginReview(int evidenceEnd);
     void beginToolCallReview(const agent::Action& action,
                              const QByteArray& rawAction);
     [[nodiscard]] bool repairToolCallReview(const QByteArray& rawAction,

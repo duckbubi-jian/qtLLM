@@ -23,7 +23,6 @@ constexpr auto minimumDecisionTokens = 256;
 constexpr auto runTimeoutMilliseconds = 120'000;
 constexpr auto minimumPollIntervalMilliseconds = 1'000;
 constexpr auto maximumConsecutiveDiscoveryCalls = 4;
-constexpr qsizetype maximumDetectedCycleLength = 4;
 constexpr qsizetype maximumLoggedEventDataBytes = 4'096;
 constexpr qsizetype maximumProgressActivities = 8;
 
@@ -43,78 +42,6 @@ bool explicitlyRequestsExhaustiveDiscovery(const QString& request)
                        { return normalized.contains(term); });
 }
 
-QJsonValue canonicalJsonValue(const QJsonValue& value)
-{
-    if (value.isString())
-    {
-        auto text = value.toString();
-        if (text.size() >= 3 && text.at(1) == QLatin1Char(':') &&
-            (text.at(2) == QLatin1Char('/') || text.at(2) == QLatin1Char('\\')))
-            text.replace(QLatin1Char('\\'), QLatin1Char('/'));
-        return text;
-    }
-    if (value.isArray())
-    {
-        QJsonArray result;
-        for (const auto& item : value.toArray())
-            result.append(canonicalJsonValue(item));
-        return result;
-    }
-    if (value.isObject())
-    {
-        QJsonObject result;
-        const auto object = value.toObject();
-        for (const auto& key : object.keys())
-            result.insert(key, canonicalJsonValue(object.value(key)));
-        return result;
-    }
-    return value;
-}
-
-QString toolCallSignature(const agent::Action& action)
-{
-    const auto arguments = canonicalJsonValue(action.arguments).toObject();
-    return action.toolName + QLatin1Char('\n') +
-           QString::fromUtf8(
-               QJsonDocument(arguments).toJson(QJsonDocument::Compact));
-}
-
-QString repeatedCompletedCallError(const QStringList& history,
-                                   const QString& candidate)
-{
-    auto sequence = history;
-    sequence.append(candidate);
-    for (qsizetype cycleLength = 1; cycleLength <= maximumDetectedCycleLength &&
-                                    sequence.size() >= cycleLength * 2;
-         ++cycleLength)
-    {
-        const auto cycleStart = sequence.size() - cycleLength * 2;
-        auto repeats = true;
-        for (qsizetype offset = 0; offset < cycleLength; ++offset)
-        {
-            if (sequence.at(cycleStart + offset) !=
-                sequence.at(cycleStart + cycleLength + offset))
-            {
-                repeats = false;
-                break;
-            }
-        }
-        if (!repeats) continue;
-        if (cycleLength == 1)
-            return QStringLiteral(
-                "The identical tool call already completed successfully. "
-                "Do not execute it again. Continue with a different "
-                "unfinished step, or return final if all requested work is "
-                "complete.");
-        return QStringLiteral(
-            "This tool call would continue a repeated cycle of completed "
-            "calls. Do not toggle resources open and closed or repeat "
-            "completed work. Continue with a different unfinished step, or "
-            "return final if all requested work is complete.");
-    }
-    return {};
-}
-
 QString eventDataSummary(const QJsonObject& data)
 {
     auto bytes = QJsonDocument(data).toJson(QJsonDocument::Compact);
@@ -131,30 +58,6 @@ QString singleLine(QString value)
     return value.replace(QLatin1Char('\r'), QLatin1Char(' '))
         .replace(QLatin1Char('\n'), QLatin1Char(' '))
         .trimmed();
-}
-
-ToolOperationKind operationKind(
-    const agent::ToolDefinition& tool,
-    const AgentController::ToolRiskHandler& toolRisk)
-{
-    const auto readOnlyHint =
-        tool.annotations.value(QStringLiteral("readOnlyHint"));
-    if (readOnlyHint.isBool())
-        return readOnlyHint.toBool() ? ToolOperationKind::ReadOnly
-                                     : ToolOperationKind::Mutation;
-    if (tool.annotations.value(QStringLiteral("destructiveHint")).toBool())
-        return ToolOperationKind::Mutation;
-    if (!toolRisk) return ToolOperationKind::Unknown;
-    switch (toolRisk(tool.qualifiedName))
-    {
-        case infrastructure::mcp::ToolRisk::ReadOnly:
-            return ToolOperationKind::ReadOnly;
-        case infrastructure::mcp::ToolRisk::CreatesData:
-        case infrastructure::mcp::ToolRisk::ModifiesData:
-        case infrastructure::mcp::ToolRisk::Destructive:
-            return ToolOperationKind::Mutation;
-    }
-    return ToolOperationKind::Unknown;
 }
 
 bool isDiscoveryToolName(const QString& qualifiedToolName)
@@ -187,6 +90,8 @@ qsizetype messageCharacters(const QList<chat::Message>& messages)
 AgentController::AgentController(Dependencies dependencies, QObject* parent)
     : QObject(parent),
       dependencies_(std::move(dependencies)),
+      toolRuntime_({dependencies_.validateTool, dependencies_.toolPolicy,
+                    dependencies_.toolRisk}),
       runTimer_(new QTimer(this)),
       pollTimer_(new QTimer(this))
 {
@@ -218,9 +123,10 @@ bool AgentController::start(const QString& userRequest,
 {
     const auto request = userRequest.trimmed();
     if (request.isEmpty() || hasActiveRun() || !dependencies_.generate ||
-        !dependencies_.callTool || !dependencies_.validateTool ||
-        !dependencies_.toolPolicy)
+        !dependencies_.callTool || !toolRuntime_.isReady())
         return false;
+
+    toolRuntime_.setTools(tools);
 
     AgentRun run;
     run.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -253,15 +159,13 @@ bool AgentController::start(const QString& userRequest,
     }
     activeRun_ = std::move(run);
     preset_ = preset;
-    availableTools_ = tools;
     pendingApproval_.reset();
     activeToolAction_.reset();
     pendingPollAction_.reset();
     activeToolCallSignature_.clear();
-    lastFailedToolCallSignature_.clear();
     pollableToolCallSignature_.clear();
     lastPollCompletedAtMs_ = 0;
-    completedToolCallHistory_.clear();
+    toolRuntime_.resetCallHistory();
     toolEvidence_.clear();
     if (pollTimer_->isActive()) pollTimer_->stop();
     if (!runTimer_->isActive()) runTimer_->start();
@@ -570,21 +474,16 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
     auto completedOperationKind = ToolOperationKind::Unknown;
     if (completedToolAction.has_value())
     {
-        const auto definition = std::find_if(
-            availableTools_.cbegin(), availableTools_.cend(),
-            [&completedToolAction](const agent::ToolDefinition& candidate)
-            {
-                return candidate.qualifiedName == completedToolAction->toolName;
-            });
-        completedOperationKind =
-            definition == availableTools_.cend()
-                ? ToolOperationKind::Unknown
-                : operationKind(*definition, dependencies_.toolRisk);
+        const auto descriptor =
+            toolRuntime_.inspect(completedToolAction->toolName);
+        if (descriptor.has_value())
+            completedOperationKind = descriptor->operationKind;
     }
 
-    completedToolCallHistory_.append(completedToolCallSignature);
     const auto outcome = normalizedResult.outcome;
     const auto inProgress = outcome == agent::ToolOutcome::InProgress;
+    if (completedToolAction.has_value())
+        toolRuntime_.recordCallResult(*completedToolAction, outcome);
     if (completedToolAction.has_value() && !inProgress)
     {
         if (completedOperationKind == ToolOperationKind::ReadOnly &&
@@ -614,14 +513,8 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
             completedOperationKind);
         ++activeRun_->evidenceRevision;
     }
-    if (outcome != agent::ToolOutcome::Succeeded && !inProgress)
-        lastFailedToolCallSignature_ = completedToolCallSignature;
-    else
-    {
-        lastFailedToolCallSignature_.clear();
-        if (outcome == agent::ToolOutcome::Succeeded)
-            ++activeRun_->successfulToolResults;
-    }
+    if (outcome == agent::ToolOutcome::Succeeded)
+        ++activeRun_->successfulToolResults;
     activeRun_->stagnationRecoveries = 0;
     recordEvent(agent::EventType::ToolFinished,
                 outcome == agent::ToolOutcome::Succeeded
@@ -799,8 +692,7 @@ void AgentController::activateExecutionTask(int index, int evidenceStart)
     activeRun_->orderedPlanRepairs = 0;
     activeRun_->readOnlyTransportRetries = 0;
     activeRun_->consecutiveDiscoveryCalls = 0;
-    lastFailedToolCallSignature_.clear();
-    completedToolCallHistory_.clear();
+    toolRuntime_.resetCallHistory();
 }
 
 void AgentController::activateSummaryTask()
@@ -926,36 +818,26 @@ void AgentController::handleToolAction(const agent::Action& action,
     }
 
     ++activeRun_->toolActionAttempts;
-    const auto recordDuplicateToolAction = [this, &action]
-    {
-        if (!activeRun_) return;
-        ++activeRun_->duplicateToolActions;
-        const auto definition = std::find_if(
-            availableTools_.cbegin(), availableTools_.cend(),
-            [&action](const agent::ToolDefinition& candidate)
-            { return candidate.qualifiedName == action.toolName; });
-        if (definition == availableTools_.cend()) return;
-        const auto kind = operationKind(*definition, dependencies_.toolRisk);
-        if (kind == ToolOperationKind::Mutation)
-            ++activeRun_->duplicateMutationActions;
-        if (kind == ToolOperationKind::ReadOnly &&
-            isDiscoveryToolName(action.toolName))
-            ++activeRun_->redundantDiscoveryCalls;
-    };
-
-    const auto tool =
-        std::find_if(availableTools_.cbegin(), availableTools_.cend(),
-                     [&action](const agent::ToolDefinition& candidate)
-                     { return candidate.qualifiedName == action.toolName; });
-    if (tool == availableTools_.cend())
+    const auto descriptor = toolRuntime_.inspect(action.toolName);
+    if (!descriptor.has_value())
     {
         retryTaskAction(
             rawAction,
             QStringLiteral("Tool is not available: %1").arg(action.toolName));
         return;
     }
-    const auto candidateOperationKind =
-        operationKind(*tool, dependencies_.toolRisk);
+    const auto candidateOperationKind = descriptor->operationKind;
+    const auto recordDuplicateToolAction =
+        [this, &action, candidateOperationKind]
+    {
+        if (!activeRun_) return;
+        ++activeRun_->duplicateToolActions;
+        if (candidateOperationKind == ToolOperationKind::Mutation)
+            ++activeRun_->duplicateMutationActions;
+        if (candidateOperationKind == ToolOperationKind::ReadOnly &&
+            isDiscoveryToolName(action.toolName))
+            ++activeRun_->redundantDiscoveryCalls;
+    };
     if (!activeRun_->executionTasks.empty())
     {
         if (const auto* task = currentExecutionTask())
@@ -980,37 +862,19 @@ void AgentController::handleToolAction(const agent::Action& action,
         }
     }
 
-    const auto signature = toolCallSignature(action);
-    if (!lastFailedToolCallSignature_.isEmpty() &&
-        signature == lastFailedToolCallSignature_)
-    {
-        recordDuplicateToolAction();
-        retryNoProgressAction(
-            rawAction,
-            QStringLiteral(
-                "The identical tool call already failed. Do not call it "
-                "again. Return a final action now, or use meaningfully "
-                "different arguments only when the user's request requires "
-                "another attempt."));
-        return;
-    }
-
+    const auto signature = toolRuntime_.callSignature(action);
     const auto isStatusPoll = !pollableToolCallSignature_.isEmpty() &&
                               signature == pollableToolCallSignature_;
-    const auto repeatedCallError =
-        isStatusPoll
-            ? QString{}
-            : repeatedCompletedCallError(completedToolCallHistory_, signature);
-    if (!repeatedCallError.isEmpty())
+    const auto callGuard = toolRuntime_.guardCall(action, isStatusPoll);
+    if (!callGuard.allowed())
     {
         recordDuplicateToolAction();
-        retryNoProgressAction(rawAction, repeatedCallError);
+        retryNoProgressAction(rawAction, callGuard.errorMessage);
         return;
     }
 
     ++activeRun_->toolValidationAttempts;
-    const auto validation =
-        dependencies_.validateTool(action.toolName, action.arguments);
+    const auto validation = toolRuntime_.validate(action);
     if (!validation.valid)
     {
         ++activeRun_->toolValidationFailures;
@@ -1024,7 +888,8 @@ void AgentController::handleToolAction(const agent::Action& action,
         if (issue.message.isEmpty())
             issue.message =
                 QStringLiteral("Tool arguments failed local validation.");
-        retryInvalidToolAction(rawAction, issue, *tool, action.arguments);
+        retryInvalidToolAction(rawAction, issue, descriptor->definition,
+                               action.arguments);
         return;
     }
     activeRun_->consecutiveValidationFailures = 0;
@@ -1152,7 +1017,7 @@ void AgentController::applyTaskDirective(const AgentTask::Directive& directive)
 void AgentController::dispatchTool(const agent::Action& action)
 {
     if (!activeRun_) return;
-    const auto decision = dependencies_.toolPolicy(action.toolName);
+    const auto decision = toolRuntime_.policyDecision(action);
     if (decision == infrastructure::mcp::ToolDecision::Deny)
     {
         failRun(QStringLiteral("tool_denied"),
@@ -1199,29 +1064,23 @@ void AgentController::acceptTaskPlan(const QJsonArray& steps)
         for (const auto& toolValue : allowedTools)
         {
             const auto toolName = toolValue.toString();
-            const auto definition =
-                std::find_if(availableTools_.cbegin(), availableTools_.cend(),
-                             [&toolName](const agent::ToolDefinition& candidate)
-                             { return candidate.qualifiedName == toolName; });
-            if (definition == availableTools_.cend() ||
-                operationKind(*definition, dependencies_.toolRisk) ==
-                    ToolOperationKind::ReadOnly)
+            const auto descriptor = toolRuntime_.inspect(toolName);
+            if (!descriptor.has_value() ||
+                descriptor->operationKind == ToolOperationKind::ReadOnly)
                 continue;
             for (qsizetype otherIndex = 0; otherIndex < steps.size();
                  ++otherIndex)
             {
                 if (otherIndex == index) continue;
-                if (steps.at(otherIndex)
-                        .toObject()
-                        .value(QStringLiteral("allowed_tools"))
-                        .toArray()
-                        .contains(toolName))
-                {
-                    toolsRequiringSemanticReview
-                        .at(static_cast<std::size_t>(index))
-                        .insert(toolName);
-                    break;
-                }
+                if (!steps.at(otherIndex)
+                         .toObject()
+                         .value(QStringLiteral("allowed_tools"))
+                         .toArray()
+                         .contains(toolName))
+                    continue;
+                toolsRequiringSemanticReview.at(static_cast<std::size_t>(index))
+                    .insert(toolName);
+                break;
             }
         }
     }
@@ -1248,7 +1107,7 @@ void AgentController::executeTool(const agent::Action& action)
 {
     if (!activeRun_) return;
     if (auto* task = currentExecutionTask()) task->awaitTool();
-    const auto signature = toolCallSignature(action);
+    const auto signature = toolRuntime_.callSignature(action);
     if (!pollableToolCallSignature_.isEmpty() &&
         signature == pollableToolCallSignature_ && lastPollCompletedAtMs_ > 0)
     {

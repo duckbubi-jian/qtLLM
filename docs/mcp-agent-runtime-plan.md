@@ -40,7 +40,7 @@ The division of responsibility is:
 | Component | Responsibility |
 | --- | --- |
 | Model | Interpret intent, choose the next supplied tool, fill its arguments, and write the final answer. |
-| Agent runtime | Own the loop, task state, retries, polling, evidence, verification, and termination. |
+| Agent runtime | Own the serial task loop, retries, polling, evidence, verification, and termination. |
 | qtLLM tool adapter | Discover existing tools, validate schemas, enforce policy, execute calls, and preserve results. |
 | External tool provider | Publish complete standard schemas, annotations, structured results, and actionable errors; domain contracts remain provider-owned. |
 
@@ -76,6 +76,10 @@ The current implementation already provides most of the outer loop:
 - `PlanningTask`, serial `ExecutionTask` workers, and `SummaryTask` accept the
   structured actions valid for their own phase; `AgentController` schedules
   their directives and transports tool calls without parsing model output.
+- `AgentToolRuntime` owns generic catalog lookup, risk classification, schema
+  validation, policy decisions, and task-local duplicate-call protection. It
+  does not interpret plan structure. Planning can read the catalog but cannot
+  call MCP.
 - The Host validates tool names and arguments before execution and applies
   `ToolPolicy` independently from the model.
 - Tool calls support approval, cancellation, timeout handling, and ignored late

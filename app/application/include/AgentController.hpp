@@ -3,12 +3,11 @@
 #include "AgentAction.hpp"
 #include "AgentProgress.hpp"
 #include "AgentRun.hpp"
+#include "AgentToolRuntime.hpp"
 #include "AssistantContext.hpp"
 #include "ModelPackage.hpp"
 #include "ToolDefinition.hpp"
-#include "ToolPolicy.hpp"
 #include "ToolResult.hpp"
-#include "ToolValidation.hpp"
 
 #include <QByteArray>
 #include <QJsonObject>
@@ -32,12 +31,9 @@ class AgentController final : public QObject
     using ToolCallHandler =
         std::function<QString(const QString&, const QJsonObject&)>;
     using CancelToolHandler = std::function<void(const QString&)>;
-    using ValidateToolHandler = std::function<agent::ToolValidationResult(
-        const QString&, const QJsonObject&)>;
-    using ToolPolicyHandler =
-        std::function<infrastructure::mcp::ToolDecision(const QString&)>;
-    using ToolRiskHandler =
-        std::function<infrastructure::mcp::ToolRisk(const QString&)>;
+    using ValidateToolHandler = AgentToolRuntime::ValidateHandler;
+    using ToolPolicyHandler = AgentToolRuntime::PolicyHandler;
+    using ToolRiskHandler = AgentToolRuntime::RiskHandler;
 
     struct Dependencies
     {
@@ -135,19 +131,17 @@ class AgentController final : public QObject
     void failRun(const QString& code, const QString& message);
 
     Dependencies dependencies_;
+    AgentToolRuntime toolRuntime_;
     AgentRun::State state_ = AgentRun::State::Idle;
     std::optional<AgentRun> activeRun_;
     models::InferencePreset preset_;
-    QList<agent::ToolDefinition> availableTools_;
     QList<chat::Message> conversationMessages_;
     std::optional<agent::Action> pendingApproval_;
     std::optional<agent::Action> activeToolAction_;
     std::optional<agent::Action> pendingPollAction_;
     QString activeToolCallSignature_;
-    QString lastFailedToolCallSignature_;
     QString pollableToolCallSignature_;
     qint64 lastPollCompletedAtMs_ = 0;
-    QStringList completedToolCallHistory_;
     QList<QJsonObject> toolEvidence_;
     QTimer* runTimer_ = nullptr;
     QTimer* pollTimer_ = nullptr;

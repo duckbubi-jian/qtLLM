@@ -1,6 +1,7 @@
 #include "AgentController.hpp"
 #include "AgentContextCompactor.hpp"
 #include "AgentRunMetrics.hpp"
+#include "AgentToolRuntime.hpp"
 #include "ToolCatalogBuilder.hpp"
 #include "ToolResultStatus.hpp"
 
@@ -40,6 +41,8 @@ class AgentControllerTest final : public QObject
     void compactCatalogPreservesComplexOmittedContract();
     void compactCatalogPreservesDynamicKeyContract();
     void executionTaskOwnsToolResultReview();
+    void toolRuntimeOwnsCatalogValidationPolicyAndRisk();
+    void toolRuntimeOwnsDuplicateCallGuard();
     void repairsToolValidationWithFocusedContract();
     void rejectsUnchangedRetryAfterToolError();
     void repairsDynamicPropertyNameValidation();
@@ -219,6 +222,90 @@ QByteArray toolCallReviewAction(const QString& verdict, const QString& detail)
                                      {QStringLiteral("verdict"), verdict},
                                      {QStringLiteral("detail"), detail}})
         .toJson(QJsonDocument::Compact);
+}
+
+void AgentControllerTest::toolRuntimeOwnsCatalogValidationPolicyAndRisk()
+{
+    auto validationCount = 0;
+    auto policyCount = 0;
+    application::AgentToolRuntime runtime(
+        {[&](const QString& toolName, const QJsonObject& arguments)
+         {
+             ++validationCount;
+             return agent::ToolValidationResult{
+                 toolName == QLatin1String("provider.mutate") &&
+                     arguments.value(QStringLiteral("value")).toInt() == 7,
+                 {}};
+         },
+         [&](const QString& toolName)
+         {
+             ++policyCount;
+             return toolName == QLatin1String("provider.mutate")
+                        ? infrastructure::mcp::ToolDecision::RequireApproval
+                        : infrastructure::mcp::ToolDecision::Allow;
+         },
+         [](const QString& toolName)
+         {
+             return toolName == QLatin1String("provider.read")
+                        ? infrastructure::mcp::ToolRisk::ReadOnly
+                        : infrastructure::mcp::ToolRisk::ModifiesData;
+         }});
+    QVERIFY(runtime.isReady());
+
+    auto readTool = namedTool(QStringLiteral("read"),
+                              QStringLiteral("Read provider state"));
+    readTool.qualifiedName = QStringLiteral("provider.read");
+    auto mutationTool = namedTool(QStringLiteral("mutate"),
+                                  QStringLiteral("Mutate provider state"));
+    mutationTool.qualifiedName = QStringLiteral("provider.mutate");
+    runtime.setTools({readTool, mutationTool});
+
+    QVERIFY(!runtime.inspect(QStringLiteral("provider.missing")).has_value());
+    const auto read = runtime.inspect(QStringLiteral("provider.read"));
+    QVERIFY(read.has_value());
+    QCOMPARE(read->operationKind, application::ToolOperationKind::ReadOnly);
+    const auto mutation = runtime.inspect(QStringLiteral("provider.mutate"));
+    QVERIFY(mutation.has_value());
+    QCOMPARE(mutation->operationKind, application::ToolOperationKind::Mutation);
+
+    agent::Action action;
+    action.type = agent::ActionType::CallTool;
+    action.toolName = QStringLiteral("provider.mutate");
+    action.arguments = {{QStringLiteral("value"), 7}};
+    QVERIFY(runtime.validate(action).valid);
+    QCOMPARE(validationCount, 1);
+    QCOMPARE(runtime.policyDecision(action),
+             infrastructure::mcp::ToolDecision::RequireApproval);
+    QCOMPARE(policyCount, 1);
+}
+
+void AgentControllerTest::toolRuntimeOwnsDuplicateCallGuard()
+{
+    application::AgentToolRuntime runtime;
+    agent::Action openAction;
+    openAction.type = agent::ActionType::CallTool;
+    openAction.toolName = QStringLiteral("provider.mutate");
+    openAction.arguments = {
+        {QStringLiteral("operation"), QStringLiteral("open")}};
+    auto closeAction = openAction;
+    closeAction.arguments = {
+        {QStringLiteral("operation"), QStringLiteral("close")}};
+
+    runtime.recordCallResult(openAction, agent::ToolOutcome::ToolFailed);
+    const auto repeatedFailure = runtime.guardCall(openAction, false);
+    QVERIFY(!repeatedFailure.allowed());
+    QVERIFY(repeatedFailure.errorMessage.contains(
+        QStringLiteral("already failed")));
+
+    runtime.resetCallHistory();
+    runtime.recordCallResult(openAction, agent::ToolOutcome::Succeeded);
+    runtime.recordCallResult(closeAction, agent::ToolOutcome::Succeeded);
+    runtime.recordCallResult(openAction, agent::ToolOutcome::Succeeded);
+    const auto repeatedCycle = runtime.guardCall(closeAction, false);
+    QVERIFY(!repeatedCycle.allowed());
+    QVERIFY(
+        repeatedCycle.errorMessage.contains(QStringLiteral("repeated cycle")));
+    QVERIFY(runtime.guardCall(closeAction, true).allowed());
 }
 
 void AgentControllerTest::toolCatalogIsStableAndValid()

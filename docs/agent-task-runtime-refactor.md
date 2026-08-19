@@ -44,13 +44,16 @@ has reached a terminal state accepted by the scheduler.
 | `ExecutionTask` | One planned step or direct request, including decisions, allowed-tool boundary, MCP action lifecycle, evidence, review, and bounded repair | Advancing the queue or operating on a later step |
 | `SummaryTask` | Building the final answer from immutable completed-task snapshots | Calling MCP tools or changing completed steps |
 | `AgentController` | Queue order, active task, run-level state, and routing asynchronous callbacks to the active task | Interpreting task actions, reviewing step completion, or choosing recovery prompts |
-| Tool runtime | Schema validation, policy, approval transport, MCP dispatch, cancellation, and normalized tool results | Deciding whether a task is complete |
+| `AgentToolRuntime` | Tool catalog lookup, risk classification, schema validation, and policy decisions | Understanding plan structure or deciding whether a task is complete |
+| Tool transport | Approval transport, MCP dispatch, cancellation, and normalized tool results | Choosing tools or interpreting task completion |
 
-The task owns the semantic MCP workflow. The controller or a dedicated tool
-runtime may physically call an asynchronous callback because Qt delivers model
-and MCP results through application-level signals. That transport detail must
-not give the controller authority to choose a tool, alter arguments, review
-evidence, or advance a task.
+The task owns the semantic MCP workflow. `AgentToolRuntime` owns provider-neutral
+tool contracts, while the controller currently drives asynchronous callbacks
+because Qt delivers model and MCP results through application-level signals.
+That transport detail must not give the controller authority to choose a tool,
+alter arguments, review evidence, or advance a task. `PlanningTask` may inspect
+the supplied catalog when constructing tasks, but only `ExecutionTask` may
+produce a `CallTool` directive.
 
 ## Runtime Invariants
 
@@ -371,9 +374,11 @@ Acceptance criteria:
 Status: in progress. Per-task timing and Activity task boundaries are projected
 from task snapshots/events. The legacy global completion-review state machine,
 unordered-plan compatibility path, and controller-owned model token buffer are
-removed. Generic schema validation, duplicate-call protection, authorization,
-and asynchronous tool transport still remain in `AgentController` and are the
-next extraction boundary.
+removed. Generic tool lookup, risk classification, schema validation, policy
+decisions, and task-local duplicate-call protection now live in
+`AgentToolRuntime`. Queue construction and task boundaries remain outside it.
+Approval state, asynchronous MCP transport, and polling still remain in
+`AgentController` and are the next extraction boundary.
 
 - Remove obsolete plan, review, and ordered-repair fields from `AgentRun` and
   `AgentController`.

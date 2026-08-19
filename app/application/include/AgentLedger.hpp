@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AgentAction.hpp"
+#include "ToolOperationKind.hpp"
 #include "ToolResult.hpp"
 
 #include <QJsonObject>
@@ -11,13 +12,6 @@
 
 namespace qtllm::application
 {
-enum class ToolOperationKind
-{
-    Unknown,
-    ReadOnly,
-    Mutation
-};
-
 struct AgentResourceRecord
 {
     QString serverId;

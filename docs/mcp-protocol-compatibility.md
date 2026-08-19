@@ -43,7 +43,7 @@ feature differences have dedicated Fake Server coverage.
 | Tools | Cursor pagination and atomic snapshots | Supported |
 | Tools | `tools/call` | Supported |
 | Tools | Input schema validation | Supported subset including local `$ref`, `const`, type unions, `allOf`, `anyOf`, `oneOf`, `propertyNames`, `minProperties`, `maxProperties`, string `pattern`, and object-schema `additionalProperties` |
-| Tools | Output schema and annotations | Supported |
+| Tools | Output schema and annotations | Supported; a mismatched successful result is classified as a protocol failure and cannot become Agent completion evidence |
 | Tools | List-changed notification and refresh coalescing | Supported |
 | Results | Text content and raw result preservation | Supported |
 | Results | General content-block preservation | Supported |

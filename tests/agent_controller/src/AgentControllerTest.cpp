@@ -2688,10 +2688,13 @@ void AgentControllerTest::tracksRunScopedLedgerAndRequiresVerification()
         R"({"action":"call_tool","tool":"fake.create","arguments":{"name":"resource","parent_uuid":"parent-1"}})");
     const auto inspectAction = QByteArrayLiteral(
         R"({"action":"call_tool","tool":"fake.inspect","arguments":{"name_uuid":"resource/resource-1"}})");
+    auto createTool = ledgerTool(QStringLiteral("create"), false);
+    createTool.outputSchema = {
+        {QStringLiteral("type"), QStringLiteral("object")}};
+    createTool.hasOutputSchema = true;
     QVERIFY(controller.start(
         QStringLiteral("Create the resource and report it."), {},
-        {ledgerTool(QStringLiteral("create"), false),
-         ledgerTool(QStringLiteral("inspect"), true)}));
+        {createTool, ledgerTool(QStringLiteral("inspect"), true)}));
     controller.receiveToken(createAction);
     controller.completeGeneration(false);
 

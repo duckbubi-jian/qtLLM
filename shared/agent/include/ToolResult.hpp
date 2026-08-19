@@ -57,6 +57,7 @@ struct ToolResult
     qsizetype originalBytes = 0;
     QJsonObject result;
     QJsonValue structuredContent;
+    bool outputSchemaValidated = false;
     QJsonArray contentBlocks;
     QStringList unknownContentBlockTypes;
     QString errorCode;

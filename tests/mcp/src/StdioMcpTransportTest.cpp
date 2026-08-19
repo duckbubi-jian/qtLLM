@@ -1422,6 +1422,7 @@ void StdioMcpTransportTest::routesTypedNotificationsAndRichResults()
     const auto result =
         qvariant_cast<agent::ToolResult>(resultSpy.constFirst().constFirst());
     QCOMPARE(result.structuredContent, QJsonValue(structured));
+    QVERIFY(result.outputSchemaValidated);
     QCOMPARE(result.contentBlocks.size(), 2);
     QCOMPARE(result.unknownContentBlockTypes,
              QStringList{QStringLiteral("custom-block")});
@@ -1438,7 +1439,14 @@ void StdioMcpTransportTest::routesTypedNotificationsAndRichResults()
              QStringLiteral("output_schema_mismatch"));
     const auto mismatchedResult =
         qvariant_cast<agent::ToolResult>(resultSpy.at(1).constFirst());
-    QVERIFY(!mismatchedResult.isError);
+    QVERIFY(mismatchedResult.isError);
+    QVERIFY(!mismatchedResult.outputSchemaValidated);
+    QCOMPARE(mismatchedResult.failureKind, agent::ToolFailureKind::Protocol);
+    QCOMPARE(mismatchedResult.outcome, agent::ToolOutcome::ProtocolFailed);
+    QCOMPARE(mismatchedResult.sideEffectState,
+             agent::ToolSideEffectState::Uncertain);
+    QCOMPARE(mismatchedResult.errorCode,
+             QStringLiteral("output_schema_mismatch"));
     QVERIFY(mismatchedResult.structuredContent.isObject());
 }
 

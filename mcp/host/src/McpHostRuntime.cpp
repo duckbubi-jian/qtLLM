@@ -1671,6 +1671,33 @@ void McpHostRuntime::handleResponse(const QString& serverId,
     {
         toolResult.sideEffectState = agent::ToolSideEffectState::Succeeded;
     }
+
+    const auto qualifiedToolName =
+        serverId + QLatin1Char('.') + pending.toolName;
+    const auto* definition = toolRegistry_.find(qualifiedToolName);
+    const auto hasOutputSchema =
+        definition != nullptr &&
+        (definition->hasOutputSchema || !definition->outputSchema.isEmpty());
+    if (!toolResult.isError && hasOutputSchema)
+    {
+        QString outputError;
+        if (toolRegistry_.validateOutput(qualifiedToolName, structuredResult,
+                                         outputError))
+        {
+            toolResult.outputSchemaValidated = true;
+        }
+        else
+        {
+            toolResult.isError = true;
+            toolResult.failureKind = agent::ToolFailureKind::Protocol;
+            toolResult.outcome = agent::ToolOutcome::ProtocolFailed;
+            toolResult.sideEffectState = agent::ToolSideEffectState::Uncertain;
+            toolResult.errorCode = QStringLiteral("output_schema_mismatch");
+            toolResult.errorMessage = outputError;
+            emit serverError(serverId, toolResult.errorCode, outputError);
+        }
+    }
+
     const auto serialized =
         QJsonDocument(result).toJson(QJsonDocument::Compact);
     const auto connection = connections_.constFind(serverId);
@@ -1713,14 +1740,6 @@ void McpHostRuntime::handleResponse(const QString& serverId,
                     toolResult.unknownContentBlockTypes.append(type);
             }
         }
-
-        QString outputError;
-        if (!toolResult.isError &&
-            !toolRegistry_.validateOutput(
-                serverId + QLatin1Char('.') + pending.toolName,
-                structuredResult, outputError))
-            emit serverError(serverId, QStringLiteral("output_schema_mismatch"),
-                             outputError);
     }
     emit toolResultReady(toolResult);
 }

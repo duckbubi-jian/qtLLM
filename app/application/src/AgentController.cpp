@@ -530,7 +530,7 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
     const auto completedToolAction =
         std::exchange(activeToolAction_, std::nullopt);
     auto completedOperationKind = ToolOperationKind::Unknown;
-    auto outputSchemaValidated = false;
+    const auto outputSchemaValidated = normalizedResult.outputSchemaValidated;
     if (completedToolAction.has_value())
     {
         const auto definition = std::find_if(
@@ -543,9 +543,6 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
             definition == availableTools_.cend()
                 ? ToolOperationKind::Unknown
                 : operationKind(*definition, dependencies_.toolRisk);
-        outputSchemaValidated = definition != availableTools_.cend() &&
-                                definition->hasOutputSchema &&
-                                !definition->outputSchema.isEmpty();
     }
 
     QString recoveryGuidance;

@@ -70,6 +70,14 @@ bool isParentIdentityKey(const QString& key)
             normalized.endsWith(QStringLiteral("id")));
 }
 
+bool isParentContextKey(const QString& key)
+{
+    const auto normalized = normalizedKey(key);
+    return normalized == QLatin1String("parent") ||
+           normalized.startsWith(QStringLiteral("parent")) ||
+           normalized.endsWith(QStringLiteral("parent"));
+}
+
 bool isJobIdentityKey(const QString& key)
 {
     const auto normalized = normalizedKey(key);
@@ -143,7 +151,8 @@ QJsonValue resultPayload(const agent::ToolResult& result)
 
 void collectSemanticTokens(const QJsonValue& value, QStringList& identities,
                            QStringList& names, qsizetype depth,
-                           qsizetype& visited);
+                           qsizetype& visited, bool includeAliases,
+                           bool parentContext);
 bool intersects(const QStringList& left, const QStringList& right);
 
 bool explicitlyConfirmsSuccess(const QJsonValue& value)
@@ -162,13 +171,15 @@ bool explicitlyConfirmsSuccess(const QJsonValue& value)
     return false;
 }
 
-bool hasStableResultLocator(const QJsonValue& value, qsizetype depth = 0)
+bool hasStableResultLocator(const QJsonValue& value, qsizetype depth = 0,
+                            bool parentContext = false)
 {
     if (depth > maximumTraversalDepth) return false;
     if (value.isArray())
     {
         for (const auto& entry : value.toArray())
-            if (hasStableResultLocator(entry, depth + 1)) return true;
+            if (hasStableResultLocator(entry, depth + 1, parentContext))
+                return true;
         return false;
     }
     if (!value.isObject()) return false;
@@ -176,6 +187,9 @@ bool hasStableResultLocator(const QJsonValue& value, qsizetype depth = 0)
     const auto object = value.toObject();
     for (auto entry = object.constBegin(); entry != object.constEnd(); ++entry)
     {
+        const auto itemParentContext =
+            parentContext || isParentContextKey(entry.key());
+        if (itemParentContext) continue;
         if (scalarText(entry.value()).isEmpty()) continue;
         const auto key = normalizedKey(entry.key());
         const auto isDiagnosticPath = key == QLatin1String("fieldpath") ||
@@ -188,7 +202,10 @@ bool hasStableResultLocator(const QJsonValue& value, qsizetype depth = 0)
             return true;
     }
     for (auto entry = object.constBegin(); entry != object.constEnd(); ++entry)
-        if (hasStableResultLocator(entry.value(), depth + 1)) return true;
+        if (hasStableResultLocator(
+                entry.value(), depth + 1,
+                parentContext || isParentContextKey(entry.key())))
+            return true;
     return false;
 }
 
@@ -202,11 +219,12 @@ bool structuredResultConfirmsTarget(const agent::Action& action,
     QStringList requestedNames;
     auto visited = qsizetype{0};
     collectSemanticTokens(action.arguments, requestedIds, requestedNames, 0,
-                          visited);
+                          visited, false, false);
     QStringList resultIds;
     QStringList resultNames;
     visited = 0;
-    collectSemanticTokens(payload, resultIds, resultNames, 0, visited);
+    collectSemanticTokens(payload, resultIds, resultNames, 0, visited, false,
+                          false);
     return intersects(requestedIds, resultIds) ||
            intersects(requestedNames, resultNames);
 }
@@ -296,11 +314,13 @@ QString actionKey(const agent::Action& action)
                QJsonDocument(action.arguments).toJson(QJsonDocument::Compact));
 }
 
-void appendSemanticToken(QStringList& tokens, const QString& value);
+void appendSemanticToken(QStringList& tokens, const QString& value,
+                         bool includeAliases);
 
 void collectSemanticTokens(const QJsonValue& value, QStringList& identities,
                            QStringList& names, qsizetype depth,
-                           qsizetype& visited)
+                           qsizetype& visited, bool includeAliases,
+                           bool parentContext)
 {
     if (depth > maximumTraversalDepth || visited >= maximumVisitedValues)
         return;
@@ -308,28 +328,31 @@ void collectSemanticTokens(const QJsonValue& value, QStringList& identities,
     if (value.isArray())
     {
         for (const auto& item : value.toArray())
-            collectSemanticTokens(item, identities, names, depth + 1, visited);
+            collectSemanticTokens(item, identities, names, depth + 1, visited,
+                                  includeAliases, parentContext);
         return;
     }
     if (!value.isObject()) return;
     const auto object = value.toObject();
     for (auto item = object.constBegin(); item != object.constEnd(); ++item)
     {
+        const auto itemParentContext =
+            parentContext || isParentContextKey(item.key());
         const auto scalar = scalarText(item.value());
-        if (!scalar.isEmpty())
+        if (!scalar.isEmpty() && !itemParentContext)
         {
             const auto normalized = normalizedKey(item.key());
             if (identityKeyScore(item.key()) >= 0 ||
                 isJobIdentityKey(item.key()) ||
                 normalized.endsWith(QStringLiteral("uri")))
-                appendSemanticToken(identities, scalar);
+                appendSemanticToken(identities, scalar, includeAliases);
             else if (nameKeyScore(item.key()) >= 0 ||
                      normalized.endsWith(QStringLiteral("path")))
-                appendSemanticToken(names, scalar);
+                appendSemanticToken(names, scalar, includeAliases);
         }
         if (item.value().isObject() || item.value().isArray())
             collectSemanticTokens(item.value(), identities, names, depth + 1,
-                                  visited);
+                                  visited, includeAliases, itemParentContext);
     }
 }
 
@@ -351,12 +374,14 @@ bool intersects(const QStringList& left, const QStringList& right)
     return false;
 }
 
-void appendSemanticToken(QStringList& tokens, const QString& value)
+void appendSemanticToken(QStringList& tokens, const QString& value,
+                         bool includeAliases)
 {
     if (tokens.size() >= maximumSemanticTokens) return;
     const auto token = bounded(value);
     if (token.isEmpty()) return;
     tokens.append(token);
+    if (!includeAliases) return;
     const auto normalizedSlashes =
         QString(token).replace(QLatin1Char('\\'), QLatin1Char('/'));
     const auto slash = normalizedSlashes.lastIndexOf(QLatin1Char('/'));
@@ -494,8 +519,7 @@ void AgentLedger::clear()
 void AgentLedger::recordToolResult(int evidenceSequence,
                                    const agent::Action& action,
                                    const agent::ToolResult& result,
-                                   ToolOperationKind operationKind,
-                                   bool outputSchemaValidated)
+                                   ToolOperationKind operationKind)
 {
     const auto payload = resultPayload(result);
     QList<AgentResourceRecord> extractedResources;
@@ -541,7 +565,7 @@ void AgentLedger::recordToolResult(int evidenceSequence,
     }
     visited = 0;
     collectSemanticTokens(action.arguments, currentIds, currentNames, 0,
-                          visited);
+                          visited, true, false);
     currentIds = uniqueTokens(std::move(currentIds));
     currentNames = uniqueTokens(std::move(currentNames));
 
@@ -618,9 +642,7 @@ void AgentLedger::recordToolResult(int evidenceSequence,
 
     const auto targetIds = currentIds;
     const auto targetNames = currentNames;
-    const auto selfVerified =
-        (outputSchemaValidated && !extractedResources.isEmpty()) ||
-        structuredResultConfirmsTarget(action, payload);
+    const auto selfVerified = structuredResultConfirmsTarget(action, payload);
     const auto hasVerificationTarget =
         !targetIds.isEmpty() || !targetNames.isEmpty();
     verifications_.append(

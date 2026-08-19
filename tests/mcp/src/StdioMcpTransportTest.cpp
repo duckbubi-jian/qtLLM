@@ -236,6 +236,7 @@ class StdioMcpTransportTest final : public QObject
     void validatesArgumentsBeforeCallingServer();
     void validatesDiscriminatedUnionArguments();
     void validatesDynamicPropertyNames();
+    void rejectsUnsupportedSchemaKeywords();
     void appliesLocalToolPolicy();
     void roundTripsServerConfiguration();
     void rejectsInvalidServerIds();
@@ -945,6 +946,125 @@ void StdioMcpTransportTest::validatesDynamicPropertyNames()
              QStringLiteral("arguments.updates./density/fixedValue"));
     QCOMPARE(invalidValue.issue.schemaPath,
              QStringLiteral("#/properties/updates/additionalProperties/type"));
+}
+
+void StdioMcpTransportTest::rejectsUnsupportedSchemaKeywords()
+{
+    infrastructure::mcp::ToolRegistry registry;
+    QString errorMessage;
+    const agent::ToolDefinition existing{
+        QStringLiteral("fake.existing"), QStringLiteral("fake"),
+        QStringLiteral("existing"), QStringLiteral("Existing tool"),
+        QJsonObject{{QStringLiteral("type"), QStringLiteral("object")}}};
+    QVERIFY(registry.replaceServerTools(QStringLiteral("fake"), {existing},
+                                        errorMessage));
+
+    const agent::ToolDefinition unsupported{
+        QStringLiteral("fake.unsupported"), QStringLiteral("fake"),
+        QStringLiteral("unsupported"), QStringLiteral("Unsupported schema"),
+        QJsonObject{
+            {QStringLiteral("type"), QStringLiteral("object")},
+            {QStringLiteral("properties"),
+             QJsonObject{
+                 {QStringLiteral("value"),
+                  QJsonObject{
+                      {QStringLiteral("type"), QStringLiteral("object")},
+                      {QStringLiteral("patternProperties"),
+                       QJsonObject{
+                           {QStringLiteral("^x-"),
+                            QJsonObject{{QStringLiteral("type"),
+                                         QStringLiteral("string")}}}}}}}}}}};
+    QVERIFY(!registry.replaceServerTools(QStringLiteral("fake"), {unsupported},
+                                         errorMessage));
+    QVERIFY(errorMessage.contains(QStringLiteral("patternProperties")));
+    QVERIFY(errorMessage.contains(
+        QStringLiteral("#/properties/value/patternProperties")));
+    QVERIFY(registry.find(QStringLiteral("fake.existing")) != nullptr);
+    QVERIFY(registry.find(QStringLiteral("fake.unsupported")) == nullptr);
+
+    auto malformed = existing;
+    malformed.inputSchema = {
+        {QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("required"), QStringLiteral("value")}};
+    errorMessage.clear();
+    QVERIFY(!registry.replaceServerTools(QStringLiteral("fake"), {malformed},
+                                         errorMessage));
+    QVERIFY(errorMessage.contains(QStringLiteral("#/required")));
+    QVERIFY(errorMessage.contains(QStringLiteral("array of strings")));
+    QVERIFY(registry.find(QStringLiteral("fake.existing")) != nullptr);
+
+    auto unsupportedOutput = existing;
+    unsupportedOutput.outputSchema = {
+        {QStringLiteral("not"),
+         QJsonObject{{QStringLiteral("type"), QStringLiteral("null")}}}};
+    unsupportedOutput.hasOutputSchema = true;
+    errorMessage.clear();
+    QVERIFY(!registry.replaceServerTools(QStringLiteral("fake"),
+                                         {unsupportedOutput}, errorMessage));
+    QVERIFY(errorMessage.contains(QStringLiteral("outputSchema")));
+    QVERIFY(errorMessage.contains(QStringLiteral("#/not")));
+    QVERIFY(registry.find(QStringLiteral("fake.existing")) != nullptr);
+
+    auto unresolvedReference = existing;
+    unresolvedReference.inputSchema = {
+        {QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("properties"),
+         QJsonObject{{QStringLiteral("value"),
+                      QJsonObject{{QStringLiteral("$ref"),
+                                   QStringLiteral("#/$defs/Missing")}}}}}};
+    errorMessage.clear();
+    QVERIFY(!registry.replaceServerTools(QStringLiteral("fake"),
+                                         {unresolvedReference}, errorMessage));
+    QVERIFY(errorMessage.contains(QStringLiteral("#/$defs/Missing")));
+    QVERIFY(errorMessage.contains(QStringLiteral("does not resolve")));
+    QVERIFY(registry.find(QStringLiteral("fake.existing")) != nullptr);
+
+    auto nonSchemaReference = existing;
+    nonSchemaReference.inputSchema = {
+        {QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("required"), QJsonArray{QStringLiteral("value")}},
+        {QStringLiteral("properties"),
+         QJsonObject{{QStringLiteral("value"),
+                      QJsonObject{{QStringLiteral("$ref"),
+                                   QStringLiteral("#/required")}}}}}};
+    errorMessage.clear();
+    QVERIFY(!registry.replaceServerTools(QStringLiteral("fake"),
+                                         {nonSchemaReference}, errorMessage));
+    QVERIFY(errorMessage.contains(QStringLiteral("#/required")));
+    QVERIFY(errorMessage.contains(QStringLiteral("object schema")));
+
+    auto hiddenUnsupportedReference = existing;
+    hiddenUnsupportedReference.inputSchema = {
+        {QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("x-target"),
+         QJsonObject{{QStringLiteral("patternProperties"), QJsonObject{}}}},
+        {QStringLiteral("properties"),
+         QJsonObject{{QStringLiteral("value"),
+                      QJsonObject{{QStringLiteral("$ref"),
+                                   QStringLiteral("#/x-target")}}}}}};
+    errorMessage.clear();
+    QVERIFY(!registry.replaceServerTools(
+        QStringLiteral("fake"), {hiddenUnsupportedReference}, errorMessage));
+    QVERIFY(errorMessage.contains(QStringLiteral("#/x-target")));
+    QVERIFY(errorMessage.contains(QStringLiteral("patternProperties")));
+
+    auto recursive = existing;
+    recursive.inputSchema = {
+        {QStringLiteral("$ref"), QStringLiteral("#/$defs/Node")},
+        {QStringLiteral("$defs"),
+         QJsonObject{
+             {QStringLiteral("Node"),
+              QJsonObject{
+                  {QStringLiteral("type"), QStringLiteral("object")},
+                  {QStringLiteral("properties"),
+                   QJsonObject{
+                       {QStringLiteral("child"),
+                        QJsonObject{{QStringLiteral("$ref"),
+                                     QStringLiteral("#/$defs/Node")}}}}}}}}}};
+    errorMessage.clear();
+    QVERIFY(registry.replaceServerTools(QStringLiteral("fake"), {recursive},
+                                        errorMessage));
+    QVERIFY(errorMessage.isEmpty());
 }
 
 void StdioMcpTransportTest::appliesLocalToolPolicy()

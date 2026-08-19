@@ -99,3 +99,36 @@ the matrix for CPU and CUDA placement. Keep generated reports outside the
 repository because they contain local paths, model names, prompts, tool
 arguments, and MCP results. Compare failures by `failureCategory` before tuning
 catalog size or repair budgets; do not add scenario-specific prompt rules.
+
+## Remaining M5 Work
+
+The runner, terminal metrics, report format, and two-scenario smoke suite are
+implemented. Real-model acceptance and tuning remain open. Continue in this
+order:
+
+1. Add provider-neutral Fake MCP suites for read-only multi-file work,
+   multi-step mutation with read-back, targeted argument repair, structured
+   polling, approval and rejection, cancellation, timeout, late response, and
+   context compaction. Keep each scenario isolated and assert final state as
+   well as Agent metrics.
+1. Extend reporting where measurements are not yet explicit: tool round-trip
+   time, observed polling intervals and terminal wait time, approval or
+   cancellation latency, and time to first token. Preserve the existing report
+   schema versioning when fields are added.
+1. Expose the same automatic, single-device, and custom Layer Split placement
+   choices used by qtLLM so the runner can exercise CPU, CUDA automatic
+   placement, and custom multi-GPU placement without a separate code path.
+1. Run every suite at least three times with a lightweight model and a larger
+   model. Record the model file, quantization, context size, placement, MCP
+   Server version, and runner revision with each report.
+1. Classify every rejected run as model decision, Host validation or protocol,
+   authorization, transport, Server behavior, or tool business logic before
+   changing code. Tune only general catalog, repair, polling, and compaction
+   budgets; never add Server names, tool names, domain fields, or scenario text
+   to production decision logic.
+
+M5 is complete only when both model classes pass the read-only, mutation,
+polling, denial, cancellation, recovery, and compaction suites without
+duplicate mutation, post-terminal polling, leaked redacted data, or
+provider-specific Host behavior. P3 Server-initiated Sampling and Elicitation
+start only after this gate is met.

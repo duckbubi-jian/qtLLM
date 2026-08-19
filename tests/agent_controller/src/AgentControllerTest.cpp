@@ -1,6 +1,8 @@
 #include "AgentController.hpp"
+#include "AgentContextCompactor.hpp"
 #include "AgentRunMetrics.hpp"
 #include "ToolCatalogBuilder.hpp"
+#include "ToolResultStatus.hpp"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -48,6 +50,7 @@ class AgentControllerTest final : public QObject
     void limitsConsecutiveDiscoveryBreadth();
     void preservesSummaryWhenCompletionReviewFormattingFails();
     void allowsRepeatedPollingUntilTerminalStatus();
+    void classifiesStructuredLifecycleStates();
     void cancelsPendingStatusPoll();
     void rejectsAlternatingCompletedToolCycle();
     void reviewsPrematureFinalBeforeAnyToolCall();
@@ -57,8 +60,11 @@ class AgentControllerTest final : public QObject
     void completionReviewRejectsNonTerminalEvidence();
     void doesNotUsePreparedFinalWhenReviewStalls();
     void stagnationRecoveryIsIndependentFromActionRepair();
+    void preservesStructuredScalarEvidence();
     void compactsLongAgentContextAndPreservesEvidence();
     void tracksRunScopedLedgerAndRequiresVerification();
+    void requiresMatchingTargetForMutationSelfVerification();
+    void treatsDefaultModifyRiskAsMutation();
     void rejectsCompletionWithUnverifiedMutation();
     void hasNoToolCallCountLimit();
     void longRunWarningDoesNotStopAgent();
@@ -1976,6 +1982,43 @@ void AgentControllerTest::allowsRepeatedPollingUntilTerminalStatus()
     controller.cancel();
 }
 
+void AgentControllerTest::classifiesStructuredLifecycleStates()
+{
+    agent::ToolResult failed;
+    failed.requestId = QStringLiteral("request-1");
+    failed.structuredContent =
+        QJsonObject{{QStringLiteral("status"), QStringLiteral("failed")}};
+    QCOMPARE(application::normalizedToolOutcome(failed),
+             agent::ToolOutcome::ToolFailed);
+    QCOMPARE(application::normalizedToolSideEffectState(failed),
+             agent::ToolSideEffectState::KnownFailed);
+
+    agent::ToolResult running;
+    running.requestId = QStringLiteral("request-2");
+    running.structuredContent = QJsonObject{
+        {QStringLiteral("status"), QStringLiteral("running")},
+        {QStringLiteral("previous"),
+         QJsonObject{{QStringLiteral("status"), QStringLiteral("failed")}}}};
+    QCOMPARE(application::normalizedToolOutcome(running),
+             agent::ToolOutcome::InProgress);
+
+    agent::ToolResult terminalFailure;
+    terminalFailure.requestId = QStringLiteral("request-3");
+    terminalFailure.structuredContent = QJsonObject{
+        {QStringLiteral("state"), QStringLiteral("cancelled")},
+        {QStringLiteral("worker"),
+         QJsonObject{{QStringLiteral("status"), QStringLiteral("running")}}}};
+    QCOMPARE(application::normalizedToolOutcome(terminalFailure),
+             agent::ToolOutcome::ToolFailed);
+
+    agent::ToolResult completed;
+    completed.structuredContent =
+        QJsonObject{{QStringLiteral("result"),
+                     QJsonObject{{QStringLiteral("isRunning"), false}}}};
+    QCOMPARE(application::normalizedToolOutcome(completed),
+             agent::ToolOutcome::Succeeded);
+}
+
 void AgentControllerTest::cancelsPendingStatusPoll()
 {
     auto toolCallCount = 0;
@@ -2553,6 +2596,24 @@ void AgentControllerTest::stagnationRecoveryIsIndependentFromActionRepair()
     QCOMPARE(controller.state(), application::AgentRun::State::Completed);
 }
 
+void AgentControllerTest::preservesStructuredScalarEvidence()
+{
+    agent::Action action;
+    action.toolName = QStringLiteral("fake.scalar");
+    agent::ToolResult result;
+    result.result = {
+        {QStringLiteral("content"),
+         QJsonArray{QJsonObject{
+             {QStringLiteral("type"), QStringLiteral("text")},
+             {QStringLiteral("text"), QStringLiteral("accepted")}}}},
+        {QStringLiteral("structuredContent"), QStringLiteral("accepted")}};
+
+    const auto evidence =
+        application::AgentContextCompactor::toolEvidence(1, action, result);
+    QCOMPARE(evidence.value(QStringLiteral("result")),
+             QJsonValue(QStringLiteral("accepted")));
+}
+
 void AgentControllerTest::compactsLongAgentContextAndPreservesEvidence()
 {
     auto generationCount = 0;
@@ -2752,6 +2813,128 @@ void AgentControllerTest::tracksRunScopedLedgerAndRequiresVerification()
     controller.completeGeneration(false);
     QCOMPARE(controller.state(), application::AgentRun::State::Completed);
     QCOMPARE(finalSpy.count(), 1);
+}
+
+void AgentControllerTest::requiresMatchingTargetForMutationSelfVerification()
+{
+    agent::Action action;
+    action.type = agent::ActionType::CallTool;
+    action.toolName = QStringLiteral("fake.create");
+    action.arguments = {{QStringLiteral("name"), QStringLiteral("requested")}};
+
+    agent::ToolResult mismatched;
+    mismatched.serverId = QStringLiteral("fake");
+    mismatched.toolName = QStringLiteral("create");
+    mismatched.outputSchemaValidated = true;
+    mismatched.structuredContent =
+        QJsonObject{{QStringLiteral("ok"), true},
+                    {QStringLiteral("name"), QStringLiteral("other")},
+                    {QStringLiteral("uuid"), QStringLiteral("resource-1")}};
+
+    application::AgentLedger mismatchedLedger;
+    mismatchedLedger.recordToolResult(1, action, mismatched,
+                                      application::ToolOperationKind::Mutation);
+    QCOMPARE(mismatchedLedger.verifications().size(), 1);
+    QCOMPARE(mismatchedLedger.verifications().constFirst().state,
+             QStringLiteral("pending"));
+
+    action.arguments = {
+        {QStringLiteral("target_path"), QStringLiteral("E:/one/resource")}};
+    agent::ToolResult sameBasename = mismatched;
+    sameBasename.structuredContent = QJsonObject{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("target_path"), QStringLiteral("E:/two/resource")},
+        {QStringLiteral("uuid"), QStringLiteral("resource-3")}};
+    application::AgentLedger basenameLedger;
+    basenameLedger.recordToolResult(1, action, sameBasename,
+                                    application::ToolOperationKind::Mutation);
+    QCOMPARE(basenameLedger.verifications().constFirst().state,
+             QStringLiteral("pending"));
+
+    action.arguments = {
+        {QStringLiteral("name"), QStringLiteral("requested")},
+        {QStringLiteral("parent"),
+         QJsonObject{{QStringLiteral("uuid"), QStringLiteral("parent-1")},
+                     {QStringLiteral("name"), QStringLiteral("container")}}}};
+    agent::ToolResult matchingOnlyParent = mismatched;
+    matchingOnlyParent.structuredContent = QJsonObject{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("name"), QStringLiteral("other")},
+        {QStringLiteral("uuid"), QStringLiteral("resource-4")},
+        {QStringLiteral("parent"),
+         QJsonObject{{QStringLiteral("uuid"), QStringLiteral("parent-1")},
+                     {QStringLiteral("name"), QStringLiteral("container")}}}};
+    application::AgentLedger parentLedger;
+    parentLedger.recordToolResult(1, action, matchingOnlyParent,
+                                  application::ToolOperationKind::Mutation);
+    QCOMPARE(parentLedger.verifications().constFirst().state,
+             QStringLiteral("pending"));
+
+    agent::ToolResult parentLocatorOnly = mismatched;
+    parentLocatorOnly.structuredContent = QJsonObject{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("name"), QStringLiteral("requested")},
+        {QStringLiteral("parent"),
+         QJsonObject{{QStringLiteral("uuid"), QStringLiteral("parent-1")}}}};
+    application::AgentLedger parentLocatorLedger;
+    parentLocatorLedger.recordToolResult(
+        1, action, parentLocatorOnly, application::ToolOperationKind::Mutation);
+    QCOMPARE(parentLocatorLedger.verifications().constFirst().state,
+             QStringLiteral("pending"));
+
+    action.arguments = {{QStringLiteral("name"), QStringLiteral("requested")}};
+    agent::ToolResult matching = mismatched;
+    matching.structuredContent =
+        QJsonObject{{QStringLiteral("ok"), true},
+                    {QStringLiteral("name"), QStringLiteral("requested")},
+                    {QStringLiteral("uuid"), QStringLiteral("resource-2")}};
+    application::AgentLedger matchingLedger;
+    matchingLedger.recordToolResult(1, action, matching,
+                                    application::ToolOperationKind::Mutation);
+    QCOMPARE(matchingLedger.verifications().size(), 1);
+    QCOMPARE(matchingLedger.verifications().constFirst().state,
+             QStringLiteral("verified"));
+}
+
+void AgentControllerTest::treatsDefaultModifyRiskAsMutation()
+{
+    auto toolCallCount = 0;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [](const QList<chat::Message>&, const models::InferencePreset&,
+               int) {},
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-1");
+            },
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; },
+            [](const QString&)
+            { return infrastructure::mcp::ToolRisk::ModifiesData; }});
+
+    QVERIFY(controller.start(QStringLiteral("Apply the operation"), {},
+                             {namedTool(QStringLiteral("apply"),
+                                        QStringLiteral("Apply operation"))}));
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.apply","arguments":{"name":"resource"}})"));
+    controller.completeGeneration(false);
+    QCOMPARE(toolCallCount, 1);
+
+    agent::ToolResult result;
+    result.requestId = QStringLiteral("tool-request-1");
+    result.serverId = QStringLiteral("fake");
+    result.toolName = QStringLiteral("apply");
+    result.structuredContent =
+        QJsonObject{{QStringLiteral("name"), QStringLiteral("resource")},
+                    {QStringLiteral("uuid"), QStringLiteral("resource-1")}};
+    controller.receiveToolResult(result);
+
+    QCOMPARE(controller.activeRun()->ledger.verifications().size(), 1);
+    QCOMPARE(controller.activeRun()->ledger.verifications().constFirst().state,
+             QStringLiteral("pending"));
+    controller.cancel();
 }
 
 void AgentControllerTest::rejectsCompletionWithUnverifiedMutation()

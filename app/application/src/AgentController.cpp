@@ -170,10 +170,9 @@ ToolOperationKind operationKind(
         case infrastructure::mcp::ToolRisk::ReadOnly:
             return ToolOperationKind::ReadOnly;
         case infrastructure::mcp::ToolRisk::CreatesData:
+        case infrastructure::mcp::ToolRisk::ModifiesData:
         case infrastructure::mcp::ToolRisk::Destructive:
             return ToolOperationKind::Mutation;
-        case infrastructure::mcp::ToolRisk::ModifiesData:
-            return ToolOperationKind::Unknown;
     }
     return ToolOperationKind::Unknown;
 }
@@ -530,7 +529,6 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
     const auto completedToolAction =
         std::exchange(activeToolAction_, std::nullopt);
     auto completedOperationKind = ToolOperationKind::Unknown;
-    const auto outputSchemaValidated = normalizedResult.outputSchemaValidated;
     if (completedToolAction.has_value())
     {
         const auto definition = std::find_if(
@@ -576,7 +574,7 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
             evidenceSequence, *completedToolAction, normalizedResult));
         activeRun_->ledger.recordToolResult(
             evidenceSequence, *completedToolAction, normalizedResult,
-            completedOperationKind, outputSchemaValidated);
+            completedOperationKind);
         ++activeRun_->evidenceRevision;
         activeRun_->completionReviewsAtRevision = 0;
         activeRun_->completionReviewFailures = 0;

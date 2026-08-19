@@ -61,8 +61,7 @@ class AgentLedger final
     void clear();
     void recordToolResult(int evidenceSequence, const agent::Action& action,
                           const agent::ToolResult& result,
-                          ToolOperationKind operationKind,
-                          bool outputSchemaValidated);
+                          ToolOperationKind operationKind);
 
     [[nodiscard]] const QList<AgentResourceRecord>& resources() const;
     [[nodiscard]] const QList<AgentJobRecord>& jobs() const;

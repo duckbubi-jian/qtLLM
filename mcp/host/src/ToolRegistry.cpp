@@ -4,6 +4,7 @@
 #include <QJsonDocument>
 #include <QJsonValue>
 #include <QRegularExpression>
+#include <QSet>
 #include <QStringList>
 
 #include <cmath>
@@ -14,6 +15,276 @@ namespace qtllm::infrastructure::mcp
 namespace
 {
 constexpr auto maximumValidationDepth = 64;
+
+QString compactJson(const QJsonValue& value);
+QString encodedPointerToken(QString token);
+QJsonValue resolveLocalReference(const QJsonObject& root, const QString& ref);
+
+const QSet<QString>& unsupportedAssertionKeywords()
+{
+    static const QSet<QString> keywords{QStringLiteral("$dynamicRef"),
+                                        QStringLiteral("$recursiveRef"),
+                                        QStringLiteral("additionalItems"),
+                                        QStringLiteral("contains"),
+                                        QStringLiteral("dependentRequired"),
+                                        QStringLiteral("dependentSchemas"),
+                                        QStringLiteral("else"),
+                                        QStringLiteral("exclusiveMaximum"),
+                                        QStringLiteral("exclusiveMinimum"),
+                                        QStringLiteral("if"),
+                                        QStringLiteral("maxContains"),
+                                        QStringLiteral("minContains"),
+                                        QStringLiteral("multipleOf"),
+                                        QStringLiteral("not"),
+                                        QStringLiteral("patternProperties"),
+                                        QStringLiteral("prefixItems"),
+                                        QStringLiteral("then"),
+                                        QStringLiteral("unevaluatedItems"),
+                                        QStringLiteral("unevaluatedProperties"),
+                                        QStringLiteral("uniqueItems")};
+    return keywords;
+}
+
+bool validateSupportedSchema(const QJsonObject& schema, const QJsonObject& root,
+                             const QString& path, QString& errorMessage,
+                             QSet<QString>& checkedReferences, int depth = 0)
+{
+    if (depth > maximumValidationDepth)
+    {
+        errorMessage =
+            QStringLiteral("Schema %1 exceeds the supported depth.").arg(path);
+        return false;
+    }
+
+    const auto rejectKeyword =
+        [&](const QString& keyword, const QString& expectation)
+    {
+        errorMessage =
+            QStringLiteral("Schema %1/%2 %3.").arg(path, keyword, expectation);
+        return false;
+    };
+
+    const auto typeValue = schema.value(QStringLiteral("type"));
+    if (!typeValue.isUndefined())
+    {
+        static const QSet<QString> supportedTypes{
+            QStringLiteral("array"),   QStringLiteral("boolean"),
+            QStringLiteral("integer"), QStringLiteral("null"),
+            QStringLiteral("number"),  QStringLiteral("object"),
+            QStringLiteral("string")};
+        QJsonArray types;
+        if (typeValue.isString())
+            types.append(typeValue);
+        else if (typeValue.isArray() && !typeValue.toArray().isEmpty())
+            types = typeValue.toArray();
+        else
+            return rejectKeyword(QStringLiteral("type"),
+                                 QStringLiteral("must be a type string or a "
+                                                "non-empty array of types"));
+        QSet<QString> seenTypes;
+        for (const auto& type : types)
+        {
+            if (!type.isString() || !supportedTypes.contains(type.toString()))
+                return rejectKeyword(
+                    QStringLiteral("type"),
+                    QStringLiteral("contains an unsupported type"));
+            if (seenTypes.contains(type.toString()))
+                return rejectKeyword(
+                    QStringLiteral("type"),
+                    QStringLiteral("contains duplicate types"));
+            seenTypes.insert(type.toString());
+        }
+    }
+
+    const auto enumValue = schema.value(QStringLiteral("enum"));
+    if (!enumValue.isUndefined())
+    {
+        if (!enumValue.isArray() || enumValue.toArray().isEmpty())
+            return rejectKeyword(QStringLiteral("enum"),
+                                 QStringLiteral("must be a non-empty array"));
+        QJsonArray uniqueValues;
+        for (const auto& value : enumValue.toArray())
+        {
+            if (uniqueValues.contains(value))
+                return rejectKeyword(QStringLiteral("enum"),
+                                     QStringLiteral("contains duplicates"));
+            uniqueValues.append(value);
+        }
+    }
+
+    const auto required = schema.value(QStringLiteral("required"));
+    if (!required.isUndefined())
+    {
+        if (!required.isArray())
+            return rejectKeyword(QStringLiteral("required"),
+                                 QStringLiteral("must be an array of strings"));
+        QSet<QString> requiredNames;
+        for (const auto& name : required.toArray())
+        {
+            if (!name.isString())
+                return rejectKeyword(
+                    QStringLiteral("required"),
+                    QStringLiteral("must contain only strings"));
+            if (requiredNames.contains(name.toString()))
+                return rejectKeyword(QStringLiteral("required"),
+                                     QStringLiteral("contains duplicates"));
+            requiredNames.insert(name.toString());
+        }
+    }
+
+    static const QStringList numericKeywords{QStringLiteral("maximum"),
+                                             QStringLiteral("minimum")};
+    for (const auto& keyword : numericKeywords)
+    {
+        const auto value = schema.value(keyword);
+        if (!value.isUndefined() && !value.isDouble())
+            return rejectKeyword(keyword, QStringLiteral("must be a number"));
+    }
+
+    static const QStringList nonNegativeIntegerKeywords{
+        QStringLiteral("maxItems"),      QStringLiteral("maxLength"),
+        QStringLiteral("maxProperties"), QStringLiteral("minItems"),
+        QStringLiteral("minLength"),     QStringLiteral("minProperties")};
+    for (const auto& keyword : nonNegativeIntegerKeywords)
+    {
+        const auto value = schema.value(keyword);
+        if (value.isUndefined()) continue;
+        if (!value.isDouble() || value.toDouble() < 0 ||
+            std::floor(value.toDouble()) != value.toDouble())
+            return rejectKeyword(
+                keyword, QStringLiteral("must be a non-negative integer"));
+    }
+
+    const auto pattern = schema.value(QStringLiteral("pattern"));
+    if (!pattern.isUndefined())
+    {
+        if (!pattern.isString())
+            return rejectKeyword(QStringLiteral("pattern"),
+                                 QStringLiteral("must be a string"));
+        if (!QRegularExpression(pattern.toString()).isValid())
+            return rejectKeyword(QStringLiteral("pattern"),
+                                 QStringLiteral("is not a valid pattern"));
+    }
+
+    for (auto item = schema.constBegin(); item != schema.constEnd(); ++item)
+    {
+        if (!unsupportedAssertionKeywords().contains(item.key())) continue;
+        errorMessage = QStringLiteral(
+                           "Schema %1/%2 uses unsupported assertion keyword "
+                           "'%2'.")
+                           .arg(path, encodedPointerToken(item.key()));
+        return false;
+    }
+
+    const auto reference = schema.value(QStringLiteral("$ref"));
+    if (!reference.isUndefined() && !reference.isString())
+        return rejectKeyword(QStringLiteral("$ref"),
+                             QStringLiteral("must be a string"));
+    if (reference.isString() && reference.toString() != QLatin1String("#") &&
+        !reference.toString().startsWith(QLatin1String("#/")))
+    {
+        errorMessage = QStringLiteral(
+                           "Schema %1/$ref uses unsupported non-local "
+                           "reference %2.")
+                           .arg(path, compactJson(reference));
+        return false;
+    }
+    if (reference.isString())
+    {
+        const auto target = resolveLocalReference(root, reference.toString());
+        if (!target.isObject())
+        {
+            errorMessage = QStringLiteral(
+                               "Schema %1/$ref does not resolve to an object "
+                               "schema: %2.")
+                               .arg(path, compactJson(reference));
+            return false;
+        }
+        if (!checkedReferences.contains(reference.toString()))
+        {
+            checkedReferences.insert(reference.toString());
+            if (!validateSupportedSchema(target.toObject(), root,
+                                         reference.toString(), errorMessage,
+                                         checkedReferences, depth + 1))
+                return false;
+        }
+    }
+
+    const auto validateChild =
+        [&](const QJsonValue& child, const QString& childPath)
+    {
+        if (!child.isObject())
+        {
+            errorMessage = QStringLiteral(
+                               "Schema %1 must be an object; boolean schemas "
+                               "are not supported at this location.")
+                               .arg(childPath);
+            return false;
+        }
+        return validateSupportedSchema(child.toObject(), root, childPath,
+                                       errorMessage, checkedReferences,
+                                       depth + 1);
+    };
+
+    static const QStringList schemaMaps{QStringLiteral("$defs"),
+                                        QStringLiteral("definitions"),
+                                        QStringLiteral("properties")};
+    for (const auto& keyword : schemaMaps)
+    {
+        const auto children = schema.value(keyword);
+        if (children.isUndefined()) continue;
+        if (!children.isObject())
+            return rejectKeyword(
+                keyword, QStringLiteral("must be an object of schemas"));
+        const auto childSchemas = children.toObject();
+        for (auto child = childSchemas.constBegin();
+             child != childSchemas.constEnd(); ++child)
+            if (!validateChild(child.value(),
+                               path + QLatin1Char('/') + keyword +
+                                   QLatin1Char('/') +
+                                   encodedPointerToken(child.key())))
+                return false;
+    }
+
+    const auto additionalProperties =
+        schema.value(QStringLiteral("additionalProperties"));
+    if (!additionalProperties.isUndefined() && !additionalProperties.isBool())
+    {
+        if (!validateChild(additionalProperties,
+                           path + QStringLiteral("/additionalProperties")))
+            return false;
+    }
+
+    static const QStringList objectSchemaValues{
+        QStringLiteral("items"), QStringLiteral("propertyNames")};
+    for (const auto& keyword : objectSchemaValues)
+    {
+        const auto child = schema.value(keyword);
+        if (child.isUndefined()) continue;
+        if (!validateChild(child, path + QLatin1Char('/') + keyword))
+            return false;
+    }
+
+    static const QStringList schemaArrays{QStringLiteral("allOf"),
+                                          QStringLiteral("anyOf"),
+                                          QStringLiteral("oneOf")};
+    for (const auto& keyword : schemaArrays)
+    {
+        const auto children = schema.value(keyword);
+        if (children.isUndefined()) continue;
+        if (!children.isArray() || children.toArray().isEmpty())
+            return rejectKeyword(
+                keyword,
+                QStringLiteral("must be a non-empty array of schemas"));
+        const auto branches = children.toArray();
+        for (qsizetype index = 0; index < branches.size(); ++index)
+            if (!validateChild(branches.at(index),
+                               path + QLatin1Char('/') + keyword +
+                                   QLatin1Char('/') + QString::number(index)))
+                return false;
+    }
+    return true;
+}
 
 bool matchesType(const QJsonValue& value, const QString& type)
 {
@@ -680,6 +951,30 @@ bool ToolRegistry::replaceServerTools(const QString& serverId,
         }
         definition.qualifiedName =
             serverId + QLatin1Char('.') + definition.name;
+        QString schemaError;
+        QSet<QString> checkedInputReferences;
+        if (!validateSupportedSchema(
+                definition.inputSchema, definition.inputSchema,
+                QStringLiteral("#"), schemaError, checkedInputReferences))
+        {
+            errorMessage =
+                QStringLiteral("Tool %1 inputSchema is unsupported: %2")
+                    .arg(definition.qualifiedName, schemaError);
+            return false;
+        }
+        if (definition.hasOutputSchema || !definition.outputSchema.isEmpty())
+        {
+            QSet<QString> checkedOutputReferences;
+            if (!validateSupportedSchema(
+                    definition.outputSchema, definition.outputSchema,
+                    QStringLiteral("#"), schemaError, checkedOutputReferences))
+            {
+                errorMessage =
+                    QStringLiteral("Tool %1 outputSchema is unsupported: %2")
+                        .arg(definition.qualifiedName, schemaError);
+                return false;
+            }
+        }
         if (replacement.contains(definition.qualifiedName))
         {
             errorMessage = QStringLiteral("Duplicate tool: %1")

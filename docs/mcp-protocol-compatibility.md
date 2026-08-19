@@ -42,7 +42,7 @@ feature differences have dedicated Fake Server coverage.
 | Tools | `tools/list` | Supported |
 | Tools | Cursor pagination and atomic snapshots | Supported |
 | Tools | `tools/call` | Supported |
-| Tools | Input schema validation | Supported subset including local `$ref`, `const`, type unions, `allOf`, `anyOf`, `oneOf`, `propertyNames`, `minProperties`, `maxProperties`, string `pattern`, and object-schema `additionalProperties` |
+| Tools | Input schema validation | Supported subset including local `$ref`, `const`, type unions, `allOf`, `anyOf`, `oneOf`, `propertyNames`, `minProperties`, `maxProperties`, string `pattern`, and object-schema `additionalProperties`; malformed schemas and catalogs using unsupported assertion/applicator keywords are rejected atomically instead of being silently under-validated |
 | Tools | Output schema and annotations | Supported; a mismatched successful result is classified as a protocol failure and cannot become Agent completion evidence |
 | Tools | List-changed notification and refresh coalescing | Supported |
 | Results | Text content and raw result preservation | Supported |
@@ -98,7 +98,9 @@ feature differences have dedicated Fake Server coverage.
 - The Agent prompt keeps a separately budgeted compact tool index when complete
   definitions are omitted. The index resolves local references and preserves
   required fields, discriminator values, and union call shapes.
-- Local input and output validation follows local `$ref` values and validates
+- Tool catalogs reject unresolved or non-schema local `$ref` targets, including
+  unsupported assertions hidden behind a reference. Local input and output
+  validation follows valid local `$ref` values and validates
   `const`, string or array `type`, `allOf`, `anyOf`, and `oneOf` before a tool
   call is sent or a structured result is accepted.
 - Agent input-validation failures preserve the qualified tool name, instance

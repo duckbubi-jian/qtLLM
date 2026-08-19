@@ -12,18 +12,21 @@ enum class ProgressSignal
 {
     None,
     InProgress,
-    Terminal
+    Succeeded,
+    Failed
 };
 
 constexpr auto maximumTraversalDepth = 32;
 
 ProgressSignal mergeSignal(ProgressSignal left, ProgressSignal right)
 {
-    if (left == ProgressSignal::Terminal || right == ProgressSignal::Terminal)
-        return ProgressSignal::Terminal;
+    if (left == ProgressSignal::Failed || right == ProgressSignal::Failed)
+        return ProgressSignal::Failed;
     if (left == ProgressSignal::InProgress ||
         right == ProgressSignal::InProgress)
         return ProgressSignal::InProgress;
+    if (left == ProgressSignal::Succeeded || right == ProgressSignal::Succeeded)
+        return ProgressSignal::Succeeded;
     return ProgressSignal::None;
 }
 
@@ -37,15 +40,43 @@ ProgressSignal stateStringSignal(const QString& value)
         QStringLiteral("processing")};
     if (inProgressStates.contains(state)) return ProgressSignal::InProgress;
 
-    static const QSet<QString> terminalStates{
-        QStringLiteral("complete"),  QStringLiteral("completed"),
-        QStringLiteral("success"),   QStringLiteral("succeeded"),
+    static const QSet<QString> succeededStates{
+        QStringLiteral("complete"), QStringLiteral("completed"),
+        QStringLiteral("success"),  QStringLiteral("succeeded"),
+        QStringLiteral("finished"), QStringLiteral("done")};
+    if (succeededStates.contains(state)) return ProgressSignal::Succeeded;
+
+    static const QSet<QString> failedStates{
         QStringLiteral("failed"),    QStringLiteral("error"),
         QStringLiteral("cancelled"), QStringLiteral("canceled"),
-        QStringLiteral("stopped"),   QStringLiteral("finished"),
-        QStringLiteral("done"),      QStringLiteral("idle")};
-    return terminalStates.contains(state) ? ProgressSignal::Terminal
-                                          : ProgressSignal::None;
+        QStringLiteral("aborted"),   QStringLiteral("rejected"),
+        QStringLiteral("stopped")};
+    return failedStates.contains(state) ? ProgressSignal::Failed
+                                        : ProgressSignal::None;
+}
+
+ProgressSignal localProgressSignal(const QJsonObject& object)
+{
+    auto signal = ProgressSignal::None;
+    for (auto it = object.constBegin(); it != object.constEnd(); ++it)
+    {
+        const auto key = it.key().toLower();
+        if (key == QStringLiteral("isrunning") && it.value().isBool())
+            signal = mergeSignal(signal, it.value().toBool()
+                                             ? ProgressSignal::InProgress
+                                             : ProgressSignal::Succeeded);
+        else if ((key == QStringLiteral("status") ||
+                  key == QStringLiteral("state")) &&
+                 it.value().isString())
+            signal =
+                mergeSignal(signal, stateStringSignal(it.value().toString()));
+        else if ((key == QStringLiteral("ok") ||
+                  key == QStringLiteral("success") ||
+                  key == QStringLiteral("succeeded")) &&
+                 it.value().isBool() && !it.value().toBool())
+            signal = mergeSignal(signal, ProgressSignal::Failed);
+    }
+    return signal;
 }
 
 ProgressSignal progressSignal(const QJsonValue& value, int depth)
@@ -61,20 +92,10 @@ ProgressSignal progressSignal(const QJsonValue& value, int depth)
     if (!value.isObject()) return ProgressSignal::None;
 
     const auto object = value.toObject();
+    const auto local = localProgressSignal(object);
+    if (local != ProgressSignal::None) return local;
+
     auto signal = ProgressSignal::None;
-    for (auto it = object.constBegin(); it != object.constEnd(); ++it)
-    {
-        const auto key = it.key().toLower();
-        if (key == QStringLiteral("isrunning") && it.value().isBool())
-            signal = mergeSignal(signal, it.value().toBool()
-                                             ? ProgressSignal::InProgress
-                                             : ProgressSignal::Terminal);
-        else if ((key == QStringLiteral("status") ||
-                  key == QStringLiteral("state")) &&
-                 it.value().isString())
-            signal =
-                mergeSignal(signal, stateStringSignal(it.value().toString()));
-    }
     for (auto it = object.constBegin(); it != object.constEnd(); ++it)
         signal = mergeSignal(signal, progressSignal(it.value(), depth + 1));
     return signal;
@@ -96,9 +117,14 @@ agent::ToolOutcome normalizedToolOutcome(const agent::ToolResult& result)
 {
     if (result.outcome != agent::ToolOutcome::Succeeded) return result.outcome;
     if (!result.isError)
-        return resultProgressSignal(result) == ProgressSignal::InProgress
-                   ? agent::ToolOutcome::InProgress
-                   : agent::ToolOutcome::Succeeded;
+    {
+        const auto signal = resultProgressSignal(result);
+        if (signal == ProgressSignal::InProgress)
+            return agent::ToolOutcome::InProgress;
+        if (signal == ProgressSignal::Failed)
+            return agent::ToolOutcome::ToolFailed;
+        return agent::ToolOutcome::Succeeded;
+    }
 
     switch (result.failureKind)
     {
@@ -130,6 +156,8 @@ agent::ToolSideEffectState normalizedToolSideEffectState(
         return result.requestId.isEmpty()
                    ? agent::ToolSideEffectState::NotDispatched
                    : agent::ToolSideEffectState::Dispatched;
+    if (outcome == agent::ToolOutcome::ToolFailed)
+        return agent::ToolSideEffectState::KnownFailed;
     if (result.sideEffectState != agent::ToolSideEffectState::NotDispatched)
         return result.sideEffectState;
     if (result.requestId.isEmpty())

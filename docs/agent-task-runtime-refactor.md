@@ -3,13 +3,13 @@
 ## Purpose
 
 This document defines the next Agent runtime refactor after ordered plans were
-moved into serial `PlanTask` workers. The goal is to make every model-driven
+moved into serial `ExecutionTask` workers. The goal is to make every model-driven
 unit an independent task with its own context, lifecycle, timing, and result,
 while reducing `AgentController` to a scheduler and asynchronous transport
 adapter.
 
 The baseline implementation is commit `a7355a1`, which introduced serial
-`PlanTask` execution. This document covers the remaining separation of
+`ExecutionTask` execution. This document covers the remaining separation of
 responsibilities; it does not replace
 [`mcp-agent-runtime-plan.md`](mcp-agent-runtime-plan.md).
 
@@ -26,11 +26,11 @@ AgentController
 AgentTask
     |
     +-- PlanningTask  -> task list or direct completion
-    +-- PlanTask      -> one planned outcome and its MCP calls
+    +-- ExecutionTask -> one planned outcome or direct request and its MCP calls
     +-- SummaryTask   -> final user-facing answer
 ```
 
-Only one task may be active. A later `PlanTask` cannot receive model tokens,
+Only one task may be active. A later `ExecutionTask` cannot receive model tokens,
 invoke tools, consume tool results, or become current until every earlier task
 has reached a terminal state accepted by the scheduler.
 
@@ -40,7 +40,7 @@ has reached a terminal state accepted by the scheduler.
 | --- | --- | --- |
 | `AgentTask` | Common lifecycle, messages, token buffer, timing, cancellation, failure, and snapshots | MCP-specific task semantics |
 | `PlanningTask` | Deciding whether a plan is needed, validating the returned plan, and producing task specifications | Executing later plan steps |
-| `PlanTask` | One step's decisions, allowed-tool boundary, MCP action lifecycle, evidence, review, and bounded repair | Advancing the queue or operating on a later step |
+| `ExecutionTask` | One planned step or direct request, including decisions, allowed-tool boundary, MCP action lifecycle, evidence, review, and bounded repair | Advancing the queue or operating on a later step |
 | `SummaryTask` | Building the final answer from immutable completed-task snapshots | Calling MCP tools or changing completed steps |
 | `AgentController` | Queue order, active task, run-level state, and routing asynchronous callbacks to the active task | Interpreting task actions, reviewing step completion, or choosing recovery prompts |
 | Tool runtime | Schema validation, policy, approval transport, MCP dispatch, cancellation, and normalized tool results | Deciding whether a task is complete |
@@ -57,7 +57,7 @@ evidence, or advance a task.
 1. Every model completion and tool result is routed to the task that initiated
    it.
 1. A tool action is valid only when the active task accepts it.
-1. A `PlanTask` can reference only its own task ID and task-local evidence
+1. An `ExecutionTask` can reference only its own task ID and task-local evidence
    range.
 1. The scheduler advances only after the active task returns a terminal
    `Completed` result.
@@ -72,8 +72,8 @@ evidence, or advance a task.
 
 ## Common Task API
 
-The shared base should be named `AgentTask`, not `PlanTask`. `PlanTask` is one
-concrete execution type.
+The shared base is `AgentTask`; `ExecutionTask` is its concrete model-and-tool
+execution type. This keeps the class aligned with `AgentTask::Kind::Execution`.
 
 The public API should expose a small lifecycle and return value-based
 directives. Exact names may change during implementation, but responsibilities
@@ -120,7 +120,7 @@ class AgentTask
 
 Common status must stay coarse. Details such as `AwaitingReview`,
 `AwaitingCallReview`, evidence ranges, and repair counters remain private to
-`PlanTask`. UI-specific detail is exposed as snapshot text rather than by
+`ExecutionTask`. UI-specific detail is exposed as snapshot text rather than by
 expanding the shared state machine for one subclass.
 
 ## Task Directives
@@ -175,10 +175,11 @@ do not need a plan. The scheduler then creates one direct execution task or a
 summary-only task. Avoid requiring an extra model turn for every trivial
 request solely to preserve architectural symmetry.
 
-### PlanTask
+### ExecutionTask
 
-Each `PlanTask` owns exactly one plan specification and an independent model
-conversation. It is responsible for:
+Each `ExecutionTask` owns either one immutable plan specification or one direct
+request, together with an independent model conversation. It is responsible
+for:
 
 - activating from immutable prior-task context;
 - requesting and parsing model actions;
@@ -205,7 +206,8 @@ It receives:
 
 It has no tool catalog and rejects every tool action. Its only successful
 terminal output is the final user-facing answer. This removes the current
-special case where the last `PlanTask` changes into a final-answer generator.
+special case where the last `ExecutionTask` changes into a final-answer
+generator.
 
 ## Timing And Progress
 
@@ -278,14 +280,14 @@ repair prompts belong to a task implementation.
 
 ## Migration Plan
 
-### M1: Serial PlanTask Baseline
+### M1: Serial ExecutionTask Baseline
 
 Status: complete in `a7355a1`.
 
-- Store ordered tasks as `std::vector<PlanTask>`.
+- Store ordered tasks as `std::vector<ExecutionTask>`.
 - Activate and execute only the current index.
 - Give each plan step its own conversation.
-- Enforce task ID and tool boundaries in `PlanTask`.
+- Enforce task ID and tool boundaries in `ExecutionTask`.
 - Project completion steps from task snapshots.
 
 ### M2: Common AgentTask Lifecycle
@@ -294,7 +296,7 @@ Status: pending.
 
 - Add the abstract `AgentTask` base.
 - Move common messages, token buffering, coarse status, cancellation, and
-  timing out of `PlanTask`.
+  timing out of `ExecutionTask`.
 - Introduce `TaskDirective`, `TaskContext`, and `TaskSnapshot` value types.
 - Keep task-specific review states private.
 - Change `AgentRun` ownership to task pointers with stable lifetime, such as
@@ -302,7 +304,7 @@ Status: pending.
 
 Acceptance criteria:
 
-- `PlanTask` contains no duplicated common lifecycle implementation.
+- `ExecutionTask` contains no duplicated common lifecycle implementation.
 - The controller reads task state through the base API.
 - Every task has an independently testable clock and snapshot.
 
@@ -310,7 +312,7 @@ Acceptance criteria:
 
 Status: pending.
 
-- Move ordered action handling from `AgentController` into `PlanTask`.
+- Move ordered action handling from `AgentController` into `ExecutionTask`.
 - Route generation completion, approval resolution, and normalized tool
   results directly to the active task.
 - Replace controller repair functions for ordered execution with task-local
@@ -323,7 +325,7 @@ Acceptance criteria:
 - The controller never parses an ordered task action.
 - The controller never calls `beginPlanStepReview`, chooses a repair prompt,
   or decides that task evidence is sufficient.
-- A `PlanTask` test can run a complete model/tool/review cycle without an
+- An `ExecutionTask` test can run a complete model/tool/review cycle without an
   `AgentController` fixture.
 
 ### M4: PlanningTask And Queue Construction
@@ -345,14 +347,14 @@ Acceptance criteria:
 
 Status: pending.
 
-- Remove final-answer mode from the last `PlanTask`.
+- Remove final-answer mode from the last `ExecutionTask`.
 - Create `SummaryTask` after all required execution tasks complete.
 - Give it compact immutable task and evidence snapshots.
 - Reject tool calls from summary generation.
 
 Acceptance criteria:
 
-- The last execution task terminates like every other `PlanTask`.
+- The last execution task terminates like every other `ExecutionTask`.
 - Final generation is visible and timed as a distinct task.
 - Summary generation cannot mutate MCP state.
 
@@ -389,7 +391,7 @@ Acceptance criteria:
 - Direct completion creates no execution queue.
 - Future task details do not leak into an active execution conversation.
 
-### PlanTask Tests
+### ExecutionTask Tests
 
 - A task cannot call a later task's tool action.
 - Shared tool names remain isolated by task ID and arguments.
@@ -428,7 +430,7 @@ Acceptance criteria:
 
 The refactor is complete when:
 
-1. `PlanningTask`, `PlanTask`, and `SummaryTask` share the common `AgentTask`
+1. `PlanningTask`, `ExecutionTask`, and `SummaryTask` share the common `AgentTask`
    lifecycle.
 1. Every model or tool callback is routed to one identifiable active task.
 1. `AgentController` contains no task-plan parsing, step-review semantics, or

@@ -628,7 +628,7 @@ void AgentControllerTest::publishesStructuredProgressSnapshots()
         {echoTool()}));
     QVERIFY(!progressSpy.isEmpty());
     QCOMPARE(latest().state, application::AgentRun::State::Deciding);
-    QCOMPARE(latest().operation, QStringLiteral("Choosing the next action"));
+    QCOMPARE(latest().operation, QStringLiteral("Planning the request"));
 
     const QJsonArray plan{
         planStep(QStringLiteral("step-1"), QStringLiteral("Use a tool"), true),
@@ -1184,6 +1184,19 @@ void AgentControllerTest::exportsStructuredRunMetrics()
     QCOMPARE(json.value(QStringLiteral("schemaVersion")).toInt(), 1);
     QCOMPARE(json.value(QStringLiteral("toolEvidenceCount")).toInt(), 1);
     QCOMPARE(json.value(QStringLiteral("finishCode")).toString(), QString{});
+    const auto taskTimings =
+        json.value(QStringLiteral("taskTimings")).toArray();
+    QCOMPARE(taskTimings.size(), 1);
+    QCOMPARE(taskTimings.constFirst()
+                 .toObject()
+                 .value(QStringLiteral("kind"))
+                 .toString(),
+             QStringLiteral("execution"));
+    QCOMPARE(taskTimings.constFirst()
+                 .toObject()
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("completed"));
     QCOMPARE(metricsSpy.count(), 1);
     const auto emittedMetrics =
         qvariant_cast<QJsonObject>(metricsSpy.constFirst().at(1));
@@ -1494,6 +1507,12 @@ void AgentControllerTest::repairsMissingOrderedPlanMetadata()
                                    QStringLiteral("Report the result"), false)};
     controller.receiveToken(orderedTaskPlanAction(plan));
     controller.completeGeneration(false);
+    QVERIFY(controller.activeRun()->planningTask.has_value());
+    QCOMPARE(controller.activeRun()->planningTask->status(),
+             application::AgentTask::Status::Completed);
+    QVERIFY(controller.activeRun()
+                ->planningTask->runtimeSnapshot()
+                .finishedAt.isValid());
     controller.receiveToken(QByteArrayLiteral(
         R"({"action":"call_tool","tool":"fake.inspect","arguments":{}})"));
     controller.completeGeneration(false);
@@ -1658,8 +1677,8 @@ void AgentControllerTest::
                  .value(QStringLiteral("status"))
                  .toString(),
              QString{});
-    QCOMPARE(controller.activeRun()->planTasks.at(0).status(),
-             application::PlanTask::Status::WaitingForModel);
+    QCOMPARE(controller.activeRun()->executionTasks.at(0).status(),
+             application::ExecutionTask::Status::WaitingForModel);
     QVERIFY(generatedMessages.constLast().content.contains(
         QStringLiteral("review_plan_step")));
     for (qsizetype index = 1; index < generatedMessages.size(); ++index)
@@ -1734,8 +1753,8 @@ void AgentControllerTest::
                     {QStringLiteral("case_name"), QStringLiteral("stl_case1")},
                     {QStringLiteral("is_open"), true}};
     controller.receiveToolResult(wrongCase);
-    QCOMPARE(controller.activeRun()->planTasks.at(0).status(),
-             application::PlanTask::Status::WaitingForModel);
+    QCOMPARE(controller.activeRun()->executionTasks.at(0).status(),
+             application::ExecutionTask::Status::WaitingForModel);
 
     controller.receiveToken(planStepReviewAction(
         QStringLiteral("case"), QStringLiteral("pending"), QJsonArray{1},
@@ -1858,21 +1877,22 @@ void AgentControllerTest::keepsSharedMutationWithinCurrentPlanStep()
          QStringLiteral("E:/stl_case1/shaft.stl")},
         {QStringLiteral("object_uuid"), QStringLiteral("solid-1")}};
     controller.receiveToolResult(imported);
-    QCOMPARE(controller.activeRun()->planTasks.at(0).status(),
-             application::PlanTask::Status::WaitingForModel);
+    QCOMPARE(controller.activeRun()->executionTasks.at(0).status(),
+             application::ExecutionTask::Status::WaitingForModel);
     controller.receiveToken(planStepReviewAction(
         QStringLiteral("solid"), QStringLiteral("satisfied"), QJsonArray{1},
         QStringLiteral("The solid import matches the current step.")));
     controller.completeGeneration(false);
 
-    QCOMPARE(controller.activeRun()->currentPlanStepIndex, 1);
+    QCOMPARE(controller.activeRun()->currentExecutionTaskIndex, 1);
     QCOMPARE(controller.progressSnapshot().currentStepId,
              QStringLiteral("inlet"));
-    const auto& tasks = controller.activeRun()->planTasks;
-    QCOMPARE(tasks.at(0).status(), application::PlanTask::Status::Completed);
+    const auto& tasks = controller.activeRun()->executionTasks;
+    QCOMPARE(tasks.at(0).status(),
+             application::ExecutionTask::Status::Completed);
     QCOMPARE(tasks.at(1).status(),
-             application::PlanTask::Status::WaitingForModel);
-    QCOMPARE(tasks.at(2).status(), application::PlanTask::Status::Pending);
+             application::ExecutionTask::Status::WaitingForModel);
+    QCOMPARE(tasks.at(2).status(), application::ExecutionTask::Status::Pending);
     QVERIFY(tasks.at(0).hasConversation());
     QVERIFY(tasks.at(1).hasConversation());
     QVERIFY(!tasks.at(2).hasConversation());
@@ -1982,8 +2002,8 @@ void AgentControllerTest::advancesPlanOneStepPerTerminalToolResult()
                     {QStringLiteral("name"), QStringLiteral("case")},
                     {QStringLiteral("uuid"), QStringLiteral("case-1")}};
     controller.receiveToolResult(result);
-    QCOMPARE(controller.activeRun()->planTasks.at(0).status(),
-             application::PlanTask::Status::WaitingForModel);
+    QCOMPARE(controller.activeRun()->executionTasks.at(0).status(),
+             application::ExecutionTask::Status::WaitingForModel);
     controller.receiveToken(planStepReviewAction(
         QStringLiteral("create"), QStringLiteral("satisfied"), QJsonArray({1}),
         QStringLiteral(
@@ -2026,12 +2046,35 @@ void AgentControllerTest::advancesPlanOneStepPerTerminalToolResult()
     controller.receiveToken(
         QByteArrayLiteral(R"({"action":"final","content":"Case created."})"));
     controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QVERIFY(controller.activeRun()->summaryTask.has_value());
+    QCOMPARE(controller.activeRun()->summaryTask->status(),
+             application::AgentTask::Status::WaitingForModel);
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("verified every task")));
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.inspect","arguments":{}})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(toolCallCount, 2);
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("summary task rejected")));
+
+    controller.receiveToken(
+        QByteArrayLiteral(R"({"action":"final","content":"Case created."})"));
+    controller.completeGeneration(false);
     QCOMPARE(controller.state(), application::AgentRun::State::Completed);
-    QCOMPARE(controller.activeRun()->currentPlanStepIndex, 2);
-    QCOMPARE(controller.activeRun()->planTasks.at(0).status(),
-             application::PlanTask::Status::Completed);
-    QCOMPARE(controller.activeRun()->planTasks.at(1).status(),
-             application::PlanTask::Status::Completed);
+    QCOMPARE(controller.activeRun()->currentExecutionTaskIndex, 2);
+    QCOMPARE(controller.activeRun()->executionTasks.at(0).status(),
+             application::ExecutionTask::Status::Completed);
+    QCOMPARE(controller.activeRun()->executionTasks.at(1).status(),
+             application::ExecutionTask::Status::Completed);
+    QCOMPARE(controller.activeRun()->summaryTask->status(),
+             application::AgentTask::Status::Completed);
+    QVERIFY(controller.activeRun()
+                ->summaryTask->runtimeSnapshot()
+                .finishedAt.isValid());
     QCOMPARE(controller.progressSnapshot().currentStepId, QString{});
 }
 

@@ -259,6 +259,17 @@ bool AgentController::start(const QString& userRequest,
         run.inferenceMessages.last().content +=
             QStringLiteral("\n\n") +
             AgentPromptBuilder::taskPlanMessage(request).content;
+        QStringList availableToolNames;
+        availableToolNames.reserve(tools.size());
+        for (const auto& tool : tools)
+            availableToolNames.append(tool.qualifiedName);
+        run.planningTask.emplace(std::move(availableToolNames));
+        run.planningTask->activate(run.inferenceMessages);
+    }
+    else
+    {
+        run.directTask.emplace(request);
+        run.directTask->activateDirect(run.inferenceMessages);
     }
     activeRun_ = std::move(run);
     preset_ = preset;
@@ -278,6 +289,12 @@ bool AgentController::start(const QString& userRequest,
 
     recordEvent(agent::EventType::RunStarted,
                 QStringLiteral("Agent run started."));
+    if (const auto* task = currentTask())
+    {
+        const auto directExecution = task->kind() == AgentTask::Kind::Execution;
+        recordTaskStarted(*task, directExecution ? 1 : 0,
+                          directExecution ? 1 : 0);
+    }
     emit userRequestAccepted(activeRun_->id, request);
     requestDecision();
     return true;
@@ -290,14 +307,10 @@ void AgentController::cancel()
     const auto toolRequestId = activeRun_->toolRequestId;
     activeRun_->finishCode = QStringLiteral("cancelled");
     activeRun_->finishMessage = QStringLiteral("Agent run cancelled.");
-    if (auto* task = currentPlanTask();
-        task && activeRun_->orderedTaskPlan &&
-        activeRun_->currentPlanStepIndex >= 0 &&
-        activeRun_->currentPlanStepIndex <
-            static_cast<int>(activeRun_->planTasks.size()))
+    if (auto* task = currentTask())
     {
         task->cancel();
-        refreshPlanTaskSnapshots();
+        if (activeRun_->orderedTaskPlan) refreshExecutionTaskSnapshots();
     }
     setState(AgentRun::State::Cancelled);
     if (runTimer_->isActive()) runTimer_->stop();
@@ -403,10 +416,10 @@ AgentProgressSnapshot AgentController::progressSnapshot() const
         step.description =
             object.value(QStringLiteral("description")).toString();
         if (run.orderedTaskPlan &&
-            index < static_cast<qsizetype>(run.planTasks.size()))
+            index < static_cast<qsizetype>(run.executionTasks.size()))
         {
             const auto taskSnapshot =
-                run.planTasks.at(static_cast<std::size_t>(index))
+                run.executionTasks.at(static_cast<std::size_t>(index))
                     .runtimeSnapshot();
             step.activity = taskSnapshot.activity;
             step.elapsedMilliseconds = taskSnapshot.elapsedMilliseconds;
@@ -421,9 +434,9 @@ AgentProgressSnapshot AgentController::progressSnapshot() const
             step.status = AgentProgressStepStatus::Blocked;
         else if (run.state == AgentRun::State::Completed && status.isEmpty())
             step.status = AgentProgressStepStatus::Completed;
-        else if (!terminal &&
-                 ((run.orderedTaskPlan && index == run.currentPlanStepIndex) ||
-                  (!run.orderedTaskPlan && !assignedCurrentStep)))
+        else if (!terminal && ((run.orderedTaskPlan &&
+                                index == run.currentExecutionTaskIndex) ||
+                               (!run.orderedTaskPlan && !assignedCurrentStep)))
         {
             step.status = AgentProgressStepStatus::Current;
             snapshot.currentStepId = step.id;
@@ -446,11 +459,14 @@ AgentProgressSnapshot AgentController::progressSnapshot() const
             break;
         case AgentRun::State::Deciding:
             if (run.orderedTaskPlan &&
-                run.currentPlanStepIndex >=
-                    static_cast<int>(run.planTasks.size()))
+                run.currentExecutionTaskIndex >=
+                    static_cast<int>(run.executionTasks.size()))
                 snapshot.operation =
                     QStringLiteral("Preparing the final answer");
-            else if (const auto* task = currentPlanTask();
+            else if (run.taskPlanRequired && run.planningTask.has_value())
+                snapshot.operation =
+                    run.planningTask->runtimeSnapshot().activity;
+            else if (const auto* task = currentExecutionTask();
                      task && task->awaitingReview())
                 snapshot.operation =
                     QStringLiteral("Reviewing the current task result");
@@ -510,7 +526,7 @@ void AgentController::receiveToken(const QByteArray& bytes)
     if (!hasActiveRun() || state_ != AgentRun::State::Deciding ||
         bytes.isEmpty())
         return;
-    if (auto* task = currentPlanTask(); task && task->hasConversation())
+    if (auto* task = currentTask(); task && task->hasConversation())
     {
         if (!task->receiveToken(bytes, maximumDecisionBytes))
             failRun(QStringLiteral("decision_too_large"),
@@ -539,28 +555,27 @@ void AgentController::completeGeneration(bool cancelled,
         return;
     }
 
+    if (auto* task = currentTask(); task && task->hasConversation())
+    {
+        const auto directive = task->completeTaskGeneration(
+            cancelled, toolEvidence_,
+            activeRun_->ledger.unresolvedVerificationReason());
+        if (task->kind() == AgentTask::Kind::Planning &&
+            activeRun_->planningTask.has_value())
+            activeRun_->taskPlanFailures =
+                activeRun_->planningTask->repairCount();
+        applyTaskDirective(directive);
+        return;
+    }
+
     agent::Action action;
     QByteArray rawAction;
     QString errorMessage;
-    if (auto* task = currentPlanTask(); task && task->hasConversation())
+    rawAction = decisionBytes_;
+    if (!agent::parseAction(rawAction, action, errorMessage))
     {
-        auto decision = task->completeDecision(cancelled);
-        if (!decision.valid)
-        {
-            retryInvalidAction(decision.rawAction, decision.errorMessage);
-            return;
-        }
-        action = std::move(decision.action);
-        rawAction = std::move(decision.rawAction);
-    }
-    else
-    {
-        rawAction = decisionBytes_;
-        if (!agent::parseAction(rawAction, action, errorMessage))
-        {
-            retryInvalidAction(rawAction, errorMessage);
-            return;
-        }
+        retryInvalidAction(rawAction, errorMessage);
+        return;
     }
     handleAction(action, rawAction);
 }
@@ -649,7 +664,7 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
         beginPlanStepReview(evidenceSequence);
         recoveryGuidance +=
             (recoveryGuidance.isEmpty() ? QString{} : QStringLiteral(" ")) +
-            (currentPlanTask() && currentPlanTask()->awaitingReview()
+            (currentExecutionTask() && currentExecutionTask()->awaitingReview()
                  ? QStringLiteral(
                        "The call proposed completion of the current task-plan "
                        "step. Review that exact step now; it has not advanced "
@@ -689,7 +704,7 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
     auto resultMessage = AgentPromptBuilder::toolResultMessage(
         normalizedResult, evidenceSequence, activeRun_->ledger.snapshot(),
         activeRun_->ledger.unresolvedVerificationReason(), recoveryGuidance);
-    if (auto* task = currentPlanTask(); task && task->hasConversation())
+    if (auto* task = currentExecutionTask(); task && task->hasConversation())
         task->appendToolResult(
             std::move(resultMessage), toolEvidence_,
             activeRun_->ledger.snapshot(),
@@ -759,70 +774,94 @@ bool AgentController::isTerminal(AgentRun::State state)
            state == AgentRun::State::Failed;
 }
 
-PlanTask* AgentController::currentPlanTask()
+ExecutionTask* AgentController::currentExecutionTask()
 {
-    if (!activeRun_ || !activeRun_->orderedTaskPlan ||
-        activeRun_->planTasks.empty())
+    if (!activeRun_) return nullptr;
+    if (activeRun_->directTask.has_value()) return &*activeRun_->directTask;
+    if (!activeRun_->orderedTaskPlan || activeRun_->executionTasks.empty())
         return nullptr;
-    const auto index = activeRun_->currentPlanStepIndex;
-    if (index >= 0 && index < static_cast<int>(activeRun_->planTasks.size()))
-        return &activeRun_->planTasks.at(static_cast<std::size_t>(index));
-    return &activeRun_->planTasks.back();
+    const auto index = activeRun_->currentExecutionTaskIndex;
+    if (index >= 0 &&
+        index < static_cast<int>(activeRun_->executionTasks.size()))
+        return &activeRun_->executionTasks.at(static_cast<std::size_t>(index));
+    return nullptr;
 }
 
-const PlanTask* AgentController::currentPlanTask() const
+AgentTask* AgentController::currentTask()
 {
-    if (!activeRun_ || !activeRun_->orderedTaskPlan ||
-        activeRun_->planTasks.empty())
+    if (!activeRun_) return nullptr;
+    if (activeRun_->taskPlanRequired && activeRun_->planningTask.has_value())
+        return &*activeRun_->planningTask;
+    if (activeRun_->summaryTask.has_value()) return &*activeRun_->summaryTask;
+    return currentExecutionTask();
+}
+
+const ExecutionTask* AgentController::currentExecutionTask() const
+{
+    if (!activeRun_) return nullptr;
+    if (activeRun_->directTask.has_value()) return &*activeRun_->directTask;
+    if (!activeRun_->orderedTaskPlan || activeRun_->executionTasks.empty())
         return nullptr;
-    const auto index = activeRun_->currentPlanStepIndex;
-    if (index >= 0 && index < static_cast<int>(activeRun_->planTasks.size()))
-        return &activeRun_->planTasks.at(static_cast<std::size_t>(index));
-    return &activeRun_->planTasks.back();
+    const auto index = activeRun_->currentExecutionTaskIndex;
+    if (index >= 0 &&
+        index < static_cast<int>(activeRun_->executionTasks.size()))
+        return &activeRun_->executionTasks.at(static_cast<std::size_t>(index));
+    return nullptr;
+}
+
+const AgentTask* AgentController::currentTask() const
+{
+    if (!activeRun_) return nullptr;
+    if (activeRun_->taskPlanRequired && activeRun_->planningTask.has_value())
+        return &*activeRun_->planningTask;
+    if (activeRun_->summaryTask.has_value()) return &*activeRun_->summaryTask;
+    return currentExecutionTask();
 }
 
 QList<chat::Message>& AgentController::decisionMessages()
 {
-    if (auto* task = currentPlanTask(); task && task->hasConversation())
+    if (auto* task = currentTask(); task && task->hasConversation())
         return task->messages();
     return activeRun_->inferenceMessages;
 }
 
 qsizetype& AgentController::decisionRequestMessageIndex()
 {
-    if (auto* task = currentPlanTask(); task && task->hasConversation())
+    if (auto* task = currentTask(); task && task->hasConversation())
         return task->requestMessageIndex();
     return activeRun_->requestMessageIndex;
 }
 
-void AgentController::refreshPlanTaskSnapshots()
+void AgentController::refreshExecutionTaskSnapshots()
 {
-    if (!activeRun_ || activeRun_->planTasks.empty()) return;
+    if (!activeRun_ || activeRun_->executionTasks.empty()) return;
     QJsonArray snapshots;
-    for (const auto& task : activeRun_->planTasks)
+    for (const auto& task : activeRun_->executionTasks)
         snapshots.append(task.completionSnapshot());
     activeRun_->completionSteps = std::move(snapshots);
 }
 
-void AgentController::activatePlanTask(int index, int evidenceStart)
+void AgentController::activateExecutionTask(int index, int evidenceStart)
 {
     if (!activeRun_ || index < 0 ||
-        index >= static_cast<int>(activeRun_->planTasks.size()))
+        index >= static_cast<int>(activeRun_->executionTasks.size()))
         return;
 
     QJsonArray completedSteps;
     for (auto completedIndex = 0; completedIndex < index; ++completedIndex)
     {
-        const auto& completed =
-            activeRun_->planTasks.at(static_cast<std::size_t>(completedIndex));
-        if (completed.status() == PlanTask::Status::Completed)
+        const auto& completed = activeRun_->executionTasks.at(
+            static_cast<std::size_t>(completedIndex));
+        if (completed.status() == ExecutionTask::Status::Completed)
             completedSteps.append(completed.completionSnapshot());
     }
 
     auto messages = activeRun_->inferenceMessages;
-    auto& task = activeRun_->planTasks.at(static_cast<std::size_t>(index));
+    auto& task = activeRun_->executionTasks.at(static_cast<std::size_t>(index));
     task.activate(std::move(messages), completedSteps, toolEvidence_,
                   evidenceStart);
+    recordTaskStarted(task, index + 1,
+                      static_cast<int>(activeRun_->executionTasks.size()));
 
     // Recovery windows belong to one task worker, not the whole plan.
     activeRun_->repairAttempts = 0;
@@ -834,6 +873,16 @@ void AgentController::activatePlanTask(int index, int evidenceStart)
     activeRun_->consecutiveDiscoveryCalls = 0;
     lastFailedToolCallSignature_.clear();
     completedToolCallHistory_.clear();
+}
+
+void AgentController::activateSummaryTask()
+{
+    if (!activeRun_) return;
+    activeRun_->summaryTask.emplace();
+    activeRun_->summaryTask->activate(
+        activeRun_->inferenceMessages, activeRun_->userRequest,
+        activeRun_->completionSteps, toolEvidence_);
+    recordTaskStarted(*activeRun_->summaryTask);
 }
 
 void AgentController::requestDecision()
@@ -848,7 +897,7 @@ void AgentController::requestDecision()
     activeRun_->lastSubmittedCharacters = messageCharacters(decisionMessages());
     const auto outputTokens =
         qMax(minimumDecisionTokens, preset_.maxOutputTokens);
-    if (auto* task = currentPlanTask(); task && task->hasConversation())
+    if (auto* task = currentTask(); task && task->hasConversation())
         task->requestDecision(dependencies_.generate, preset_, outputTokens);
     else
         dependencies_.generate(decisionMessages(), preset_, outputTokens);
@@ -871,22 +920,22 @@ void AgentController::compactContextIfNeeded()
         return;
     auto visibleSteps = activeRun_->completionSteps;
     auto compactionRequest = activeRun_->userRequest;
-    if (activeRun_->orderedTaskPlan && !activeRun_->planTasks.empty())
+    if (activeRun_->orderedTaskPlan && !activeRun_->executionTasks.empty())
     {
         visibleSteps = QJsonArray{};
         const auto lastVisibleIndex =
-            std::min(activeRun_->currentPlanStepIndex,
-                     static_cast<int>(activeRun_->planTasks.size()) - 1);
+            std::min(activeRun_->currentExecutionTaskIndex,
+                     static_cast<int>(activeRun_->executionTasks.size()) - 1);
         for (auto index = 0; index <= lastVisibleIndex; ++index)
             visibleSteps.append(
-                activeRun_->planTasks.at(static_cast<std::size_t>(index))
+                activeRun_->executionTasks.at(static_cast<std::size_t>(index))
                     .completionSnapshot());
 
-        if (activeRun_->currentPlanStepIndex >= 0 &&
-            activeRun_->currentPlanStepIndex <
-                static_cast<int>(activeRun_->planTasks.size()))
+        if (activeRun_->currentExecutionTaskIndex >= 0 &&
+            activeRun_->currentExecutionTaskIndex <
+                static_cast<int>(activeRun_->executionTasks.size()))
         {
-            const auto current = currentPlanTask()->specification();
+            const auto current = currentExecutionTask()->specification();
             compactionRequest =
                 QStringLiteral(
                     "Continue only the manager-assigned current task: %1")
@@ -903,18 +952,19 @@ void AgentController::compactContextIfNeeded()
     const QJsonObject completionState{
         {QStringLiteral("steps"), visibleSteps},
         {QStringLiteral("ordered"), activeRun_->orderedTaskPlan},
-        {QStringLiteral("currentStepIndex"), activeRun_->currentPlanStepIndex},
+        {QStringLiteral("currentStepIndex"),
+         activeRun_->currentExecutionTaskIndex},
         {QStringLiteral("evidenceRevision"), activeRun_->evidenceRevision},
         {QStringLiteral("lastReviewedEvidenceRevision"),
          activeRun_->lastReviewedEvidenceRevision},
         {QStringLiteral("awaitingReview"),
          activeRun_->awaitingCompletionReview},
         {QStringLiteral("awaitingPlanStepReview"),
-         currentPlanTask() && currentPlanTask()->awaitingReview()},
+         currentExecutionTask() && currentExecutionTask()->awaitingReview()},
         {QStringLiteral("currentStepEvidenceStart"),
-         currentPlanTask() ? currentPlanTask()->evidenceStart() : 1},
+         currentExecutionTask() ? currentExecutionTask()->evidenceStart() : 1},
         {QStringLiteral("pendingPlanStepEvidenceEnd"),
-         currentPlanTask() ? currentPlanTask()->evidenceEnd() : 0}};
+         currentExecutionTask() ? currentExecutionTask()->evidenceEnd() : 0}};
     const auto result = AgentContextCompactor::compact(
         decisionMessages(), decisionRequestMessageIndex(), compactionRequest,
         toolEvidence_, completionState, activeRun_->ledger.snapshot(), preset_);
@@ -936,22 +986,10 @@ void AgentController::compactContextIfNeeded()
 }
 
 void AgentController::handleAction(const agent::Action& action,
-                                   const QByteArray& rawAction)
+                                   const QByteArray& rawAction,
+                                   bool recordAction)
 {
     if (!activeRun_) return;
-
-    if (activeRun_->taskPlanRequired)
-    {
-        if (action.type == agent::ActionType::TaskPlan)
-            acceptTaskPlan(action, rawAction);
-        else
-            retryTaskPlan(
-                rawAction,
-                QStringLiteral(
-                    "A task_plan is required before executing or completing "
-                    "this multi-step request."));
-        return;
-    }
 
     if (action.type == agent::ActionType::TaskPlan)
     {
@@ -960,111 +998,6 @@ void AgentController::handleAction(const agent::Action& action,
             QStringLiteral(
                 "task_plan is valid only when the controller requests it."));
         return;
-    }
-
-    if (activeRun_->orderedTaskPlan)
-    {
-        auto* task = currentPlanTask();
-        if (!task) return;
-        const auto wasAwaitingReview = task->awaitingReview();
-        const auto wasAwaitingToolCallReview = task->hasPendingToolCallReview();
-        const auto taskResult = task->handleAction(
-            action, rawAction, toolEvidence_,
-            activeRun_->ledger.unresolvedVerificationReason());
-        using Result = PlanTask::ActionResult;
-        switch (taskResult.type)
-        {
-            case Result::Type::CallTool:
-                if (taskResult.toolCallAlreadyRecorded)
-                {
-                    dispatchTool(taskResult.toolAction);
-                    return;
-                }
-                break;
-            case Result::Type::TaskCompleted:
-            {
-                recordEvent(agent::EventType::TaskStepUpdated,
-                            QStringLiteral("Task plan step verified."), {},
-                            {{QStringLiteral("stepId"), task->id()},
-                             {QStringLiteral("evidenceSequence"),
-                              taskResult.evidenceEnd}});
-                ++activeRun_->currentPlanStepIndex;
-                refreshPlanTaskSnapshots();
-                if (activeRun_->currentPlanStepIndex <
-                    static_cast<int>(activeRun_->planTasks.size()))
-                {
-                    const auto evidenceStart =
-                        taskResult.evidenceEnd > 0
-                            ? taskResult.evidenceEnd + 1
-                            : static_cast<int>(toolEvidence_.size() + 1);
-                    activatePlanTask(activeRun_->currentPlanStepIndex,
-                                     evidenceStart);
-                    requestDecision();
-                    return;
-                }
-                if (!taskResult.content.isEmpty())
-                {
-                    const auto verificationReason =
-                        activeRun_->ledger.unresolvedVerificationReason();
-                    if (!verificationReason.isEmpty())
-                    {
-                        retryUnfinishedFinal(rawAction, verificationReason);
-                        return;
-                    }
-                    completeRun(taskResult.content);
-                    return;
-                }
-                task->prepareFinalAnswer(activeRun_->completionSteps,
-                                         toolEvidence_);
-                requestDecision();
-                return;
-            }
-            case Result::Type::FinalAnswer:
-            {
-                const auto verificationReason =
-                    activeRun_->ledger.unresolvedVerificationReason();
-                if (verificationReason.isEmpty())
-                    completeRun(taskResult.content);
-                else
-                    retryUnfinishedFinal(rawAction, verificationReason);
-                return;
-            }
-            case Result::Type::Blocked:
-                blockRun(taskResult.blockReason, taskResult.content);
-                return;
-            case Result::Type::Continue:
-                if (wasAwaitingReview)
-                    recordEvent(
-                        agent::EventType::TaskStepUpdated,
-                        QStringLiteral("Task plan step remains pending."), {},
-                        {{QStringLiteral("stepId"), task->id()}});
-                else if (wasAwaitingToolCallReview)
-                    recordEvent(
-                        agent::EventType::RecoveryStarted,
-                        QStringLiteral(
-                            "Rejected a tool call outside the current task."));
-                requestDecision();
-                return;
-            case Result::Type::Invalid:
-                switch (taskResult.repair)
-                {
-                    case Result::Repair::ToolCallReview:
-                        retryToolCallReview(rawAction, taskResult.errorMessage);
-                        break;
-                    case Result::Repair::StepReview:
-                        retryPlanStepReview(rawAction, taskResult.errorMessage);
-                        break;
-                    case Result::Repair::PrematureFinal:
-                        retryUnfinishedFinal(rawAction,
-                                             taskResult.errorMessage);
-                        break;
-                    case Result::Repair::General:
-                        retryOrderedPlanAction(rawAction,
-                                               taskResult.errorMessage);
-                        break;
-                }
-                return;
-        }
     }
 
     if (action.type == agent::ActionType::ReviewToolCall ||
@@ -1162,7 +1095,7 @@ void AgentController::handleAction(const agent::Action& action,
         operationKind(*tool, dependencies_.toolRisk);
     if (activeRun_->orderedTaskPlan)
     {
-        if (const auto* task = currentPlanTask())
+        if (const auto* task = currentExecutionTask())
         {
             const auto taskError = task->validateToolAction(
                 action, candidateOperationKind == ToolOperationKind::ReadOnly);
@@ -1253,43 +1186,104 @@ void AgentController::handleAction(const agent::Action& action,
                 .arg(maximumConsecutiveDiscoveryCalls));
         return;
     }
-    if (activeRun_->orderedTaskPlan &&
-        candidateOperationKind != ToolOperationKind::ReadOnly)
-    {
-        const auto currentIndex = activeRun_->currentPlanStepIndex;
-        auto sharedWithAnotherStep = false;
-        for (qsizetype index = 0; index < activeRun_->completionSteps.size();
-             ++index)
-        {
-            if (index == currentIndex) continue;
-            const auto otherStep =
-                activeRun_->completionSteps.at(index).toObject();
-            if (otherStep.value(QStringLiteral("allowed_tools"))
-                    .toArray()
-                    .contains(action.toolName))
-            {
-                sharedWithAnotherStep = true;
-                break;
-            }
-        }
-        if (sharedWithAnotherStep)
-        {
-            beginToolCallReview(action, rawAction);
-            return;
-        }
-    }
-    decisionMessages().append(
-        {chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    if (recordAction)
+        decisionMessages().append(
+            {chat::Role::Assistant, QString::fromUtf8(rawAction)});
     dispatchTool(action);
 }
 
-void AgentController::beginToolCallReview(const agent::Action& action,
-                                          const QByteArray& rawAction)
+void AgentController::applyTaskDirective(const AgentTask::Directive& directive)
 {
-    auto* task = currentPlanTask();
-    if (!activeRun_ || !task) return;
-    task->beginToolCallReview(action, rawAction);
-    requestDecision();
+    if (!activeRun_) return;
+    switch (directive.type)
+    {
+        case AgentTask::Directive::Type::Generate:
+            if (directive.code == QLatin1String("task_plan_repair"))
+                recordEvent(agent::EventType::RecoveryStarted,
+                            QStringLiteral("Repairing the task plan."));
+            else if (directive.code == QLatin1String("summary_repair"))
+                recordEvent(agent::EventType::RecoveryStarted,
+                            QStringLiteral("Repairing the final summary."));
+            else
+                recordEvent(agent::EventType::RecoveryStarted,
+                            QStringLiteral("Repairing the current task."));
+            requestDecision();
+            return;
+        case AgentTask::Directive::Type::TasksCreated:
+            acceptTaskPlan(directive.tasks, directive.ordered);
+            return;
+        case AgentTask::Directive::Type::CallTool:
+            handleAction(directive.toolAction, directive.rawAction,
+                         !directive.toolCallAlreadyRecorded);
+            return;
+        case AgentTask::Directive::Type::Completed:
+            if (currentTask() &&
+                currentTask()->kind() == AgentTask::Kind::Summary)
+            {
+                completeRun(directive.content);
+                return;
+            }
+            if (!activeRun_->orderedTaskPlan)
+            {
+                completeRun(directive.content);
+                return;
+            }
+            if (auto* task = currentExecutionTask())
+            {
+                recordEvent(agent::EventType::TaskStepUpdated,
+                            QStringLiteral("Task plan step verified."), {},
+                            {{QStringLiteral("stepId"), task->id()},
+                             {QStringLiteral("evidenceSequence"),
+                              directive.evidenceEnd}});
+                ++activeRun_->currentExecutionTaskIndex;
+                refreshExecutionTaskSnapshots();
+                if (activeRun_->currentExecutionTaskIndex <
+                    static_cast<int>(activeRun_->executionTasks.size()))
+                {
+                    const auto evidenceStart =
+                        directive.evidenceEnd > 0
+                            ? directive.evidenceEnd + 1
+                            : static_cast<int>(toolEvidence_.size() + 1);
+                    activateExecutionTask(activeRun_->currentExecutionTaskIndex,
+                                          evidenceStart);
+                }
+                else
+                {
+                    const auto reason =
+                        activeRun_->ledger.unresolvedVerificationReason();
+                    if (!reason.isEmpty())
+                    {
+                        failRun(QStringLiteral("completion_unverified"),
+                                reason);
+                        return;
+                    }
+                    activateSummaryTask();
+                }
+                requestDecision();
+            }
+            return;
+        case AgentTask::Directive::Type::Blocked:
+            blockRun(directive.code, directive.content);
+            return;
+        case AgentTask::Directive::Type::Failed:
+            failRun(directive.code, directive.detail);
+            return;
+        case AgentTask::Directive::Type::Continue:
+            if (directive.code == QLatin1String("task_pending"))
+                recordEvent(
+                    agent::EventType::TaskStepUpdated,
+                    QStringLiteral("Task plan step remains pending."), {},
+                    {{QStringLiteral("stepId"),
+                      currentExecutionTask() ? currentExecutionTask()->id()
+                                             : QString{}}});
+            else if (directive.code == QLatin1String("tool_call_rejected"))
+                recordEvent(
+                    agent::EventType::RecoveryStarted,
+                    QStringLiteral(
+                        "Rejected a tool call outside the current task."));
+            requestDecision();
+            return;
+    }
 }
 
 void AgentController::dispatchTool(const agent::Action& action)
@@ -1304,7 +1298,7 @@ void AgentController::dispatchTool(const agent::Action& action)
     }
     if (decision == infrastructure::mcp::ToolDecision::RequireApproval)
     {
-        if (auto* task = currentPlanTask()) task->awaitApproval();
+        if (auto* task = currentExecutionTask()) task->awaitApproval();
         pendingApproval_ = action;
         setState(AgentRun::State::WaitingForApproval);
         recordEvent(agent::EventType::ApprovalRequested,
@@ -1317,103 +1311,90 @@ void AgentController::dispatchTool(const agent::Action& action)
     executeTool(action);
 }
 
-void AgentController::acceptTaskPlan(const agent::Action& action,
-                                     const QByteArray& rawAction)
+void AgentController::acceptTaskPlan(const QJsonArray& steps, bool ordered)
 {
     if (!activeRun_) return;
-    if (!action.orderedPlan.has_value())
-    {
-        retryTaskPlan(
-            rawAction,
-            QStringLiteral(
-                "task_plan must explicitly include ordered=true so the "
-                "controller can enforce step-by-step execution."));
-        return;
-    }
-    if (*action.orderedPlan)
-    {
-        auto sawNonToolStep = false;
-        for (const auto& value : action.completionSteps)
-        {
-            const auto step = value.toObject();
-            const auto requiresTool =
-                step.value(QStringLiteral("requires_tool")).toBool();
-            for (const auto& allowedValue :
-                 step.value(QStringLiteral("allowed_tools")).toArray())
-            {
-                const auto allowedTool = allowedValue.toString();
-                const auto available = std::any_of(
-                    availableTools_.cbegin(), availableTools_.cend(),
-                    [&allowedTool](const agent::ToolDefinition& definition)
-                    { return definition.qualifiedName == allowedTool; });
-                if (!available)
-                {
-                    retryTaskPlan(
-                        rawAction,
-                        QStringLiteral(
-                            "Task-plan step '%1' assigns unavailable tool "
-                            "'%2'. Use only exact qualified names from the "
-                            "available tool catalog.")
-                            .arg(step.value(QStringLiteral("id")).toString(),
-                                 allowedTool));
-                    return;
-                }
-            }
-            if (!requiresTool)
-                sawNonToolStep = true;
-            else if (sawNonToolStep)
-            {
-                retryTaskPlan(
-                    rawAction,
-                    QStringLiteral(
-                        "An ordered task plan cannot place a tool-required "
-                        "step after a non-tool step. Keep all external "
-                        "operations in user order and reserve non-tool steps "
-                        "for the trailing final response."));
-                return;
-            }
-        }
-    }
-    activeRun_->completionSteps = action.completionSteps;
-    activeRun_->orderedTaskPlan = *action.orderedPlan;
-    activeRun_->currentPlanStepIndex = 0;
+    activeRun_->completionSteps = steps;
+    activeRun_->orderedTaskPlan = ordered;
+    activeRun_->currentExecutionTaskIndex = 0;
     activeRun_->taskPlanRequired = false;
-    activeRun_->taskPlanFailures = 0;
     qInfo().noquote() << QStringLiteral(
                              "Agent task plan accepted: run=%1 steps=%2")
                              .arg(activeRun_->id)
                              .arg(activeRun_->completionSteps.size());
+    recordEvent(
+        agent::EventType::TaskPlanAccepted,
+        QStringLiteral("Task plan accepted."), {},
+        {{QStringLiteral("stepCount"), activeRun_->completionSteps.size()}});
     if (activeRun_->orderedTaskPlan)
     {
-        activeRun_->planTasks.clear();
-        activeRun_->planTasks.reserve(
-            static_cast<std::size_t>(action.completionSteps.size()));
-        for (const auto& value : action.completionSteps)
-            activeRun_->planTasks.emplace_back(value.toObject());
+        std::vector<QSet<QString>> toolsRequiringSemanticReview(
+            static_cast<std::size_t>(steps.size()));
+        for (qsizetype index = 0; index < steps.size(); ++index)
+        {
+            const auto allowedTools =
+                steps.at(index)
+                    .toObject()
+                    .value(QStringLiteral("allowed_tools"))
+                    .toArray();
+            for (const auto& toolValue : allowedTools)
+            {
+                const auto toolName = toolValue.toString();
+                const auto definition = std::find_if(
+                    availableTools_.cbegin(), availableTools_.cend(),
+                    [&toolName](const agent::ToolDefinition& candidate)
+                    { return candidate.qualifiedName == toolName; });
+                if (definition == availableTools_.cend() ||
+                    operationKind(*definition, dependencies_.toolRisk) ==
+                        ToolOperationKind::ReadOnly)
+                    continue;
+                for (qsizetype otherIndex = 0; otherIndex < steps.size();
+                     ++otherIndex)
+                {
+                    if (otherIndex == index) continue;
+                    if (steps.at(otherIndex)
+                            .toObject()
+                            .value(QStringLiteral("allowed_tools"))
+                            .toArray()
+                            .contains(toolName))
+                    {
+                        toolsRequiringSemanticReview
+                            .at(static_cast<std::size_t>(index))
+                            .insert(toolName);
+                        break;
+                    }
+                }
+            }
+        }
 
-        // Keep only the system prompt and prior conversation as the seed.
-        // Every PlanTask receives a fresh user turn containing only its own
+        activeRun_->executionTasks.clear();
+        activeRun_->executionTasks.reserve(
+            static_cast<std::size_t>(steps.size()));
+        for (qsizetype index = 0; index < steps.size(); ++index)
+            activeRun_->executionTasks.emplace_back(
+                steps.at(index).toObject(),
+                std::move(toolsRequiringSemanticReview.at(
+                    static_cast<std::size_t>(index))));
+
+        // Each ExecutionTask gets a fresh user turn for only its own
         // assignment and the completed-task background it may depend on.
         if (activeRun_->requestMessageIndex >= 0 &&
             activeRun_->requestMessageIndex <
                 activeRun_->inferenceMessages.size())
             activeRun_->inferenceMessages.resize(
                 activeRun_->requestMessageIndex);
-        refreshPlanTaskSnapshots();
-        activatePlanTask(0, static_cast<int>(toolEvidence_.size() + 1));
+        refreshExecutionTaskSnapshots();
+        activateExecutionTask(0, static_cast<int>(toolEvidence_.size() + 1));
     }
     else
     {
-        activeRun_->inferenceMessages.append(
-            {chat::Role::Assistant, QString::fromUtf8(rawAction)});
+        activeRun_->inferenceMessages = activeRun_->planningTask->messages();
         activeRun_->inferenceMessages.append(
             AgentPromptBuilder::taskPlanAcceptedMessage(
                 activeRun_->completionSteps));
+        activeRun_->requestMessageIndex =
+            activeRun_->inferenceMessages.size() - 1;
     }
-    recordEvent(
-        agent::EventType::TaskPlanAccepted,
-        QStringLiteral("Task plan accepted."), {},
-        {{QStringLiteral("stepCount"), activeRun_->completionSteps.size()}});
     requestDecision();
 }
 
@@ -1569,7 +1550,7 @@ QString AgentController::validateCompletionReview(
 
 void AgentController::beginPlanStepReview(int evidenceSequence)
 {
-    auto* task = currentPlanTask();
+    auto* task = currentExecutionTask();
     if (!activeRun_ || !task || activeRun_->ledger.hasUnresolvedVerification())
         return;
     task->beginReview(evidenceSequence);
@@ -1700,7 +1681,7 @@ void AgentController::handleCompletionReview(const agent::Action& action,
     }
 
     activeRun_->completionSteps = normalizedAction.completionSteps;
-    activeRun_->currentPlanStepIndex = activeRun_->completionSteps.size();
+    activeRun_->currentExecutionTaskIndex = activeRun_->completionSteps.size();
     for (qsizetype index = 0; index < activeRun_->completionSteps.size();
          ++index)
     {
@@ -1711,7 +1692,7 @@ void AgentController::handleCompletionReview(const agent::Action& action,
         if (status != QLatin1String("satisfied") &&
             status != QLatin1String("blocked"))
         {
-            activeRun_->currentPlanStepIndex = static_cast<int>(index);
+            activeRun_->currentExecutionTaskIndex = static_cast<int>(index);
             break;
         }
     }
@@ -1752,7 +1733,7 @@ void AgentController::handleCompletionReview(const agent::Action& action,
 void AgentController::executeTool(const agent::Action& action)
 {
     if (!activeRun_) return;
-    if (auto* task = currentPlanTask()) task->awaitTool();
+    if (auto* task = currentExecutionTask()) task->awaitTool();
     const auto signature = toolCallSignature(action);
     if (!pollableToolCallSignature_.isEmpty() &&
         signature == pollableToolCallSignature_ && lastPollCompletedAtMs_ > 0)
@@ -1790,38 +1771,6 @@ void AgentController::executePendingPoll()
     if (!hasActiveRun() || !pendingPollAction_.has_value()) return;
     const auto action = std::exchange(pendingPollAction_, std::nullopt);
     executeTool(*action);
-}
-
-void AgentController::retryTaskPlan(const QByteArray& rawAction,
-                                    const QString& errorMessage)
-{
-    if (!activeRun_) return;
-    if (activeRun_->taskPlanFailures >= 1)
-    {
-        qWarning().noquote()
-            << QStringLiteral(
-                   "Agent task plan failed: run=%1 reason=%2 action=%3")
-                   .arg(activeRun_->id, singleLine(errorMessage),
-                        singleLine(QString::fromUtf8(rawAction)).left(2'048));
-        failRun(QStringLiteral("task_plan_failed"), errorMessage);
-        return;
-    }
-    ++activeRun_->taskPlanFailures;
-    qWarning().noquote()
-        << QStringLiteral(
-               "Agent task plan correction: run=%1 attempt=%2 reason=%3 "
-               "action=%4")
-               .arg(activeRun_->id)
-               .arg(activeRun_->taskPlanFailures)
-               .arg(singleLine(errorMessage),
-                    singleLine(QString::fromUtf8(rawAction)).left(2'048));
-    decisionMessages().append(
-        {chat::Role::Assistant, QString::fromUtf8(rawAction)});
-    decisionMessages().append(
-        AgentPromptBuilder::taskPlanCorrectionMessage(errorMessage));
-    recordEvent(agent::EventType::RecoveryStarted,
-                QStringLiteral("Repairing the task plan."));
-    requestDecision();
 }
 
 void AgentController::retryCompletionReview(const QByteArray& rawAction,
@@ -1871,53 +1820,10 @@ void AgentController::retryCompletionReview(const QByteArray& rawAction,
     requestDecision();
 }
 
-void AgentController::retryPlanStepReview(const QByteArray& rawAction,
-                                          const QString& errorMessage)
-{
-    auto* task = currentPlanTask();
-    if (!activeRun_ || !task) return;
-    if (!task->repairStepReview(rawAction, errorMessage))
-    {
-        failRun(QStringLiteral("plan_step_unverified"), errorMessage);
-        return;
-    }
-    recordEvent(agent::EventType::RecoveryStarted,
-                QStringLiteral("Repairing the current task-step review."));
-    requestDecision();
-}
-
-void AgentController::retryToolCallReview(const QByteArray& rawAction,
-                                          const QString& errorMessage)
-{
-    auto* task = currentPlanTask();
-    if (!activeRun_ || !task || !task->hasPendingToolCallReview()) return;
-    if (!task->repairToolCallReview(rawAction, errorMessage))
-    {
-        failRun(QStringLiteral("tool_call_review_failed"), errorMessage);
-        return;
-    }
-    recordEvent(agent::EventType::RecoveryStarted,
-                QStringLiteral("Repairing the current task call review."));
-    requestDecision();
-}
-
 void AgentController::retryUnfinishedFinal(const QByteArray& rawAction,
                                            const QString& errorMessage)
 {
     if (!activeRun_) return;
-    if (activeRun_->orderedTaskPlan)
-    {
-        auto* task = currentPlanTask();
-        if (!task || !task->repairPrematureFinal(rawAction, errorMessage))
-        {
-            failRun(QStringLiteral("completion_unverified"), errorMessage);
-            return;
-        }
-        recordEvent(agent::EventType::RecoveryStarted,
-                    QStringLiteral("Checking the active task completion."));
-        requestDecision();
-        return;
-    }
     if (activeRun_->completionReviewFailures >= 1)
     {
         qWarning().noquote()
@@ -1950,24 +1856,9 @@ void AgentController::retryInvalidAction(const QByteArray& rawAction,
                                          const QString& errorMessage)
 {
     if (!activeRun_) return;
-    if (activeRun_->taskPlanRequired)
-    {
-        retryTaskPlan(rawAction, errorMessage);
-        return;
-    }
-    if (currentPlanTask() && currentPlanTask()->hasPendingToolCallReview())
-    {
-        retryToolCallReview(rawAction, errorMessage);
-        return;
-    }
     if (activeRun_->awaitingCompletionReview)
     {
         retryCompletionReview(rawAction, errorMessage);
-        return;
-    }
-    if (currentPlanTask() && currentPlanTask()->awaitingReview())
-    {
-        retryPlanStepReview(rawAction, errorMessage);
         return;
     }
     if (activeRun_->orderedTaskPlan)
@@ -2061,7 +1952,7 @@ void AgentController::retryOrderedPlanAction(const QByteArray& rawAction,
                                              const QString& errorMessage)
 {
     if (!activeRun_) return;
-    auto* task = currentPlanTask();
+    auto* task = currentExecutionTask();
     if (!task || !task->repairAction(rawAction, errorMessage))
     {
         failRun(QStringLiteral("invalid_agent_action"), errorMessage);
@@ -2103,6 +1994,32 @@ void AgentController::recordEvent(agent::EventType type, const QString& message,
     emitProgressChanged();
 }
 
+void AgentController::recordTaskStarted(const AgentTask& task, int ordinal,
+                                        int total)
+{
+    QString kind;
+    switch (task.kind())
+    {
+        case AgentTask::Kind::Planning:
+            kind = QStringLiteral("planning");
+            break;
+        case AgentTask::Kind::Execution:
+            kind = QStringLiteral("execution");
+            break;
+        case AgentTask::Kind::Summary:
+            kind = QStringLiteral("summary");
+            break;
+    }
+
+    QJsonObject data{{QStringLiteral("taskKind"), kind},
+                     {QStringLiteral("taskId"), task.id()},
+                     {QStringLiteral("description"), task.description()}};
+    if (ordinal > 0) data.insert(QStringLiteral("taskIndex"), ordinal);
+    if (total > 0) data.insert(QStringLiteral("taskCount"), total);
+    recordEvent(agent::EventType::TaskStarted,
+                QStringLiteral("%1 task started.").arg(kind), {}, data);
+}
+
 void AgentController::emitProgressChanged()
 {
     if (!activeRun_) return;
@@ -2140,15 +2057,15 @@ void AgentController::blockRun(const QString& reason, const QString& content)
     activeRun_->finishCode = code;
     activeRun_->finishMessage = content;
     QString blockedStepId;
-    const auto currentIndex = activeRun_->currentPlanStepIndex;
+    const auto currentIndex = activeRun_->currentExecutionTaskIndex;
     if (currentIndex >= 0 &&
-        currentIndex < static_cast<int>(activeRun_->planTasks.size()))
+        currentIndex < static_cast<int>(activeRun_->executionTasks.size()))
     {
-        auto& task =
-            activeRun_->planTasks.at(static_cast<std::size_t>(currentIndex));
+        auto& task = activeRun_->executionTasks.at(
+            static_cast<std::size_t>(currentIndex));
         task.markBlocked();
         blockedStepId = task.id();
-        refreshPlanTaskSnapshots();
+        refreshExecutionTaskSnapshots();
     }
     setState(AgentRun::State::Blocked);
     if (runTimer_->isActive()) runTimer_->stop();
@@ -2178,14 +2095,14 @@ void AgentController::failRun(const QString& code, const QString& message)
     const auto toolRequestId = activeRun_->toolRequestId;
     activeRun_->finishCode = code;
     activeRun_->finishMessage = message;
-    if (auto* task = currentPlanTask();
-        task && activeRun_->orderedTaskPlan &&
-        activeRun_->currentPlanStepIndex >= 0 &&
-        activeRun_->currentPlanStepIndex <
-            static_cast<int>(activeRun_->planTasks.size()))
+    if (auto* task = currentTask())
     {
         task->fail();
-        refreshPlanTaskSnapshots();
+        if (activeRun_->orderedTaskPlan &&
+            activeRun_->currentExecutionTaskIndex >= 0 &&
+            activeRun_->currentExecutionTaskIndex <
+                static_cast<int>(activeRun_->executionTasks.size()))
+            refreshExecutionTaskSnapshots();
     }
     setState(AgentRun::State::Failed);
     if (runTimer_->isActive()) runTimer_->stop();

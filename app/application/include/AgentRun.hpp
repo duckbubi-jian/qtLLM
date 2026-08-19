@@ -3,7 +3,9 @@
 #include "AgentEvent.hpp"
 #include "AgentLedger.hpp"
 #include "ChatMessage.hpp"
-#include "PlanTask.hpp"
+#include "ExecutionTask.hpp"
+#include "PlanningTask.hpp"
+#include "SummaryTask.hpp"
 
 #include <QDateTime>
 #include <QJsonArray>
@@ -12,6 +14,7 @@
 #include <QString>
 #include <QtGlobal>
 
+#include <optional>
 #include <vector>
 
 namespace qtllm::application
@@ -61,10 +64,13 @@ struct AgentRun
     int completionPlanDriftRepairs = 0;
     bool taskPlanRequired = false;
     bool orderedTaskPlan = false;
-    int currentPlanStepIndex = 0;
+    int currentExecutionTaskIndex = 0;
     bool awaitingCompletionReview = false;
     QJsonArray completionSteps;
-    std::vector<PlanTask> planTasks;
+    std::optional<PlanningTask> planningTask;
+    std::optional<ExecutionTask> directTask;
+    std::vector<ExecutionTask> executionTasks;
+    std::optional<SummaryTask> summaryTask;
     QString pendingFinalCandidate;
     int lastPromptTokens = 0;
     int contextCompactions = 0;

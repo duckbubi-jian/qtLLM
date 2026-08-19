@@ -99,30 +99,26 @@ class AgentController final : public QObject
     static bool isTerminal(AgentRun::State state);
     void requestDecision();
     void compactContextIfNeeded();
-    [[nodiscard]] PlanTask* currentPlanTask();
-    [[nodiscard]] const PlanTask* currentPlanTask() const;
+    [[nodiscard]] ExecutionTask* currentExecutionTask();
+    [[nodiscard]] const ExecutionTask* currentExecutionTask() const;
+    [[nodiscard]] AgentTask* currentTask();
+    [[nodiscard]] const AgentTask* currentTask() const;
     [[nodiscard]] QList<chat::Message>& decisionMessages();
     [[nodiscard]] qsizetype& decisionRequestMessageIndex();
-    void activatePlanTask(int index, int evidenceStart);
-    void refreshPlanTaskSnapshots();
-    void handleAction(const agent::Action& action, const QByteArray& rawAction);
-    void beginToolCallReview(const agent::Action& action,
-                             const QByteArray& rawAction);
-    void retryToolCallReview(const QByteArray& rawAction,
-                             const QString& errorMessage);
-    void acceptTaskPlan(const agent::Action& action,
-                        const QByteArray& rawAction);
+    void activateExecutionTask(int index, int evidenceStart);
+    void activateSummaryTask();
+    void refreshExecutionTaskSnapshots();
+    void handleAction(const agent::Action& action, const QByteArray& rawAction,
+                      bool recordAction = true);
+    void applyTaskDirective(const AgentTask::Directive& directive);
+    void acceptTaskPlan(const QJsonArray& steps, bool ordered);
     void beginCompletionReview(const agent::Action& action,
                                const QByteArray& rawAction);
     void handleCompletionReview(const agent::Action& action,
                                 const QByteArray& rawAction);
     void beginPlanStepReview(int evidenceSequence);
-    void retryTaskPlan(const QByteArray& rawAction,
-                       const QString& errorMessage);
     void retryCompletionReview(const QByteArray& rawAction,
                                const QString& errorMessage);
-    void retryPlanStepReview(const QByteArray& rawAction,
-                             const QString& errorMessage);
     void retryUnfinishedFinal(const QByteArray& rawAction,
                               const QString& errorMessage);
     [[nodiscard]] bool hasSufficientCompletionEvidence() const;
@@ -144,6 +140,8 @@ class AgentController final : public QObject
     void recordEvent(agent::EventType type, const QString& message = {},
                      const QString& toolName = {},
                      const QJsonObject& data = {});
+    void recordTaskStarted(const AgentTask& task, int ordinal = 0,
+                           int total = 0);
     void emitProgressChanged();
     void completeRun(const QString& content);
     void blockRun(const QString& reason, const QString& content);

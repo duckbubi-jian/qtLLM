@@ -6,11 +6,14 @@
 
 #include <QByteArray>
 #include <QDateTime>
-#include <QElapsedTimer>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QList>
 #include <QString>
 
+#include <chrono>
 #include <functional>
+#include <optional>
 
 namespace qtllm::application
 {
@@ -61,6 +64,31 @@ class AgentTask
         qint64 elapsedMilliseconds = 0;
     };
 
+    struct Directive
+    {
+        enum class Type
+        {
+            Generate,
+            CallTool,
+            TasksCreated,
+            Completed,
+            Blocked,
+            Failed,
+            Continue
+        };
+
+        Type type = Type::Continue;
+        agent::Action toolAction;
+        QByteArray rawAction;
+        QJsonArray tasks;
+        QString content;
+        QString code;
+        QString detail;
+        int evidenceEnd = 0;
+        bool ordered = false;
+        bool toolCallAlreadyRecorded = false;
+    };
+
     AgentTask(Kind kind, QString id, QString description);
     virtual ~AgentTask();
 
@@ -69,6 +97,9 @@ class AgentTask
     [[nodiscard]] Kind kind() const;
     [[nodiscard]] Status status() const;
     [[nodiscard]] Snapshot runtimeSnapshot() const;
+    [[nodiscard]] virtual Directive completeTaskGeneration(
+        bool cancelled, const QList<QJsonObject>& toolEvidence,
+        const QString& unresolvedVerificationReason) = 0;
 
     [[nodiscard]] bool hasConversation() const;
     [[nodiscard]] QList<chat::Message>& messages();
@@ -107,7 +138,7 @@ class AgentTask
     QDateTime createdAt_ = QDateTime::currentDateTimeUtc();
     QDateTime startedAt_;
     QDateTime finishedAt_;
-    QElapsedTimer elapsedTimer_;
+    std::optional<std::chrono::steady_clock::time_point> startedTick_;
     qint64 terminalElapsedMilliseconds_ = 0;
 };
 }  // namespace qtllm::application

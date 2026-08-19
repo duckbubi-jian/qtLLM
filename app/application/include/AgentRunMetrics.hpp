@@ -2,6 +2,7 @@
 
 #include "AgentRun.hpp"
 
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
 
@@ -33,6 +34,7 @@ struct AgentRunMetrics
     int toolEvidenceCount = 0;
     double schemaValidArgumentRate = 1.0;
     bool completionReviewSucceeded = false;
+    QJsonArray taskTimings;
 
     [[nodiscard]] static AgentRunMetrics fromRun(const AgentRun& run);
     [[nodiscard]] QJsonObject toJson() const;

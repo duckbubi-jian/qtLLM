@@ -14,6 +14,7 @@
 #include <QMainWindow>
 #include <QSet>
 #include <QString>
+#include <QStringList>
 
 class QTimer;
 
@@ -86,6 +87,8 @@ class MainWindow final : public QMainWindow
     void appendUserMessage(const QString& text);
     void beginAssistantMessage();
     void appendActivityText(const QString& text);
+    void appendActivityTaskHeader(const QString& title,
+                                  const QStringList& details);
     void appendAgentEvent(const agent::Event& event);
     void renderAssistant(bool final = false);
     [[nodiscard]] bool conversationIsAtBottom() const;

@@ -10,12 +10,14 @@
 #include "SensitiveData.hpp"
 #include "ToolApprovalWidget.hpp"
 
+#include <QColor>
 #include <QCoreApplication>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFont>
 #include <QJsonDocument>
 #include <QMessageBox>
 #include <QPlainTextEdit>
@@ -23,6 +25,7 @@
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QStringList>
+#include <QTextCharFormat>
 #include <QTextCursor>
 #include <QTimer>
 #include <QUrl>
@@ -1546,9 +1549,64 @@ void MainWindow::appendActivityText(const QString& text)
     chatView_->activityLog()->ensureCursorVisible();
 }
 
+void MainWindow::appendActivityTaskHeader(const QString& title,
+                                          const QStringList& details)
+{
+    auto cursor = chatView_->activityLog()->textCursor();
+    cursor.movePosition(QTextCursor::End);
+
+    QTextCharFormat titleFormat;
+    titleFormat.setBackground(QColor(QStringLiteral("#dbeafe")));
+    titleFormat.setForeground(QColor(QStringLiteral("#1d4ed8")));
+    titleFormat.setFontWeight(QFont::DemiBold);
+    cursor.insertText(title + QLatin1Char('\n'), titleFormat);
+
+    QTextCharFormat detailFormat;
+    detailFormat.setBackground(QColor(QStringLiteral("#eff6ff")));
+    detailFormat.setForeground(QColor(QStringLiteral("#334155")));
+    cursor.insertText(details.join(QLatin1Char('\n')) + QLatin1Char('\n'),
+                      detailFormat);
+    cursor.insertText(QStringLiteral("\n"), QTextCharFormat{});
+
+    chatView_->activityLog()->setTextCursor(cursor);
+    chatView_->activityLog()->ensureCursorVisible();
+}
+
 void MainWindow::appendAgentEvent(const agent::Event& event)
 {
     QStringList lines;
+    const auto timestamp =
+        event.timestamp.toLocalTime().toString(QStringLiteral("HH:mm:ss"));
+    if (event.type == agent::EventType::TaskStarted)
+    {
+        const auto data = redactSensitiveValues(event.data).toObject();
+        const auto kind = data.value(QStringLiteral("taskKind")).toString();
+        auto stage = kind == QLatin1String("planning")  ? tr("Planning")
+                     : kind == QLatin1String("summary") ? tr("Summary")
+                                                        : tr("Execution");
+        const auto ordinal = data.value(QStringLiteral("taskIndex")).toInt();
+        const auto total = data.value(QStringLiteral("taskCount")).toInt();
+        if (ordinal > 0 && total > 0)
+            stage += QStringLiteral(" %1/%2").arg(ordinal).arg(total);
+
+        const auto taskId = redactSensitiveText(
+            data.value(QStringLiteral("taskId")).toString(), 128);
+        const auto description = redactSensitiveText(
+            data.value(QStringLiteral("description")).toString(), 320);
+        const auto title = QStringLiteral(
+                               "==================== %1 "
+                               "====================")
+                               .arg(tr("Task Info"));
+        lines.append(
+            taskId.isEmpty()
+                ? QStringLiteral("[%1] %2").arg(timestamp, stage)
+                : QStringLiteral("[%1] %2 | %3").arg(timestamp, stage, taskId));
+        if (!description.isEmpty())
+            lines.append(tr("Goal: %1").arg(description));
+        appendActivityTaskHeader(title, lines);
+        return;
+    }
+
     if (event.type == agent::EventType::RunStarted)
     {
         if (!chatView_->activityLog()->document()->isEmpty())
@@ -1556,8 +1614,6 @@ void MainWindow::appendAgentEvent(const agent::Event& event)
         lines.append(QStringLiteral("===================="));
     }
 
-    const auto timestamp =
-        event.timestamp.toLocalTime().toString(QStringLiteral("HH:mm:ss"));
     const auto message = event.message.isEmpty()
                              ? agent::eventTypeName(event.type)
                              : event.message;

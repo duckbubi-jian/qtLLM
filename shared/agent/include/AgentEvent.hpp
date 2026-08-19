@@ -22,7 +22,8 @@ enum class EventType
     Completed,
     Blocked,
     Cancelled,
-    Failed
+    Failed,
+    TaskStarted
 };
 
 struct Event

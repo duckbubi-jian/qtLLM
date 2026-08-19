@@ -397,7 +397,8 @@ chat::Message AgentPromptBuilder::planTaskActivationMessage(
 }
 
 chat::Message AgentPromptBuilder::allPlanTasksCompletedMessage(
-    const QJsonArray& steps, const QList<QJsonObject>& toolEvidence)
+    const QString& originalRequest, const QJsonArray& steps,
+    const QList<QJsonObject>& toolEvidence)
 {
     return {
         chat::Role::User,
@@ -405,10 +406,24 @@ chat::Message AgentPromptBuilder::allPlanTasksCompletedMessage(
             "The plan manager has verified every task. Return one final "
             "action now with a concise user-facing summary of the completed "
             "work. Do not call another tool, repeat a review, or change task "
-            "status. <completed_tasks>%1</completed_tasks> "
-            "<tool_evidence>%2</tool_evidence>")
-            .arg(compactJson(steps),
+            "status. <original_request>%1</original_request> "
+            "<completed_tasks>%2</completed_tasks> "
+            "<tool_evidence>%3</tool_evidence>")
+            .arg(originalRequest.trimmed(), compactJson(steps),
                  compactJson(completionEvidenceSummary(toolEvidence)))};
+}
+
+chat::Message AgentPromptBuilder::summaryCorrectionMessage(
+    const QString& errorMessage)
+{
+    return {
+        chat::Role::User,
+        QStringLiteral(
+            "The summary task rejected the previous response: %1 Return "
+            "exactly one final action with a concise user-facing summary. "
+            "Do not call a tool, return a task plan or review, or change any "
+            "recorded task status.")
+            .arg(errorMessage)};
 }
 
 chat::Message AgentPromptBuilder::toolCallReviewMessage(

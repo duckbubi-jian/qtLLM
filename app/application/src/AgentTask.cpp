@@ -106,10 +106,10 @@ void AgentTask::activateConversation(QList<chat::Message> messages,
     messages_ = std::move(messages);
     requestMessageIndex_ = requestMessageIndex;
     decisionBytes_.clear();
-    if (!elapsedTimer_.isValid())
+    if (!startedTick_.has_value())
     {
         startedAt_ = QDateTime::currentDateTimeUtc();
-        elapsedTimer_.start();
+        startedTick_ = std::chrono::steady_clock::now();
     }
     setStatus(Status::Running);
 }
@@ -117,8 +117,7 @@ void AgentTask::activateConversation(QList<chat::Message> messages,
 void AgentTask::setStatus(Status status)
 {
     if (isTerminal(status_)) return;
-    const auto elapsedBeforeTransition =
-        elapsedTimer_.isValid() ? elapsedTimer_.elapsed() : 0;
+    const auto elapsedBeforeTransition = elapsedMilliseconds();
     status_ = status;
     if (!isTerminal(status)) return;
     terminalElapsedMilliseconds_ = elapsedBeforeTransition;
@@ -145,6 +144,9 @@ qint64 AgentTask::elapsedMilliseconds() const
 {
     if (!startedAt_.isValid()) return 0;
     if (isTerminal(status_)) return terminalElapsedMilliseconds_;
-    return elapsedTimer_.isValid() ? elapsedTimer_.elapsed() : 0;
+    if (!startedTick_.has_value()) return 0;
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now() - *startedTick_)
+        .count();
 }
 }  // namespace qtllm::application

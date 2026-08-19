@@ -5,11 +5,12 @@
 #include <QByteArray>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QSet>
 #include <optional>
 
 namespace qtllm::application
 {
-class PlanTask final : public AgentTask
+class ExecutionTask final : public AgentTask
 {
    public:
     struct ToolCallReviewResult
@@ -40,7 +41,6 @@ class PlanTask final : public AgentTask
         {
             CallTool,
             TaskCompleted,
-            FinalAnswer,
             Blocked,
             Continue,
             Invalid
@@ -64,15 +64,21 @@ class PlanTask final : public AgentTask
         bool toolCallAlreadyRecorded = false;
     };
 
-    explicit PlanTask(QJsonObject specification = {});
+    explicit ExecutionTask(QJsonObject specification = {},
+                           QSet<QString> toolsRequiringSemanticReview = {});
+    explicit ExecutionTask(QString directDescription);
 
     [[nodiscard]] const QJsonObject& specification() const;
     [[nodiscard]] QJsonObject completionSnapshot() const;
+    [[nodiscard]] Directive completeTaskGeneration(
+        bool cancelled, const QList<QJsonObject>& toolEvidence,
+        const QString& unresolvedVerificationReason) override;
 
     void activate(QList<chat::Message> messageSeed,
                   const QJsonArray& completedSteps,
                   const QList<QJsonObject>& priorToolEvidence,
                   int evidenceStart);
+    void activateDirect(QList<chat::Message> messages);
     [[nodiscard]] bool requiresTool() const;
     [[nodiscard]] ActionResult handleAction(
         const agent::Action& action, const QByteArray& rawAction,
@@ -88,18 +94,8 @@ class PlanTask final : public AgentTask
                           const QList<QJsonObject>& toolEvidence,
                           const QJsonObject& ledgerState,
                           const QString& verificationReason);
-    void beginToolCallReview(const agent::Action& action,
-                             const QByteArray& rawAction);
-    [[nodiscard]] bool repairToolCallReview(const QByteArray& rawAction,
-                                            const QString& errorMessage);
-    [[nodiscard]] bool repairStepReview(const QByteArray& rawAction,
-                                        const QString& errorMessage);
     [[nodiscard]] bool repairAction(const QByteArray& rawAction,
                                     const QString& errorMessage);
-    [[nodiscard]] bool repairPrematureFinal(const QByteArray& rawAction,
-                                            const QString& errorMessage);
-    void prepareFinalAnswer(const QJsonArray& steps,
-                            const QList<QJsonObject>& toolEvidence);
     void markBlocked();
 
     [[nodiscard]] bool awaitingReview() const;
@@ -110,26 +106,37 @@ class PlanTask final : public AgentTask
 
    private:
     [[nodiscard]] QString activity() const override;
+    void beginToolCallReview(const agent::Action& action,
+                             const QByteArray& rawAction);
+    [[nodiscard]] bool repairToolCallReview(const QByteArray& rawAction,
+                                            const QString& errorMessage);
+    [[nodiscard]] bool repairStepReview(const QByteArray& rawAction,
+                                        const QString& errorMessage);
+    [[nodiscard]] bool repairPrematureFinal(const QByteArray& rawAction,
+                                            const QString& errorMessage);
     [[nodiscard]] std::optional<ToolCallReviewResult> resolveToolCallReview(
         const agent::Action& review, const QByteArray& rawAction);
     [[nodiscard]] StepReviewResult reviewStep(
         const agent::Action& review, const QByteArray& rawAction,
         const QList<QJsonObject>& toolEvidence,
         const QString& unresolvedVerificationReason);
-    [[nodiscard]] bool completeWithoutTool(const QByteArray& rawAction);
+    [[nodiscard]] bool completeWithoutTool(const agent::Action& action,
+                                           const QByteArray& rawAction);
     void markPending();
     void markSatisfied(const QJsonArray& evidence);
 
     QJsonObject specification_;
+    bool managedPlan_ = true;
+    QSet<QString> toolsRequiringSemanticReview_;
     int evidenceStart_ = 1;
     int evidenceEnd_ = 0;
     QJsonArray evidence_;
+    QString output_;
     bool awaitingStepReview_ = false;
     std::optional<agent::Action> pendingToolCallReview_;
     int planStepReviewFailures_ = 0;
     int toolCallReviewFailures_ = 0;
     int actionRepairFailures_ = 0;
     int prematureFinalFailures_ = 0;
-    bool finalAnswerPrepared_ = false;
 };
 }  // namespace qtllm::application

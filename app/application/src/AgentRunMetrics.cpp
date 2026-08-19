@@ -77,6 +77,57 @@ QString firstToolChoiceForRun(const AgentRun& run)
         if (event.type == agent::EventType::ToolStarted) return event.toolName;
     return {};
 }
+
+QString taskKindName(AgentTask::Kind kind)
+{
+    switch (kind)
+    {
+        case AgentTask::Kind::Planning:
+            return QStringLiteral("planning");
+        case AgentTask::Kind::Execution:
+            return QStringLiteral("execution");
+        case AgentTask::Kind::Summary:
+            return QStringLiteral("summary");
+    }
+    return QStringLiteral("unknown");
+}
+
+QString taskStatusName(AgentTask::Status status)
+{
+    switch (status)
+    {
+        case AgentTask::Status::Pending:
+            return QStringLiteral("pending");
+        case AgentTask::Status::Running:
+            return QStringLiteral("running");
+        case AgentTask::Status::WaitingForModel:
+            return QStringLiteral("waiting_for_model");
+        case AgentTask::Status::WaitingForApproval:
+            return QStringLiteral("waiting_for_approval");
+        case AgentTask::Status::WaitingForTool:
+            return QStringLiteral("waiting_for_tool");
+        case AgentTask::Status::Completed:
+            return QStringLiteral("completed");
+        case AgentTask::Status::Blocked:
+            return QStringLiteral("blocked");
+        case AgentTask::Status::Cancelled:
+            return QStringLiteral("cancelled");
+        case AgentTask::Status::Failed:
+            return QStringLiteral("failed");
+    }
+    return QStringLiteral("unknown");
+}
+
+QJsonObject taskTiming(const AgentTask& task)
+{
+    const auto snapshot = task.runtimeSnapshot();
+    return {
+        {QStringLiteral("id"), snapshot.id},
+        {QStringLiteral("description"), snapshot.description},
+        {QStringLiteral("kind"), taskKindName(snapshot.kind)},
+        {QStringLiteral("status"), taskStatusName(snapshot.status)},
+        {QStringLiteral("elapsedMilliseconds"), snapshot.elapsedMilliseconds}};
+}
 }  // namespace
 
 AgentRunMetrics AgentRunMetrics::fromRun(const AgentRun& run)
@@ -111,6 +162,14 @@ AgentRunMetrics AgentRunMetrics::fromRun(const AgentRun& run)
                              static_cast<double>(run.toolValidationAttempts),
                          0.0, 1.0);
     metrics.completionReviewSucceeded = run.completionReviewSuccesses > 0;
+    if (run.planningTask.has_value())
+        metrics.taskTimings.append(taskTiming(*run.planningTask));
+    if (run.directTask.has_value())
+        metrics.taskTimings.append(taskTiming(*run.directTask));
+    for (const auto& task : run.executionTasks)
+        metrics.taskTimings.append(taskTiming(task));
+    if (run.summaryTask.has_value())
+        metrics.taskTimings.append(taskTiming(*run.summaryTask));
     return metrics;
 }
 
@@ -142,6 +201,7 @@ QJsonObject AgentRunMetrics::toJson() const
          completionReviewSucceeded},
         {QStringLiteral("contextCompactions"), contextCompactions},
         {QStringLiteral("successfulToolResults"), successfulToolResults},
-        {QStringLiteral("toolEvidenceCount"), toolEvidenceCount}};
+        {QStringLiteral("toolEvidenceCount"), toolEvidenceCount},
+        {QStringLiteral("taskTimings"), taskTimings}};
 }
 }  // namespace qtllm::application

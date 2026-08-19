@@ -10,6 +10,8 @@ QString eventTypeName(EventType type)
             return QStringLiteral("run_started");
         case EventType::TaskPlanAccepted:
             return QStringLiteral("task_plan_accepted");
+        case EventType::TaskStarted:
+            return QStringLiteral("task_started");
         case EventType::TaskStepUpdated:
             return QStringLiteral("task_step_updated");
         case EventType::DecisionStarted:

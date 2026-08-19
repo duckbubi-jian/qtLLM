@@ -29,7 +29,9 @@ class AgentPromptBuilder final
         const QJsonObject& currentStep, const QJsonArray& completedSteps,
         const QList<QJsonObject>& priorToolEvidence);
     static chat::Message allPlanTasksCompletedMessage(
-        const QJsonArray& steps, const QList<QJsonObject>& toolEvidence);
+        const QString& originalRequest, const QJsonArray& steps,
+        const QList<QJsonObject>& toolEvidence);
+    static chat::Message summaryCorrectionMessage(const QString& errorMessage);
     static chat::Message taskPlanCorrectionMessage(const QString& errorMessage);
     static chat::Message toolCallReviewMessage(
         const QJsonObject& step, const agent::Action& proposedAction);

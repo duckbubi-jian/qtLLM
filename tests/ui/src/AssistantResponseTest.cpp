@@ -607,6 +607,19 @@ void AssistantResponseTest::recordsRedactedAgentActivity()
                                          QStringLiteral("hello"));
     emit controller->eventRecorded(
         {QStringLiteral("run-id"),
+         agent::EventType::TaskStarted,
+         QStringLiteral("execution task started."),
+         {},
+         {{QStringLiteral("taskKind"), QStringLiteral("execution")},
+          {QStringLiteral("taskId"), QStringLiteral("step-1")},
+          {QStringLiteral("description"),
+           QStringLiteral("Inspect token=do-not-display")},
+          {QStringLiteral("taskIndex"), 1},
+          {QStringLiteral("taskCount"), 3}},
+         QDateTime::fromString(QStringLiteral("2026-08-14T02:03:04Z"),
+                               Qt::ISODate)});
+    emit controller->eventRecorded(
+        {QStringLiteral("run-id"),
          agent::EventType::ToolStarted,
          QStringLiteral("Tool call started."),
          QStringLiteral("filesystem.list_directory"),
@@ -617,6 +630,10 @@ void AssistantResponseTest::recordsRedactedAgentActivity()
 
     const auto activity = activityLog->toPlainText();
     QVERIFY(activity.contains(QStringLiteral("====================")));
+    QVERIFY(activity.contains(QStringLiteral("Task Info")));
+    QVERIFY(activity.contains(QStringLiteral("Execution 1/3 | step-1")));
+    QVERIFY(
+        activity.contains(QStringLiteral("Goal: Inspect token=[redacted]")));
     QVERIFY(activity.contains(QStringLiteral("Agent run started.")));
     QVERIFY(
         activity.contains(QStringLiteral("Tool: filesystem.list_directory")));

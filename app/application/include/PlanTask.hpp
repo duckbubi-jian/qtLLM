@@ -1,47 +1,17 @@
 #pragma once
 
-#include "AgentAction.hpp"
-#include "ChatMessage.hpp"
-#include "ModelPackage.hpp"
+#include "AgentTask.hpp"
 
 #include <QByteArray>
 #include <QJsonArray>
 #include <QJsonObject>
-#include <QList>
-
-#include <functional>
 #include <optional>
 
 namespace qtllm::application
 {
-class PlanTask final
+class PlanTask final : public AgentTask
 {
    public:
-    enum class Status
-    {
-        Pending,
-        Running,
-        AwaitingApproval,
-        AwaitingTool,
-        AwaitingCallReview,
-        AwaitingReview,
-        Satisfied,
-        Blocked,
-        Cancelled,
-        Failed
-    };
-
-    using GenerateHandler = std::function<void(
-        const QList<chat::Message>&, const models::InferencePreset&, int)>;
-
-    struct Decision
-    {
-        bool valid = false;
-        agent::Action action;
-        QByteArray rawAction;
-        QString errorMessage;
-    };
-
     struct ToolCallReviewResult
     {
         agent::Action proposedAction;
@@ -97,26 +67,13 @@ class PlanTask final
     explicit PlanTask(QJsonObject specification = {});
 
     [[nodiscard]] const QJsonObject& specification() const;
-    [[nodiscard]] QString id() const;
-    [[nodiscard]] Status status() const;
-    [[nodiscard]] QJsonObject snapshot() const;
+    [[nodiscard]] QJsonObject completionSnapshot() const;
 
     void activate(QList<chat::Message> messageSeed,
                   const QJsonArray& completedSteps,
                   const QList<QJsonObject>& priorToolEvidence,
                   int evidenceStart);
-    [[nodiscard]] bool hasConversation() const;
     [[nodiscard]] bool requiresTool() const;
-    [[nodiscard]] QList<chat::Message>& messages();
-    [[nodiscard]] const QList<chat::Message>& messages() const;
-    [[nodiscard]] qsizetype& requestMessageIndex();
-
-    void requestDecision(const GenerateHandler& generate,
-                         const models::InferencePreset& preset,
-                         int outputTokens);
-    [[nodiscard]] bool receiveToken(const QByteArray& bytes,
-                                    qsizetype maximumBytes);
-    [[nodiscard]] Decision completeDecision(bool cancelled);
     [[nodiscard]] ActionResult handleAction(
         const agent::Action& action, const QByteArray& rawAction,
         const QList<QJsonObject>& toolEvidence,
@@ -144,8 +101,6 @@ class PlanTask final
     void prepareFinalAnswer(const QJsonArray& steps,
                             const QList<QJsonObject>& toolEvidence);
     void markBlocked();
-    void markCancelled();
-    void markFailed();
 
     [[nodiscard]] bool awaitingReview() const;
     [[nodiscard]] int evidenceStart() const;
@@ -154,6 +109,7 @@ class PlanTask final
     [[nodiscard]] bool hasPendingToolCallReview() const;
 
    private:
+    [[nodiscard]] QString activity() const override;
     [[nodiscard]] std::optional<ToolCallReviewResult> resolveToolCallReview(
         const agent::Action& review, const QByteArray& rawAction);
     [[nodiscard]] StepReviewResult reviewStep(
@@ -165,13 +121,10 @@ class PlanTask final
     void markSatisfied(const QJsonArray& evidence);
 
     QJsonObject specification_;
-    Status status_ = Status::Pending;
-    QList<chat::Message> messages_;
-    qsizetype requestMessageIndex_ = 0;
-    QByteArray decisionBytes_;
     int evidenceStart_ = 1;
     int evidenceEnd_ = 0;
     QJsonArray evidence_;
+    bool awaitingStepReview_ = false;
     std::optional<agent::Action> pendingToolCallReview_;
     int planStepReviewFailures_ = 0;
     int toolCallReviewFailures_ = 0;

@@ -23,6 +23,8 @@ struct AgentProgressStep
     QString id;
     QString description;
     AgentProgressStepStatus status = AgentProgressStepStatus::Pending;
+    QString activity;
+    qint64 elapsedMilliseconds = 0;
 };
 
 struct AgentProgressActivity

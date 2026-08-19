@@ -1659,7 +1659,7 @@ void AgentControllerTest::
                  .toString(),
              QString{});
     QCOMPARE(controller.activeRun()->planTasks.at(0).status(),
-             application::PlanTask::Status::AwaitingReview);
+             application::PlanTask::Status::WaitingForModel);
     QVERIFY(generatedMessages.constLast().content.contains(
         QStringLiteral("review_plan_step")));
     for (qsizetype index = 1; index < generatedMessages.size(); ++index)
@@ -1735,7 +1735,7 @@ void AgentControllerTest::
                     {QStringLiteral("is_open"), true}};
     controller.receiveToolResult(wrongCase);
     QCOMPARE(controller.activeRun()->planTasks.at(0).status(),
-             application::PlanTask::Status::AwaitingReview);
+             application::PlanTask::Status::WaitingForModel);
 
     controller.receiveToken(planStepReviewAction(
         QStringLiteral("case"), QStringLiteral("pending"), QJsonArray{1},
@@ -1859,7 +1859,7 @@ void AgentControllerTest::keepsSharedMutationWithinCurrentPlanStep()
         {QStringLiteral("object_uuid"), QStringLiteral("solid-1")}};
     controller.receiveToolResult(imported);
     QCOMPARE(controller.activeRun()->planTasks.at(0).status(),
-             application::PlanTask::Status::AwaitingReview);
+             application::PlanTask::Status::WaitingForModel);
     controller.receiveToken(planStepReviewAction(
         QStringLiteral("solid"), QStringLiteral("satisfied"), QJsonArray{1},
         QStringLiteral("The solid import matches the current step.")));
@@ -1869,12 +1869,23 @@ void AgentControllerTest::keepsSharedMutationWithinCurrentPlanStep()
     QCOMPARE(controller.progressSnapshot().currentStepId,
              QStringLiteral("inlet"));
     const auto& tasks = controller.activeRun()->planTasks;
-    QCOMPARE(tasks.at(0).status(), application::PlanTask::Status::Satisfied);
-    QCOMPARE(tasks.at(1).status(), application::PlanTask::Status::Running);
+    QCOMPARE(tasks.at(0).status(), application::PlanTask::Status::Completed);
+    QCOMPARE(tasks.at(1).status(),
+             application::PlanTask::Status::WaitingForModel);
     QCOMPARE(tasks.at(2).status(), application::PlanTask::Status::Pending);
     QVERIFY(tasks.at(0).hasConversation());
     QVERIFY(tasks.at(1).hasConversation());
     QVERIFY(!tasks.at(2).hasConversation());
+    const auto firstTaskRuntime = tasks.at(0).runtimeSnapshot();
+    const auto secondTaskRuntime = tasks.at(1).runtimeSnapshot();
+    const auto thirdTaskRuntime = tasks.at(2).runtimeSnapshot();
+    QVERIFY(firstTaskRuntime.startedAt.isValid());
+    QVERIFY(firstTaskRuntime.finishedAt.isValid());
+    QVERIFY(firstTaskRuntime.elapsedMilliseconds >= 0);
+    QVERIFY(secondTaskRuntime.startedAt.isValid());
+    QVERIFY(!secondTaskRuntime.finishedAt.isValid());
+    QVERIFY(!thirdTaskRuntime.startedAt.isValid());
+    QCOMPARE(thirdTaskRuntime.elapsedMilliseconds, 0);
     QVERIFY(tasks.at(0).messages().size() > tasks.at(1).messages().size());
     QCOMPARE(tasks.at(1).messages().size(), 2);
     QVERIFY(generatedMessages.constLast().content.contains(
@@ -1972,7 +1983,7 @@ void AgentControllerTest::advancesPlanOneStepPerTerminalToolResult()
                     {QStringLiteral("uuid"), QStringLiteral("case-1")}};
     controller.receiveToolResult(result);
     QCOMPARE(controller.activeRun()->planTasks.at(0).status(),
-             application::PlanTask::Status::AwaitingReview);
+             application::PlanTask::Status::WaitingForModel);
     controller.receiveToken(planStepReviewAction(
         QStringLiteral("create"), QStringLiteral("satisfied"), QJsonArray({1}),
         QStringLiteral(
@@ -2018,9 +2029,9 @@ void AgentControllerTest::advancesPlanOneStepPerTerminalToolResult()
     QCOMPARE(controller.state(), application::AgentRun::State::Completed);
     QCOMPARE(controller.activeRun()->currentPlanStepIndex, 2);
     QCOMPARE(controller.activeRun()->planTasks.at(0).status(),
-             application::PlanTask::Status::Satisfied);
+             application::PlanTask::Status::Completed);
     QCOMPARE(controller.activeRun()->planTasks.at(1).status(),
-             application::PlanTask::Status::Satisfied);
+             application::PlanTask::Status::Completed);
     QCOMPARE(controller.progressSnapshot().currentStepId, QString{});
 }
 

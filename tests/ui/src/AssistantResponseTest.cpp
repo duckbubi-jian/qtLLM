@@ -446,13 +446,16 @@ void AssistantResponseTest::showsStructuredAgentProgressUntilRunEnds()
     running.elapsedMilliseconds = 65'000;
     running.steps = {
         {QStringLiteral("step-1"), QStringLiteral("Inspect the workspace"),
-         application::AgentProgressStepStatus::Completed},
+         application::AgentProgressStepStatus::Completed,
+         QStringLiteral("Task completed"), 3'000},
         {QStringLiteral("step-2"),
          QStringLiteral("Create the inlet with token=do-not-display"),
-         application::AgentProgressStepStatus::Current},
+         application::AgentProgressStepStatus::Current,
+         QStringLiteral("Waiting for the tool result"), 7'000},
         {QStringLiteral("step-3"),
          QStringLiteral("Verify_") + QString(180, QLatin1Char('x')),
-         application::AgentProgressStepStatus::Pending}};
+         application::AgentProgressStepStatus::Pending,
+         QStringLiteral("Waiting to start"), 0}};
     running.currentStepId = QStringLiteral("step-2");
     running.operation = QStringLiteral("Calling shondy.create_inlet");
     running.waitingReason = QStringLiteral("Waiting for the tool result");
@@ -487,7 +490,15 @@ void AssistantResponseTest::showsStructuredAgentProgressUntilRunEnds()
     }
     const auto stepRows =
         progress->findChildren<QWidget*>(QStringLiteral("agentProgressStep"));
+    const auto stepElapsed = progress->findChildren<QLabel*>(
+        QStringLiteral("agentProgressStepElapsed"));
     QCOMPARE(stepRows.size(), 3);
+    QCOMPARE(stepElapsed.size(), 3);
+    QCOMPARE(stepElapsed.at(0)->text(), QStringLiteral("00:03"));
+    QCOMPARE(stepElapsed.at(1)->text(), QStringLiteral("00:07"));
+    QCOMPARE(stepElapsed.at(2)->text(), QStringLiteral("00:00"));
+    QCOMPARE(stepElapsed.at(1)->toolTip(),
+             QStringLiteral("Waiting for the tool result"));
     QCOMPARE(stepLabels.at(0)->toolTip(),
              QStringLiteral("1. Inspect the workspace"));
     QVERIFY(stepLabels.at(1)->text().startsWith(QStringLiteral("2. ")));

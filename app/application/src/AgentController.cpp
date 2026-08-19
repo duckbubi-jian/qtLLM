@@ -296,7 +296,7 @@ void AgentController::cancel()
         activeRun_->currentPlanStepIndex <
             static_cast<int>(activeRun_->planTasks.size()))
     {
-        task->markCancelled();
+        task->cancel();
         refreshPlanTaskSnapshots();
     }
     setState(AgentRun::State::Cancelled);
@@ -402,6 +402,15 @@ AgentProgressSnapshot AgentController::progressSnapshot() const
         step.id = object.value(QStringLiteral("id")).toString();
         step.description =
             object.value(QStringLiteral("description")).toString();
+        if (run.orderedTaskPlan &&
+            index < static_cast<qsizetype>(run.planTasks.size()))
+        {
+            const auto taskSnapshot =
+                run.planTasks.at(static_cast<std::size_t>(index))
+                    .runtimeSnapshot();
+            step.activity = taskSnapshot.activity;
+            step.elapsedMilliseconds = taskSnapshot.elapsedMilliseconds;
+        }
         const auto status =
             object.value(QStringLiteral("status")).toString().toLower();
         if (status == QLatin1String("satisfied"))
@@ -442,11 +451,10 @@ AgentProgressSnapshot AgentController::progressSnapshot() const
                 snapshot.operation =
                     QStringLiteral("Preparing the final answer");
             else if (const auto* task = currentPlanTask();
-                     task && task->status() == PlanTask::Status::AwaitingReview)
+                     task && task->awaitingReview())
                 snapshot.operation =
                     QStringLiteral("Reviewing the current task result");
-            else if (task &&
-                     task->status() == PlanTask::Status::AwaitingCallReview)
+            else if (task && task->hasPendingToolCallReview())
                 snapshot.operation =
                     QStringLiteral("Checking the current task boundary");
             else
@@ -792,7 +800,7 @@ void AgentController::refreshPlanTaskSnapshots()
     if (!activeRun_ || activeRun_->planTasks.empty()) return;
     QJsonArray snapshots;
     for (const auto& task : activeRun_->planTasks)
-        snapshots.append(task.snapshot());
+        snapshots.append(task.completionSnapshot());
     activeRun_->completionSteps = std::move(snapshots);
 }
 
@@ -807,8 +815,8 @@ void AgentController::activatePlanTask(int index, int evidenceStart)
     {
         const auto& completed =
             activeRun_->planTasks.at(static_cast<std::size_t>(completedIndex));
-        if (completed.status() == PlanTask::Status::Satisfied)
-            completedSteps.append(completed.snapshot());
+        if (completed.status() == PlanTask::Status::Completed)
+            completedSteps.append(completed.completionSnapshot());
     }
 
     auto messages = activeRun_->inferenceMessages;
@@ -872,7 +880,7 @@ void AgentController::compactContextIfNeeded()
         for (auto index = 0; index <= lastVisibleIndex; ++index)
             visibleSteps.append(
                 activeRun_->planTasks.at(static_cast<std::size_t>(index))
-                    .snapshot());
+                    .completionSnapshot());
 
         if (activeRun_->currentPlanStepIndex >= 0 &&
             activeRun_->currentPlanStepIndex <
@@ -958,7 +966,8 @@ void AgentController::handleAction(const agent::Action& action,
     {
         auto* task = currentPlanTask();
         if (!task) return;
-        const auto previousStatus = task->status();
+        const auto wasAwaitingReview = task->awaitingReview();
+        const auto wasAwaitingToolCallReview = task->hasPendingToolCallReview();
         const auto taskResult = task->handleAction(
             action, rawAction, toolEvidence_,
             activeRun_->ledger.unresolvedVerificationReason());
@@ -1024,12 +1033,12 @@ void AgentController::handleAction(const agent::Action& action,
                 blockRun(taskResult.blockReason, taskResult.content);
                 return;
             case Result::Type::Continue:
-                if (previousStatus == PlanTask::Status::AwaitingReview)
+                if (wasAwaitingReview)
                     recordEvent(
                         agent::EventType::TaskStepUpdated,
                         QStringLiteral("Task plan step remains pending."), {},
                         {{QStringLiteral("stepId"), task->id()}});
-                else if (previousStatus == PlanTask::Status::AwaitingCallReview)
+                else if (wasAwaitingToolCallReview)
                     recordEvent(
                         agent::EventType::RecoveryStarted,
                         QStringLiteral(
@@ -2175,7 +2184,7 @@ void AgentController::failRun(const QString& code, const QString& message)
         activeRun_->currentPlanStepIndex <
             static_cast<int>(activeRun_->planTasks.size()))
     {
-        task->markFailed();
+        task->fail();
         refreshPlanTaskSnapshots();
     }
     setState(AgentRun::State::Failed);

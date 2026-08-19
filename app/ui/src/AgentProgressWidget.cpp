@@ -253,6 +253,14 @@ void AgentProgressWidget::refreshPlan()
         description->setFixedHeight(26);
         description->setTextInteractionFlags(Qt::TextSelectableByMouse);
         rowLayout->addWidget(description, 1);
+        auto* elapsed = new QLabel(elapsedText(step.elapsedMilliseconds), row);
+        elapsed->setObjectName(QStringLiteral("agentProgressStepElapsed"));
+        elapsed->setProperty("elapsedBase", step.elapsedMilliseconds);
+        elapsed->setProperty(
+            "active",
+            step.status == application::AgentProgressStepStatus::Current);
+        elapsed->setToolTip(redactSensitiveText(step.activity, 160));
+        rowLayout->addWidget(elapsed);
         planLayout_->addWidget(row);
     }
 }
@@ -263,5 +271,15 @@ void AgentProgressWidget::refreshElapsed()
         elapsedBaseMilliseconds_ +
         ((!terminal_ && elapsedClock_.isValid()) ? elapsedClock_.elapsed() : 0);
     elapsedLabel_->setText(elapsedText(elapsed));
+    const auto stepElapsedLabels = plan_->findChildren<QLabel*>(
+        QStringLiteral("agentProgressStepElapsed"));
+    for (auto* label : stepElapsedLabels)
+    {
+        auto stepElapsed = label->property("elapsedBase").toLongLong();
+        if (!terminal_ && label->property("active").toBool() &&
+            elapsedClock_.isValid())
+            stepElapsed += elapsedClock_.elapsed();
+        label->setText(elapsedText(stepElapsed));
+    }
 }
 }  // namespace qtllm::ui

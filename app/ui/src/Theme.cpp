@@ -424,6 +424,11 @@ QWidget#agentProgressStep {
 QLabel#agentProgressStepDescription {
     color: #475569;
 }
+QLabel#agentProgressStepElapsed {
+    min-width: 42px;
+    color: #64748b;
+    font-family: "Cascadia Mono", "Consolas", monospace;
+}
 QWidget#toolApprovalCard {
     margin: 5px 12px;
     background: #f8fafc;

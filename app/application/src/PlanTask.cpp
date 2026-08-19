@@ -10,7 +10,10 @@
 namespace qtllm::application
 {
 PlanTask::PlanTask(QJsonObject specification)
-    : specification_(std::move(specification))
+    : AgentTask(Kind::Execution,
+                specification.value(QStringLiteral("id")).toString(),
+                specification.value(QStringLiteral("description")).toString()),
+      specification_(std::move(specification))
 {
 }
 
@@ -19,22 +22,12 @@ const QJsonObject& PlanTask::specification() const
     return specification_;
 }
 
-QString PlanTask::id() const
-{
-    return specification_.value(QStringLiteral("id")).toString();
-}
-
-PlanTask::Status PlanTask::status() const
-{
-    return status_;
-}
-
-QJsonObject PlanTask::snapshot() const
+QJsonObject PlanTask::completionSnapshot() const
 {
     auto result = specification_;
-    switch (status_)
+    switch (status())
     {
-        case Status::Satisfied:
+        case Status::Completed:
             result.insert(QStringLiteral("status"),
                           QStringLiteral("satisfied"));
             result.insert(QStringLiteral("evidence"), evidence_);
@@ -67,72 +60,21 @@ void PlanTask::activate(QList<chat::Message> messageSeed,
 {
     messageSeed.append(AgentPromptBuilder::planTaskActivationMessage(
         specification_, completedSteps, priorToolEvidence));
-    requestMessageIndex_ = messageSeed.size() - 1;
-    messages_ = std::move(messageSeed);
+    const auto requestMessageIndex = messageSeed.size() - 1;
     evidenceStart_ = evidenceStart;
     evidenceEnd_ = 0;
-    decisionBytes_.clear();
+    evidence_ = {};
+    awaitingStepReview_ = false;
+    pendingToolCallReview_.reset();
     actionRepairFailures_ = 0;
     prematureFinalFailures_ = 0;
     finalAnswerPrepared_ = false;
-    status_ = Status::Running;
-}
-
-bool PlanTask::hasConversation() const
-{
-    return !messages_.isEmpty();
+    activateConversation(std::move(messageSeed), requestMessageIndex);
 }
 
 bool PlanTask::requiresTool() const
 {
     return specification_.value(QStringLiteral("requires_tool")).toBool();
-}
-
-QList<chat::Message>& PlanTask::messages()
-{
-    return messages_;
-}
-
-const QList<chat::Message>& PlanTask::messages() const
-{
-    return messages_;
-}
-
-qsizetype& PlanTask::requestMessageIndex()
-{
-    return requestMessageIndex_;
-}
-
-void PlanTask::requestDecision(const GenerateHandler& generate,
-                               const models::InferencePreset& preset,
-                               int outputTokens)
-{
-    decisionBytes_.clear();
-    if (status_ == Status::Pending || status_ == Status::AwaitingTool)
-        status_ = Status::Running;
-    generate(messages_, preset, outputTokens);
-}
-
-bool PlanTask::receiveToken(const QByteArray& bytes, qsizetype maximumBytes)
-{
-    if (bytes.isEmpty()) return true;
-    decisionBytes_ += bytes;
-    return decisionBytes_.size() <= maximumBytes;
-}
-
-PlanTask::Decision PlanTask::completeDecision(bool cancelled)
-{
-    Decision result;
-    result.rawAction = decisionBytes_;
-    if (cancelled)
-    {
-        result.errorMessage =
-            QStringLiteral("Agent decision generation was cancelled.");
-        return result;
-    }
-    result.valid = agent::parseAction(result.rawAction, result.action,
-                                      result.errorMessage);
-    return result;
 }
 
 PlanTask::ActionResult PlanTask::handleAction(
@@ -300,19 +242,20 @@ QString PlanTask::validateToolAction(const agent::Action& action,
 
 void PlanTask::awaitTool()
 {
-    status_ = Status::AwaitingTool;
+    setStatus(Status::WaitingForTool);
 }
 
 void PlanTask::awaitApproval()
 {
-    status_ = Status::AwaitingApproval;
+    setStatus(Status::WaitingForApproval);
 }
 
 void PlanTask::beginReview(int evidenceEnd)
 {
     evidenceEnd_ = evidenceEnd;
     planStepReviewFailures_ = 0;
-    status_ = Status::AwaitingReview;
+    awaitingStepReview_ = true;
+    setStatus(Status::Running);
 }
 
 void PlanTask::appendToolResult(chat::Message resultMessage,
@@ -327,7 +270,7 @@ void PlanTask::appendToolResult(chat::Message resultMessage,
             ledgerState, verificationReason);
         resultMessage.content += QStringLiteral("\n\n") + reviewMessage.content;
     }
-    messages_.append(std::move(resultMessage));
+    messages().append(std::move(resultMessage));
 }
 
 void PlanTask::beginToolCallReview(const agent::Action& action,
@@ -335,9 +278,9 @@ void PlanTask::beginToolCallReview(const agent::Action& action,
 {
     pendingToolCallReview_ = action;
     toolCallReviewFailures_ = 0;
-    status_ = Status::AwaitingCallReview;
-    messages_.append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
-    messages_.append(
+    setStatus(Status::Running);
+    messages().append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    messages().append(
         AgentPromptBuilder::toolCallReviewMessage(specification_, action));
 }
 
@@ -351,10 +294,10 @@ std::optional<PlanTask::ToolCallReviewResult> PlanTask::resolveToolCallReview(
         review.toolReviewDetail};
     pendingToolCallReview_.reset();
     toolCallReviewFailures_ = 0;
-    status_ = Status::Running;
-    messages_.append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    setStatus(Status::Running);
+    messages().append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
     if (!result.allowed)
-        messages_.append(AgentPromptBuilder::toolCallReviewContinuationMessage(
+        messages().append(AgentPromptBuilder::toolCallReviewContinuationMessage(
             specification_, result.detail));
     return result;
 }
@@ -365,13 +308,13 @@ bool PlanTask::repairToolCallReview(const QByteArray& rawAction,
     if (!pendingToolCallReview_.has_value() || toolCallReviewFailures_ >= 1)
         return false;
     ++toolCallReviewFailures_;
-    messages_.append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    messages().append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
     auto correction = AgentPromptBuilder::toolCallReviewMessage(
         specification_, *pendingToolCallReview_);
     correction.content.prepend(
         QStringLiteral("The prior current-task call review was invalid: %1 ")
             .arg(errorMessage));
-    messages_.append(std::move(correction));
+    messages().append(std::move(correction));
     return true;
 }
 
@@ -449,14 +392,14 @@ PlanTask::StepReviewResult PlanTask::reviewStep(
     }
 
     planStepReviewFailures_ = 0;
-    messages_.append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    messages().append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
     result.detail = review.completionDetail;
     result.evidence = review.planStepReviewEvidence;
     if (review.planStepReviewStatus == QLatin1String("pending"))
     {
         result.status = StepReviewResult::Status::Pending;
         markPending();
-        messages_.append(AgentPromptBuilder::planStepContinuationMessage(
+        messages().append(AgentPromptBuilder::planStepContinuationMessage(
             specification_, result.detail));
         return result;
     }
@@ -471,8 +414,8 @@ bool PlanTask::repairStepReview(const QByteArray& rawAction,
 {
     if (planStepReviewFailures_ >= 1) return false;
     ++planStepReviewFailures_;
-    messages_.append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
-    messages_.append(AgentPromptBuilder::planStepReviewCorrectionMessage(
+    messages().append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    messages().append(AgentPromptBuilder::planStepReviewCorrectionMessage(
         errorMessage, specification_));
     return true;
 }
@@ -483,8 +426,8 @@ bool PlanTask::repairAction(const QByteArray& rawAction,
     constexpr auto maximumRepairs = 3;
     if (actionRepairFailures_ >= maximumRepairs) return false;
     ++actionRepairFailures_;
-    messages_.append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
-    messages_.append(
+    messages().append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    messages().append(
         AgentPromptBuilder::orderedPlanCorrectionMessage(errorMessage));
     return true;
 }
@@ -494,15 +437,15 @@ bool PlanTask::repairPrematureFinal(const QByteArray& rawAction,
 {
     if (prematureFinalFailures_ >= 1) return false;
     ++prematureFinalFailures_;
-    messages_.append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
-    messages_.append(AgentPromptBuilder::unfinishedFinalMessage(errorMessage));
+    messages().append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    messages().append(AgentPromptBuilder::unfinishedFinalMessage(errorMessage));
     return true;
 }
 
 bool PlanTask::completeWithoutTool(const QByteArray& rawAction)
 {
     if (requiresTool()) return false;
-    messages_.append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    messages().append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
     markSatisfied({});
     return true;
 }
@@ -511,44 +454,35 @@ void PlanTask::prepareFinalAnswer(const QJsonArray& steps,
                                   const QList<QJsonObject>& toolEvidence)
 {
     finalAnswerPrepared_ = true;
-    messages_.append(
+    messages().append(
         AgentPromptBuilder::allPlanTasksCompletedMessage(steps, toolEvidence));
 }
 
 void PlanTask::markPending()
 {
     evidenceEnd_ = 0;
-    status_ = Status::Running;
+    awaitingStepReview_ = false;
+    setStatus(Status::Running);
 }
 
 void PlanTask::markSatisfied(const QJsonArray& evidence)
 {
     evidence_ = evidence;
     pendingToolCallReview_.reset();
-    status_ = Status::Satisfied;
+    awaitingStepReview_ = false;
+    complete();
 }
 
 void PlanTask::markBlocked()
 {
     pendingToolCallReview_.reset();
-    status_ = Status::Blocked;
-}
-
-void PlanTask::markCancelled()
-{
-    pendingToolCallReview_.reset();
-    status_ = Status::Cancelled;
-}
-
-void PlanTask::markFailed()
-{
-    pendingToolCallReview_.reset();
-    status_ = Status::Failed;
+    awaitingStepReview_ = false;
+    block();
 }
 
 bool PlanTask::awaitingReview() const
 {
-    return status_ == Status::AwaitingReview;
+    return awaitingStepReview_;
 }
 
 int PlanTask::evidenceStart() const
@@ -564,5 +498,36 @@ int PlanTask::evidenceEnd() const
 bool PlanTask::hasPendingToolCallReview() const
 {
     return pendingToolCallReview_.has_value();
+}
+
+QString PlanTask::activity() const
+{
+    if (finalAnswerPrepared_)
+        return QStringLiteral("Preparing the final answer");
+    if (awaitingStepReview_)
+        return QStringLiteral("Reviewing the current task result");
+    if (pendingToolCallReview_.has_value())
+        return QStringLiteral("Checking the current task boundary");
+    switch (status())
+    {
+        case Status::Pending:
+            return QStringLiteral("Waiting to start");
+        case Status::Running:
+        case Status::WaitingForModel:
+            return QStringLiteral("Working on the current task");
+        case Status::WaitingForApproval:
+            return QStringLiteral("Waiting for approval");
+        case Status::WaitingForTool:
+            return QStringLiteral("Waiting for the tool result");
+        case Status::Completed:
+            return QStringLiteral("Task completed");
+        case Status::Blocked:
+            return QStringLiteral("Task blocked");
+        case Status::Cancelled:
+            return QStringLiteral("Task stopped");
+        case Status::Failed:
+            return QStringLiteral("Task failed");
+    }
+    return {};
 }
 }  // namespace qtllm::application

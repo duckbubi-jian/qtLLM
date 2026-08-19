@@ -99,7 +99,17 @@ class AgentController final : public QObject
     static bool isTerminal(AgentRun::State state);
     void requestDecision();
     void compactContextIfNeeded();
+    [[nodiscard]] PlanTask* currentPlanTask();
+    [[nodiscard]] const PlanTask* currentPlanTask() const;
+    [[nodiscard]] QList<chat::Message>& decisionMessages();
+    [[nodiscard]] qsizetype& decisionRequestMessageIndex();
+    void activatePlanTask(int index, int evidenceStart);
+    void refreshPlanTaskSnapshots();
     void handleAction(const agent::Action& action, const QByteArray& rawAction);
+    void beginToolCallReview(const agent::Action& action,
+                             const QByteArray& rawAction);
+    void retryToolCallReview(const QByteArray& rawAction,
+                             const QString& errorMessage);
     void acceptTaskPlan(const agent::Action& action,
                         const QByteArray& rawAction);
     void beginCompletionReview(const agent::Action& action,
@@ -107,8 +117,6 @@ class AgentController final : public QObject
     void handleCompletionReview(const agent::Action& action,
                                 const QByteArray& rawAction);
     void beginPlanStepReview(int evidenceSequence);
-    void handlePlanStepReview(const agent::Action& action,
-                              const QByteArray& rawAction);
     void retryTaskPlan(const QByteArray& rawAction,
                        const QString& errorMessage);
     void retryCompletionReview(const QByteArray& rawAction,
@@ -121,6 +129,7 @@ class AgentController final : public QObject
     [[nodiscard]] QString validateCompletionReview(
         const agent::Action& action) const;
     void executeTool(const agent::Action& action);
+    void dispatchTool(const agent::Action& action);
     void retryInvalidAction(const QByteArray& rawAction,
                             const QString& errorMessage);
     void retryInvalidToolAction(const QByteArray& rawAction,
@@ -131,8 +140,6 @@ class AgentController final : public QObject
                                const QString& errorMessage);
     void retryOrderedPlanAction(const QByteArray& rawAction,
                                 const QString& errorMessage);
-    [[nodiscard]] QString validatePlanStepReview(
-        const agent::Action& action) const;
     void setState(AgentRun::State state);
     void recordEvent(agent::EventType type, const QString& message = {},
                      const QString& toolName = {},

@@ -171,9 +171,12 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools,
                               "completes_plan_step=true only on the final "
                               "call whose successful terminal result should "
                               "finish that step; "
-                              "never call a tool outside the current step's "
-                              "allowed_tools or a later step before the "
-                              "current step is verified. When asked for "
+                              "never call a mutating tool outside the current "
+                              "step's allowed_tools or a later step before "
+                              "the current step is verified. A directly "
+                              "relevant read-only tool may inspect, verify, "
+                              "or recover the current step even when the plan "
+                              "did not anticipate it. When asked for "
                               "review_plan_step, compare the exact current "
                               "step and original request with the recorded "
                               "tool arguments and result; tool success alone "
@@ -238,9 +241,10 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools,
                "internal reasoning, a plan, or statements about operations "
                "you still need to perform as final. A tool action has action "
                "set to call_tool, an exact listed tool name, and an arguments "
-               "object. task_plan, review_plan_step, and review_completion "
-               "are controller-only actions; return one only when the latest "
-               "controller message explicitly requests it. When the user "
+               "object. task_plan, review_tool_call, review_plan_step, and "
+               "review_completion are controller-only actions; return one "
+               "only when the latest controller message explicitly requests "
+               "it. When the user "
                "requests an "
                "external operation and a "
                "matching tool is available, execute it before final. When the "
@@ -310,9 +314,12 @@ chat::Message AgentPromptBuilder::taskPlanMessage(
             "requires an external operation or MCP result. Use "
             "requires_tool=false only for trailing answer/report steps after "
             "all external operations. For each tool-required step, include "
-            "allowed_tools with every exact qualified tool name that may "
-            "legitimately advance or verify that step, and no tools for "
-            "later steps. Use allowed_tools=[] for non-tool steps. Keep "
+            "allowed_tools with every exact qualified mutating tool name that "
+            "may legitimately advance that step, plus anticipated read-only "
+            "tools. Do not include mutating tools for later steps. A directly "
+            "relevant read-only tool may still inspect or recover the current "
+            "step if it was not anticipated. Use allowed_tools=[] for "
+            "non-tool steps. Keep "
             "literal names, paths, values, and ordering constraints from the "
             "original request in the relevant step description. Do not call "
             "a tool "
@@ -332,12 +339,17 @@ chat::Message AgentPromptBuilder::taskPlanAcceptedMessage(
         chat::Role::User,
         QStringLiteral(
             "The local controller recorded this task checklist: "
-            "<task_plan>%1</task_plan> Execute the first unfinished step now. "
+            "<task_plan>%1</task_plan> The controller is the plan manager: it "
+            "owns the current index and all completion marks. Act only as the "
+            "worker for the first unfinished step. Do not select, start, or "
+            "partially perform a later step, even when it uses the same tool. "
             "Return one call_tool action when a tool is required, including "
             "top-level plan_step_id copied exactly from the current step and "
             "completes_plan_step=false for intermediate calls or true only for "
-            "the final call that should finish the step. Call only a tool "
-            "listed in the current step's allowed_tools. Use this exact "
+            "the final call that should finish the step. Mutating tools must "
+            "be listed in the current step's allowed_tools; a directly "
+            "relevant read-only inspection or recovery tool may be omitted. "
+            "Use this exact "
             "top-level shape: {\"action\":\"call_tool\",\"tool\":\"...\","
             "\"arguments\":{},\"plan_step_id\":\"step-1\","
             "\"completes_plan_step\":false}. Do not add a read-back call "
@@ -349,10 +361,97 @@ chat::Message AgentPromptBuilder::taskPlanAcceptedMessage(
             "read-back only when the controller reports unresolved "
             "verification or the result does not confirm the requested "
             "outcome. Do not repeat task_plan. Return final only after every "
-            "checklist item is satisfied. If a real blocker prevents the "
-            "current step, return blocked with a specific reason and explain "
-            "what the user must provide or change.")
+            "checklist item is satisfied; when no unfinished step remains, "
+            "return final now. If a real blocker prevents the current step, "
+            "return blocked with a specific reason and explain what the user "
+            "must provide or change.")
             .arg(compactJson(steps))};
+}
+
+chat::Message AgentPromptBuilder::planTaskActivationMessage(
+    const QJsonObject& currentStep, const QJsonArray& completedSteps,
+    const QList<QJsonObject>& priorToolEvidence)
+{
+    return {
+        chat::Role::User,
+        QStringLiteral(
+            "The plan manager activated exactly one task worker. Work only "
+            "on <current_task>%1</current_task>. Do not start, partially "
+            "perform, inspect for, or substitute any other task. The manager "
+            "alone advances the plan and marks tasks. "
+            "Completed task context is provided only for stable identifiers "
+            "or outputs needed by the current task: "
+            "<completed_tasks>%2</completed_tasks> "
+            "<prior_tool_evidence>%3</prior_tool_evidence>. When this task "
+            "requires a tool, return one call_tool action with the exact "
+            "current task id as plan_step_id. Use completes_plan_step=false "
+            "until the one call whose successful terminal result should "
+            "finish this task, then use true. Mutating tools must be listed "
+            "in current_task.allowed_tools; a directly relevant read-only "
+            "inspection or recovery tool may be omitted. When this task does "
+            "not require a tool, return final with the result of this task. "
+            "Return blocked only for a real external blocker. Do not return "
+            "task_plan or manage any other task.")
+            .arg(compactJson(currentStep), compactJson(completedSteps),
+                 compactJson(completionEvidenceSummary(priorToolEvidence)))};
+}
+
+chat::Message AgentPromptBuilder::allPlanTasksCompletedMessage(
+    const QJsonArray& steps, const QList<QJsonObject>& toolEvidence)
+{
+    return {
+        chat::Role::User,
+        QStringLiteral(
+            "The plan manager has verified every task. Return one final "
+            "action now with a concise user-facing summary of the completed "
+            "work. Do not call another tool, repeat a review, or change task "
+            "status. <completed_tasks>%1</completed_tasks> "
+            "<tool_evidence>%2</tool_evidence>")
+            .arg(compactJson(steps),
+                 compactJson(completionEvidenceSummary(toolEvidence)))};
+}
+
+chat::Message AgentPromptBuilder::toolCallReviewMessage(
+    const QJsonObject& step, const agent::Action& proposedAction)
+{
+    const QJsonObject proposedCall{
+        {QStringLiteral("tool"), proposedAction.toolName},
+        {QStringLiteral("arguments"), proposedAction.arguments},
+        {QStringLiteral("plan_step_id"), proposedAction.planStepId},
+        {QStringLiteral("completes_plan_step"),
+         proposedAction.completesPlanStep.value_or(false)}};
+    return {
+        chat::Role::User,
+        QStringLiteral(
+            "The plan manager requires a semantic gate before this mutating "
+            "tool call because the same tool is assigned to more than one "
+            "ordered step. Review only whether the proposed call directly "
+            "performs the exact current step. Return verdict allow only when "
+            "its tool and every task-selecting argument (including target, "
+            "path, name, type, value, and unit) belong to this current step. "
+            "Return reject if it performs, begins, or substitutes any later "
+            "or different step. Do not change the plan, execute a tool, or "
+            "review completion. Return exactly {\"action\":"
+            "\"review_tool_call\",\"verdict\":\"allow\","
+            "\"detail\":\"...\"}.\n"
+            "<current_step>%1</current_step>\n"
+            "<proposed_call>%2</proposed_call>")
+            .arg(compactJson(step), compactJson(proposedCall))};
+}
+
+chat::Message AgentPromptBuilder::toolCallReviewContinuationMessage(
+    const QJsonObject& step, const QString& detail)
+{
+    return {
+        chat::Role::User,
+        QStringLiteral(
+            "The plan manager rejected the proposed call because it crossed "
+            "the current task boundary: %1 Continue as the worker for only "
+            "this current step: <current_step>%2</current_step> Return one "
+            "corrected call_tool action for this step, or blocked only for a "
+            "real external blocker. Do not start a later checklist item or "
+            "return another review_tool_call unless requested.")
+            .arg(detail, compactJson(step))};
 }
 
 chat::Message AgentPromptBuilder::taskPlanCorrectionMessage(
@@ -369,9 +468,9 @@ chat::Message AgentPromptBuilder::taskPlanCorrectionMessage(
 }
 
 chat::Message AgentPromptBuilder::planStepReviewMessage(
-    const QString& originalRequest, const QJsonObject& step,
-    const QList<QJsonObject>& toolEvidence, int evidenceStart, int evidenceEnd,
-    const QJsonObject& ledgerState, const QString& verificationReason)
+    const QJsonObject& step, const QList<QJsonObject>& toolEvidence,
+    int evidenceStart, int evidenceEnd, const QJsonObject& ledgerState,
+    const QString& verificationReason)
 {
     QList<QJsonObject> relevantEvidence;
     for (const auto& evidence : toolEvidence)
@@ -385,27 +484,28 @@ chat::Message AgentPromptBuilder::planStepReviewMessage(
         chat::Role::User,
         QStringLiteral(
             "Review only the current ordered task-plan step before any other "
-            "action. Compare its exact description and the original request "
-            "with the recorded tool names, arguments, and structured results. "
+            "action. Compare its exact description with the recorded tool "
+            "names, arguments, and structured results. "
             "A successful result is not sufficient when it used the wrong "
             "target, path, name, type, value, unit, or order. Use status "
             "satisfied only when the cited evidence proves this exact step; "
             "otherwise use pending and state the next corrective action. Cite "
-            "only evidence sequences from %1 through %2, including %2 when "
-            "satisfied. Do not call a tool, return final, repeat the task "
+            "only evidence sequences from %1 through %2. A satisfied review "
+            "must cite at least one successful terminal result in that range. "
+            "The controller, not this review action, will mark the step and "
+            "advance the plan. Do not call a tool, return final, repeat the "
+            "task "
             "plan, "
             "or review later steps. Return exactly: {\"action\":"
             "\"review_plan_step\",\"step_id\":\"%3\",\"status\":"
             "\"satisfied\",\"evidence\":[%2],\"detail\":\"...\"}.\n"
-            "<original_request>%4</original_request>\n"
-            "<current_step>%5</current_step>\n"
-            "<step_evidence>%6</step_evidence>\n"
-            "<run_ledger>%7</run_ledger>\n"
-            "<verification_requirement>%8</verification_requirement>")
+            "<current_step>%4</current_step>\n"
+            "<step_evidence>%5</step_evidence>\n"
+            "<run_ledger>%6</run_ledger>\n"
+            "<verification_requirement>%7</verification_requirement>")
             .arg(evidenceStart)
             .arg(evidenceEnd)
-            .arg(step.value(QStringLiteral("id")).toString(),
-                 originalRequest.trimmed(), compactJson(step),
+            .arg(step.value(QStringLiteral("id")).toString(), compactJson(step),
                  compactJson(completionEvidenceSummary(relevantEvidence)),
                  compactJson(ledgerState),
                  verificationReason.isEmpty() ? QStringLiteral("none")
@@ -434,8 +534,10 @@ chat::Message AgentPromptBuilder::planStepContinuationMessage(
         QStringLiteral(
             "The current task-plan step remains pending: %1 Continue only "
             "this step: <current_step>%2</current_step> Use one of its "
-            "allowed_tools and the same plan_step_id. Do not execute a later "
-            "step. If the required correction cannot be performed, return "
+            "allowed_tools for mutation, or a directly relevant read-only "
+            "inspection or recovery tool, with the same plan_step_id. Do not "
+            "execute a later step. If the required correction cannot be "
+            "performed, return "
             "blocked with the applicable reason.")
             .arg(detail, compactJson(step))};
 }

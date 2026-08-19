@@ -45,6 +45,7 @@ class AgentControllerTest final : public QObject
     void repairsMissingOrderedPlanMetadata();
     void blocksOrderedPlanWhenRequiredInputIsMissing();
     void successfulStructuredMutationAdvancesPlanWithoutReadBack();
+    void keepsSharedMutationWithinCurrentPlanStep();
     void keepsOrderedStepPendingWhenEvidenceMissesRequestedTarget();
     void advancesPlanOneStepPerTerminalToolResult();
     void rejectsOutOfOrderCompletionReview();
@@ -246,6 +247,15 @@ QByteArray planStepReviewAction(const QString& stepId, const QString& status,
                                      {QStringLiteral("step_id"), stepId},
                                      {QStringLiteral("status"), status},
                                      {QStringLiteral("evidence"), evidence},
+                                     {QStringLiteral("detail"), detail}})
+        .toJson(QJsonDocument::Compact);
+}
+
+QByteArray toolCallReviewAction(const QString& verdict, const QString& detail)
+{
+    return QJsonDocument(QJsonObject{{QStringLiteral("action"),
+                                      QStringLiteral("review_tool_call")},
+                                     {QStringLiteral("verdict"), verdict},
                                      {QStringLiteral("detail"), detail}})
         .toJson(QJsonDocument::Compact);
 }
@@ -1648,9 +1658,14 @@ void AgentControllerTest::
                  .value(QStringLiteral("status"))
                  .toString(),
              QString{});
-    QVERIFY(controller.activeRun()->awaitingPlanStepReview);
+    QCOMPARE(controller.activeRun()->planTasks.at(0).status(),
+             application::PlanTask::Status::AwaitingReview);
     QVERIFY(generatedMessages.constLast().content.contains(
         QStringLiteral("review_plan_step")));
+    for (qsizetype index = 1; index < generatedMessages.size(); ++index)
+        QVERIFY2(generatedMessages.at(index - 1).role !=
+                     generatedMessages.at(index).role,
+                 "Agent inference messages must alternate roles.");
     controller.receiveToken(planStepReviewAction(
         QStringLiteral("workspace"), QStringLiteral("satisfied"), QJsonArray{1},
         QStringLiteral("workspace2 was created at the requested target.")));
@@ -1696,7 +1711,8 @@ void AgentControllerTest::
                        "2. Create its fluid region."),
         {},
         {ledgerTool(QStringLiteral("create_case"), false),
-         ledgerTool(QStringLiteral("create_fluid_region"), false)}));
+         ledgerTool(QStringLiteral("create_fluid_region"), false),
+         ledgerTool(QStringLiteral("inspect"), true)}));
     const QJsonArray plan{
         planStep(QStringLiteral("case"), QStringLiteral("Create case demo-mcp"),
                  true, {QStringLiteral("fake.create_case")}),
@@ -1718,7 +1734,8 @@ void AgentControllerTest::
                     {QStringLiteral("case_name"), QStringLiteral("stl_case1")},
                     {QStringLiteral("is_open"), true}};
     controller.receiveToolResult(wrongCase);
-    QVERIFY(controller.activeRun()->awaitingPlanStepReview);
+    QCOMPARE(controller.activeRun()->planTasks.at(0).status(),
+             application::PlanTask::Status::AwaitingReview);
 
     controller.receiveToken(planStepReviewAction(
         QStringLiteral("case"), QStringLiteral("pending"), QJsonArray{1},
@@ -1735,12 +1752,143 @@ void AgentControllerTest::
              QStringLiteral("case"));
 
     controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.inspect","arguments":{"case_name":"demo-mcp"},"plan_step_id":"case","completes_plan_step":false})"));
+    controller.completeGeneration(false);
+    QCOMPARE(toolCallCount, 2);
+    QCOMPARE(controller.state(), application::AgentRun::State::ExecutingTool);
+    agent::ToolResult inspection;
+    inspection.requestId = QStringLiteral("tool-request-2");
+    inspection.serverId = QStringLiteral("fake");
+    inspection.toolName = QStringLiteral("inspect");
+    inspection.structuredContent =
+        QJsonObject{{QStringLiteral("ok"), true},
+                    {QStringLiteral("case_name"), QStringLiteral("demo-mcp")},
+                    {QStringLiteral("exists"), false}};
+    controller.receiveToolResult(inspection);
+
+    controller.receiveToken(QByteArrayLiteral(
         R"({"action":"call_tool","tool":"fake.create_fluid_region","arguments":{},"plan_step_id":"case","completes_plan_step":true})"));
     controller.completeGeneration(false);
-    QCOMPARE(toolCallCount, 1);
+    QCOMPARE(toolCallCount, 2);
     QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
     QVERIFY(generatedMessages.constLast().content.contains(
-        QStringLiteral("not allowed for the current task-plan step")));
+        QStringLiteral("not assigned to current task")));
+    controller.cancel();
+}
+
+void AgentControllerTest::keepsSharedMutationWithinCurrentPlanStep()
+{
+    auto toolCallCount = 0;
+    QJsonObject executedArguments;
+    QList<chat::Message> generatedMessages;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>& messages,
+                const models::InferencePreset&, int)
+            { generatedMessages = messages; },
+            [] {},
+            [&](const QString&, const QJsonObject& arguments)
+            {
+                ++toolCallCount;
+                executedArguments = arguments;
+                return QStringLiteral("tool-request-%1").arg(toolCallCount);
+            },
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+
+    QVERIFY(controller.start(
+        QStringLiteral("1. Import shaft.stl as a solid region.\n"
+                       "2. Import inlet_shaft.stl as an inlet.\n"
+                       "3. Import qyck_shaft.stl as a sampling window."),
+        {}, {ledgerTool(QStringLiteral("import_stl"), false)}));
+    const QJsonArray plan{
+        planStep(QStringLiteral("solid"),
+                 QStringLiteral("Import shaft.stl as object_type solidRegion"),
+                 true, {QStringLiteral("fake.import_stl")}),
+        planStep(QStringLiteral("inlet"),
+                 QStringLiteral("Import inlet_shaft.stl as object_type inlet"),
+                 true, {QStringLiteral("fake.import_stl")}),
+        planStep(QStringLiteral("sample"),
+                 QStringLiteral("Import qyck_shaft.stl as a sampling window"),
+                 true, {QStringLiteral("fake.import_stl")})};
+    controller.receiveToken(orderedTaskPlanAction(plan));
+    controller.completeGeneration(false);
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.import_stl","arguments":{"stl_file":"E:/stl_case1/inlet_shaft.stl","object_type":"inlet"},"plan_step_id":"solid","completes_plan_step":true})"));
+    controller.completeGeneration(false);
+    QCOMPARE(toolCallCount, 0);
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("review_tool_call")));
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("shaft.stl")));
+
+    controller.receiveToken(toolCallReviewAction(
+        QStringLiteral("reject"),
+        QStringLiteral("The proposed call performs the inlet step.")));
+    controller.completeGeneration(false);
+    QCOMPARE(toolCallCount, 0);
+    QCOMPARE(controller.progressSnapshot().currentStepId,
+             QStringLiteral("solid"));
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("only this current step")));
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.import_stl","arguments":{"stl_file":"E:/stl_case1/shaft.stl","object_type":"solidRegion"},"plan_step_id":"solid","completes_plan_step":true})"));
+    controller.completeGeneration(false);
+    QCOMPARE(toolCallCount, 0);
+    controller.receiveToken(toolCallReviewAction(
+        QStringLiteral("allow"),
+        QStringLiteral("The call exactly imports the requested solid.")));
+    controller.completeGeneration(false);
+    QCOMPARE(toolCallCount, 1);
+    QCOMPARE(executedArguments.value(QStringLiteral("object_type")).toString(),
+             QStringLiteral("solidRegion"));
+    QCOMPARE(executedArguments.value(QStringLiteral("stl_file")).toString(),
+             QStringLiteral("E:/stl_case1/shaft.stl"));
+
+    agent::ToolResult imported;
+    imported.requestId = QStringLiteral("tool-request-1");
+    imported.serverId = QStringLiteral("fake");
+    imported.toolName = QStringLiteral("import_stl");
+    imported.structuredContent = QJsonObject{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("object_type"), QStringLiteral("solidRegion")},
+        {QStringLiteral("source_file"),
+         QStringLiteral("E:/stl_case1/shaft.stl")},
+        {QStringLiteral("object_uuid"), QStringLiteral("solid-1")}};
+    controller.receiveToolResult(imported);
+    QCOMPARE(controller.activeRun()->planTasks.at(0).status(),
+             application::PlanTask::Status::AwaitingReview);
+    controller.receiveToken(planStepReviewAction(
+        QStringLiteral("solid"), QStringLiteral("satisfied"), QJsonArray{1},
+        QStringLiteral("The solid import matches the current step.")));
+    controller.completeGeneration(false);
+
+    QCOMPARE(controller.activeRun()->currentPlanStepIndex, 1);
+    QCOMPARE(controller.progressSnapshot().currentStepId,
+             QStringLiteral("inlet"));
+    const auto& tasks = controller.activeRun()->planTasks;
+    QCOMPARE(tasks.at(0).status(), application::PlanTask::Status::Satisfied);
+    QCOMPARE(tasks.at(1).status(), application::PlanTask::Status::Running);
+    QCOMPARE(tasks.at(2).status(), application::PlanTask::Status::Pending);
+    QVERIFY(tasks.at(0).hasConversation());
+    QVERIFY(tasks.at(1).hasConversation());
+    QVERIFY(!tasks.at(2).hasConversation());
+    QVERIFY(tasks.at(0).messages().size() > tasks.at(1).messages().size());
+    QCOMPARE(tasks.at(1).messages().size(), 2);
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("<current_task>")));
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("inlet_shaft.stl")));
+    QVERIFY(!generatedMessages.constLast().content.contains(
+        QStringLiteral("qyck_shaft.stl")));
+    QCOMPARE(controller.activeRun()
+                 ->completionSteps.at(0)
+                 .toObject()
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QStringLiteral("satisfied"));
     controller.cancel();
 }
 
@@ -1784,7 +1932,7 @@ void AgentControllerTest::advancesPlanOneStepPerTerminalToolResult()
     QCOMPARE(controller.activeRun()->orderedPlanRepairs, 1);
     QCOMPARE(controller.activeRun()->duplicateToolActions, 0);
     QVERIFY(generatedMessages.constLast().content.contains(
-        QStringLiteral("current unfinished step is 'create'")));
+        QStringLiteral("owns only 'create'")));
     QVERIFY(generatedMessages.constLast().content.contains(
         QStringLiteral("Create the case")));
 
@@ -1823,11 +1971,13 @@ void AgentControllerTest::advancesPlanOneStepPerTerminalToolResult()
                     {QStringLiteral("name"), QStringLiteral("case")},
                     {QStringLiteral("uuid"), QStringLiteral("case-1")}};
     controller.receiveToolResult(result);
-    QVERIFY(controller.activeRun()->awaitingPlanStepReview);
+    QCOMPARE(controller.activeRun()->planTasks.at(0).status(),
+             application::PlanTask::Status::AwaitingReview);
     controller.receiveToken(planStepReviewAction(
-        QStringLiteral("create"), QStringLiteral("satisfied"),
-        QJsonArray({1, 2}),
-        QStringLiteral("The requested case exists with its recorded ID.")));
+        QStringLiteral("create"), QStringLiteral("satisfied"), QJsonArray({1}),
+        QStringLiteral(
+            "The earlier terminal mutation created the requested case; the "
+            "later inspection resolved its verification.")));
     controller.completeGeneration(false);
     QCOMPARE(controller.activeRun()
                  ->completionSteps.at(0)
@@ -1840,7 +1990,7 @@ void AgentControllerTest::advancesPlanOneStepPerTerminalToolResult()
                  .toObject()
                  .value(QStringLiteral("evidence"))
                  .toArray(),
-             QJsonArray({1, 2}));
+             QJsonArray({1}));
     QCOMPARE(controller.activeRun()
                  ->completionSteps.at(1)
                  .toObject()
@@ -1866,6 +2016,12 @@ void AgentControllerTest::advancesPlanOneStepPerTerminalToolResult()
         QByteArrayLiteral(R"({"action":"final","content":"Case created."})"));
     controller.completeGeneration(false);
     QCOMPARE(controller.state(), application::AgentRun::State::Completed);
+    QCOMPARE(controller.activeRun()->currentPlanStepIndex, 2);
+    QCOMPARE(controller.activeRun()->planTasks.at(0).status(),
+             application::PlanTask::Status::Satisfied);
+    QCOMPARE(controller.activeRun()->planTasks.at(1).status(),
+             application::PlanTask::Status::Satisfied);
+    QCOMPARE(controller.progressSnapshot().currentStepId, QString{});
 }
 
 void AgentControllerTest::rejectsOutOfOrderCompletionReview()

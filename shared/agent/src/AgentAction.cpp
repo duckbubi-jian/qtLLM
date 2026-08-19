@@ -267,6 +267,31 @@ bool parseAction(const QByteArray& json, Action& action, QString& errorMessage)
         return true;
     }
 
+    if (actionValue.toString() == QStringLiteral("review_tool_call"))
+    {
+        const auto verdict =
+            object.value(QStringLiteral("verdict")).toString().trimmed();
+        const auto detail =
+            object.value(QStringLiteral("detail")).toString().trimmed();
+        if (!hasOnlyKeys(object,
+                         {QStringLiteral("action"), QStringLiteral("verdict"),
+                          QStringLiteral("detail")}) ||
+            (verdict != QLatin1String("allow") &&
+             verdict != QLatin1String("reject")) ||
+            detail.isEmpty() || detail.size() > 2'048)
+        {
+            errorMessage = QStringLiteral(
+                "review_tool_call requires an allow or reject verdict and "
+                "non-empty detail.");
+            return false;
+        }
+        action = {};
+        action.type = ActionType::ReviewToolCall;
+        action.toolReviewVerdict = verdict;
+        action.toolReviewDetail = detail;
+        return true;
+    }
+
     if (actionValue.toString() == QStringLiteral("review_completion"))
     {
         const auto verdict =
@@ -426,9 +451,11 @@ bool parseAction(const QByteArray& json, Action& action, QString& errorMessage)
 QByteArray actionGrammar()
 {
     return QByteArrayLiteral(R"GBNF(
-root ::= ws (call-tool | task-plan | review-plan-step | review-completion | blocked | final) ws
+root ::= ws (call-tool | task-plan | review-tool-call | review-plan-step | review-completion | blocked | final) ws
 call-tool ::= "{" ws "\"action\"" ws ":" ws "\"call_tool\"" ws "," ws "\"tool\"" ws ":" ws string ws "," ws "\"arguments\"" ws ":" ws object ws "," ws "\"plan_step_id\"" ws ":" ws string ws "," ws "\"completes_plan_step\"" ws ":" ws boolean ws "}"
 task-plan ::= "{" ws "\"action\"" ws ":" ws "\"task_plan\"" ws "," ws "\"steps\"" ws ":" ws array ws "," ws "\"ordered\"" ws ":" ws "true" ws "}"
+review-tool-call ::= "{" ws "\"action\"" ws ":" ws "\"review_tool_call\"" ws "," ws "\"verdict\"" ws ":" ws tool-review-verdict ws "," ws "\"detail\"" ws ":" ws string ws "}"
+tool-review-verdict ::= "\"allow\"" | "\"reject\""
 review-plan-step ::= "{" ws "\"action\"" ws ":" ws "\"review_plan_step\"" ws "," ws "\"step_id\"" ws ":" ws string ws "," ws "\"status\"" ws ":" ws plan-step-review-status ws "," ws "\"evidence\"" ws ":" ws evidence-array ws "," ws "\"detail\"" ws ":" ws string ws "}"
 plan-step-review-status ::= "\"satisfied\"" | "\"pending\""
 review-completion ::= "{" ws "\"action\"" ws ":" ws "\"review_completion\"" ws "," ws "\"verdict\"" ws ":" ws completion-verdict ws "," ws "\"steps\"" ws ":" ws review-steps ws "," ws "\"detail\"" ws ":" ws string ws "}"

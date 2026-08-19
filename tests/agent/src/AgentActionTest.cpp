@@ -12,6 +12,7 @@ class AgentActionTest final : public QObject
     void parsesToolCall();
     void parsesToolCallPlanStepId();
     void parsesTaskPlan();
+    void parsesToolCallReview();
     void parsesPlanStepReview();
     void parsesCompletionReview();
     void parsesBlockedResult();
@@ -88,6 +89,22 @@ void AgentActionTest::parsesPlanStepReview()
     QCOMPARE(action.planStepId, QStringLiteral("step-1"));
     QCOMPARE(action.planStepReviewStatus, QStringLiteral("satisfied"));
     QCOMPARE(action.planStepReviewEvidence, QJsonArray({1, 2}));
+}
+
+void AgentActionTest::parsesToolCallReview()
+{
+    agent::Action action;
+    QString errorMessage;
+    QVERIFY2(
+        agent::parseAction(
+            QByteArrayLiteral(
+                R"({"action":"review_tool_call","verdict":"reject","detail":"The call belongs to the next step."})"),
+            action, errorMessage),
+        qPrintable(errorMessage));
+    QCOMPARE(action.type, agent::ActionType::ReviewToolCall);
+    QCOMPARE(action.toolReviewVerdict, QStringLiteral("reject"));
+    QCOMPARE(action.toolReviewDetail,
+             QStringLiteral("The call belongs to the next step."));
 }
 
 void AgentActionTest::parsesToolCallPlanStepId()
@@ -190,6 +207,8 @@ void AgentActionTest::rejectsInvalidActions_data()
         R"({"action":"task_plan","steps":[{"id":"one","description":"Report","requires_tool":false,"allowed_tools":["files.read"]}],"ordered":true})");
     QTest::newRow("invalid-plan-step-review-status") << QByteArrayLiteral(
         R"({"action":"review_plan_step","step_id":"one","status":"complete","evidence":[1],"detail":"Done"})");
+    QTest::newRow("invalid-tool-call-review-verdict") << QByteArrayLiteral(
+        R"({"action":"review_tool_call","verdict":"continue","detail":"No"})");
     QTest::newRow("complete-with-pending-step") << QByteArrayLiteral(
         R"({"action":"review_completion","verdict":"complete","steps":[{"id":"step-1","description":"Create","requires_tool":true,"status":"pending","evidence":[]}],"detail":"Done"})");
     QTest::newRow("invalid-evidence-sequence") << QByteArrayLiteral(
@@ -221,6 +240,7 @@ void AgentActionTest::providesGenerationGrammar()
     QVERIFY(!grammar.contains(
         QByteArrayLiteral("object (ws \",\" ws \"\\\"plan_step_id\\\"\"")));
     QVERIFY(grammar.contains("review_completion"));
+    QVERIFY(grammar.contains("review_tool_call"));
     QVERIFY(grammar.contains("review_plan_step"));
     QVERIFY(grammar.contains("blocked"));
     QVERIFY(grammar.contains("missing_input"));

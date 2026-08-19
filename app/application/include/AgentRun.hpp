@@ -3,6 +3,7 @@
 #include "AgentEvent.hpp"
 #include "AgentLedger.hpp"
 #include "ChatMessage.hpp"
+#include "PlanTask.hpp"
 
 #include <QDateTime>
 #include <QJsonArray>
@@ -10,6 +11,8 @@
 #include <QMetaType>
 #include <QString>
 #include <QtGlobal>
+
+#include <vector>
 
 namespace qtllm::application
 {
@@ -56,14 +59,12 @@ struct AgentRun
     int orderedPlanRepairs = 0;
     int completionReviewFailures = 0;
     int completionPlanDriftRepairs = 0;
-    int planStepReviewFailures = 0;
     bool taskPlanRequired = false;
     bool orderedTaskPlan = false;
+    int currentPlanStepIndex = 0;
     bool awaitingCompletionReview = false;
-    bool awaitingPlanStepReview = false;
-    int currentPlanStepEvidenceStart = 1;
-    int pendingPlanStepEvidenceEnd = 0;
     QJsonArray completionSteps;
+    std::vector<PlanTask> planTasks;
     QString pendingFinalCandidate;
     int lastPromptTokens = 0;
     int contextCompactions = 0;

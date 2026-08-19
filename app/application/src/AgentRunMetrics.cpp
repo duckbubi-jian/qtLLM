@@ -59,6 +59,7 @@ QString failureCategoryForRun(const AgentRun& run)
     if (code.contains(QStringLiteral("invalid_agent")) ||
         code.contains(QStringLiteral("invalid_tool")) ||
         code.contains(QStringLiteral("task_plan")) ||
+        code.contains(QStringLiteral("tool_call_review")) ||
         code == QLatin1String("agent_stalled") ||
         code == QLatin1String("decision_too_large"))
         return QStringLiteral("agent_action");

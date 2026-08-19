@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AgentAction.hpp"
 #include "AssistantContext.hpp"
 #include "ChatMessage.hpp"
 #include "ToolDefinition.hpp"
@@ -24,11 +25,19 @@ class AgentPromptBuilder final
         const QString& userRequest);
     static chat::Message taskPlanMessage(const QString& originalRequest);
     static chat::Message taskPlanAcceptedMessage(const QJsonArray& steps);
+    static chat::Message planTaskActivationMessage(
+        const QJsonObject& currentStep, const QJsonArray& completedSteps,
+        const QList<QJsonObject>& priorToolEvidence);
+    static chat::Message allPlanTasksCompletedMessage(
+        const QJsonArray& steps, const QList<QJsonObject>& toolEvidence);
     static chat::Message taskPlanCorrectionMessage(const QString& errorMessage);
+    static chat::Message toolCallReviewMessage(
+        const QJsonObject& step, const agent::Action& proposedAction);
+    static chat::Message toolCallReviewContinuationMessage(
+        const QJsonObject& step, const QString& detail);
     static chat::Message planStepReviewMessage(
-        const QString& originalRequest, const QJsonObject& step,
-        const QList<QJsonObject>& toolEvidence, int evidenceStart,
-        int evidenceEnd, const QJsonObject& ledgerState,
+        const QJsonObject& step, const QList<QJsonObject>& toolEvidence,
+        int evidenceStart, int evidenceEnd, const QJsonObject& ledgerState,
         const QString& verificationReason);
     static chat::Message planStepReviewCorrectionMessage(
         const QString& errorMessage, const QJsonObject& step);

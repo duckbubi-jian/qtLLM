@@ -28,6 +28,8 @@ QString eventTypeName(EventType type)
             return QStringLiteral("warning");
         case EventType::Completed:
             return QStringLiteral("completed");
+        case EventType::Blocked:
+            return QStringLiteral("blocked");
         case EventType::Cancelled:
             return QStringLiteral("cancelled");
         case EventType::Failed:

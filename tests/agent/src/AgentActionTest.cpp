@@ -12,7 +12,9 @@ class AgentActionTest final : public QObject
     void parsesToolCall();
     void parsesToolCallPlanStepId();
     void parsesTaskPlan();
+    void parsesPlanStepReview();
     void parsesCompletionReview();
+    void parsesBlockedResult();
     void normalizesCompletionReviewStatusAliases();
     void parsesFinalAnswer();
     void rejectsInvalidActions_data();
@@ -60,7 +62,7 @@ void AgentActionTest::parsesTaskPlan()
     QVERIFY2(
         agent::parseAction(
             QByteArrayLiteral(
-                R"({"action":"task_plan","steps":[{"id":"step-1","description":"Create the case","requires_tool":true}],"ordered":true})"),
+                R"({"action":"task_plan","steps":[{"id":"step-1","description":"Create the case","requires_tool":true,"allowed_tools":["files.create"]}],"ordered":true})"),
             action, errorMessage),
         qPrintable(errorMessage));
     QCOMPARE(action.type, agent::ActionType::TaskPlan);
@@ -70,6 +72,22 @@ void AgentActionTest::parsesTaskPlan()
     QCOMPARE(action.completionSteps.at(0).toObject().value(
                  QStringLiteral("requires_tool")),
              QJsonValue(true));
+}
+
+void AgentActionTest::parsesPlanStepReview()
+{
+    agent::Action action;
+    QString errorMessage;
+    QVERIFY2(
+        agent::parseAction(
+            QByteArrayLiteral(
+                R"({"action":"review_plan_step","step_id":"step-1","status":"satisfied","evidence":[1,2],"detail":"The exact requested case was created."})"),
+            action, errorMessage),
+        qPrintable(errorMessage));
+    QCOMPARE(action.type, agent::ActionType::ReviewPlanStep);
+    QCOMPARE(action.planStepId, QStringLiteral("step-1"));
+    QCOMPARE(action.planStepReviewStatus, QStringLiteral("satisfied"));
+    QCOMPARE(action.planStepReviewEvidence, QJsonArray({1, 2}));
 }
 
 void AgentActionTest::parsesToolCallPlanStepId()
@@ -102,6 +120,21 @@ void AgentActionTest::parsesCompletionReview()
     QCOMPARE(action.completionSteps.size(), 1);
     QCOMPARE(action.completionDetail,
              QStringLiteral("All requested work is complete."));
+}
+
+void AgentActionTest::parsesBlockedResult()
+{
+    agent::Action action;
+    QString errorMessage;
+    QVERIFY2(
+        agent::parseAction(
+            QByteArrayLiteral(
+                R"({"action":"blocked","reason":"missing_input","content":"Provide the parent directory."})"),
+            action, errorMessage),
+        qPrintable(errorMessage));
+    QCOMPARE(action.type, agent::ActionType::Blocked);
+    QCOMPARE(action.blockReason, QStringLiteral("missing_input"));
+    QCOMPARE(action.content, QStringLiteral("Provide the parent directory."));
 }
 
 void AgentActionTest::normalizesCompletionReviewStatusAliases()
@@ -143,10 +176,20 @@ void AgentActionTest::rejectsInvalidActions_data()
         R"({"action":"call_tool","tool":"files.read","arguments":[]})");
     QTest::newRow("empty-final")
         << QByteArrayLiteral(R"({"action":"final","content":""})");
+    QTest::newRow("unknown-block-reason") << QByteArrayLiteral(
+        R"({"action":"blocked","reason":"gave_up","content":"Cannot continue."})");
+    QTest::newRow("empty-block-content") << QByteArrayLiteral(
+        R"({"action":"blocked","reason":"missing_input","content":""})");
     QTest::newRow("extra-property") << QByteArrayLiteral(
         R"({"action":"final","content":"Done","extra":true})");
     QTest::newRow("duplicate-plan-step") << QByteArrayLiteral(
-        R"({"action":"task_plan","steps":[{"id":"same","description":"One","requires_tool":true},{"id":"same","description":"Two","requires_tool":true}]})");
+        R"({"action":"task_plan","steps":[{"id":"same","description":"One","requires_tool":true,"allowed_tools":["files.read"]},{"id":"same","description":"Two","requires_tool":true,"allowed_tools":["files.read"]}]})");
+    QTest::newRow("plan-missing-allowed-tools") << QByteArrayLiteral(
+        R"({"action":"task_plan","steps":[{"id":"one","description":"One","requires_tool":true}],"ordered":true})");
+    QTest::newRow("non-tool-plan-with-tool") << QByteArrayLiteral(
+        R"({"action":"task_plan","steps":[{"id":"one","description":"Report","requires_tool":false,"allowed_tools":["files.read"]}],"ordered":true})");
+    QTest::newRow("invalid-plan-step-review-status") << QByteArrayLiteral(
+        R"({"action":"review_plan_step","step_id":"one","status":"complete","evidence":[1],"detail":"Done"})");
     QTest::newRow("complete-with-pending-step") << QByteArrayLiteral(
         R"({"action":"review_completion","verdict":"complete","steps":[{"id":"step-1","description":"Create","requires_tool":true,"status":"pending","evidence":[]}],"detail":"Done"})");
     QTest::newRow("invalid-evidence-sequence") << QByteArrayLiteral(
@@ -178,6 +221,9 @@ void AgentActionTest::providesGenerationGrammar()
     QVERIFY(!grammar.contains(
         QByteArrayLiteral("object (ws \",\" ws \"\\\"plan_step_id\\\"\"")));
     QVERIFY(grammar.contains("review_completion"));
+    QVERIFY(grammar.contains("review_plan_step"));
+    QVERIFY(grammar.contains("blocked"));
+    QVERIFY(grammar.contains("missing_input"));
     QVERIFY(grammar.contains("review-status ::="));
     QVERIFY(grammar.contains("\"\\\"satisfied\\\"\""));
     QVERIFY(grammar.contains("final"));

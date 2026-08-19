@@ -24,6 +24,8 @@ QString stateName(AgentRun::State state)
             return QStringLiteral("generating_answer");
         case AgentRun::State::Completed:
             return QStringLiteral("completed");
+        case AgentRun::State::Blocked:
+            return QStringLiteral("blocked");
         case AgentRun::State::Cancelled:
             return QStringLiteral("cancelled");
         case AgentRun::State::Failed:
@@ -36,6 +38,8 @@ QString failureCategoryForRun(const AgentRun& run)
 {
     if (run.finishCode.isEmpty()) return {};
     const auto code = run.finishCode.toLower();
+    if (code.startsWith(QStringLiteral("blocked_")))
+        return QStringLiteral("blocked");
     if (code == QLatin1String("cancelled") ||
         code == QLatin1String("generation_cancelled") ||
         code == QLatin1String("tool_cancelled"))

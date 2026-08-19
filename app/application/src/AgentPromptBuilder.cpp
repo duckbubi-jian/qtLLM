@@ -159,7 +159,10 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools,
                               "When the controller explicitly "
                               "requests task_plan, return that "
                               "structured action before any "
-                              "tool call. Execute one necessary "
+                              "tool call. Assign each tool-required plan "
+                              "step the exact qualified tools that may "
+                              "advance or verify only that step. Execute one "
+                              "necessary "
                               "operation at a time. Preserve "
                               "the checklist order. When a task_plan is "
                               "active, include its current step id as the "
@@ -168,9 +171,15 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools,
                               "completes_plan_step=true only on the final "
                               "call whose successful terminal result should "
                               "finish that step; "
-                              "never call a later step before the current "
-                              "step is verified. "
-                              "active external resources "
+                              "never call a tool outside the current step's "
+                              "allowed_tools or a later step before the "
+                              "current step is verified. When asked for "
+                              "review_plan_step, compare the exact current "
+                              "step and original request with the recorded "
+                              "tool arguments and result; tool success alone "
+                              "does not prove that the requested target or "
+                              "values were correct. "
+                              "Keep active external resources "
                               "and sessions between steps; "
                               "do not close and reopen the "
                               "same resource merely to "
@@ -217,14 +226,22 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools,
                "%1"
                "%2"
                "A final action has action set to final and a non-empty "
-               "content string. Final content must answer the user, explain a "
-               "real blocker, or ask for required information. Never return "
+               "content string. Use final only when the requested work is "
+               "complete or no external work is required. A blocked action "
+               "has action set to blocked, reason set to missing_input, "
+               "authorization, external_failure, or unsupported, and a "
+               "non-empty user-facing content string. Use blocked only when "
+               "the task cannot proceed without required user information, "
+               "permission, a working external dependency, or an unavailable "
+               "capability; do not use it merely because work remains or a "
+               "recoverable call failed. Never return "
                "internal reasoning, a plan, or statements about operations "
                "you still need to perform as final. A tool action has action "
                "set to call_tool, an exact listed tool name, and an arguments "
-               "object. task_plan and review_completion are controller-only "
-               "actions; return either one only when the latest controller "
-               "message explicitly requests it. When the user requests an "
+               "object. task_plan, review_plan_step, and review_completion "
+               "are controller-only actions; return one only when the latest "
+               "controller message explicitly requests it. When the user "
+               "requests an "
                "external operation and a "
                "matching tool is available, execute it before final. When the "
                "user asks to create or replace a file and a write_file tool "
@@ -292,10 +309,17 @@ chat::Message AgentPromptBuilder::taskPlanMessage(
             "requires_tool=true when satisfying it "
             "requires an external operation or MCP result. Use "
             "requires_tool=false only for trailing answer/report steps after "
-            "all external operations. Do not call a tool "
+            "all external operations. For each tool-required step, include "
+            "allowed_tools with every exact qualified tool name that may "
+            "legitimately advance or verify that step, and no tools for "
+            "later steps. Use allowed_tools=[] for non-tool steps. Keep "
+            "literal names, paths, values, and ordering constraints from the "
+            "original request in the relevant step description. Do not call "
+            "a tool "
             "or return final in this decision. Use this shape: "
             "{\"action\":\"task_plan\",\"steps\":[{\"id\":\"step-1\","
-            "\"description\":\"...\",\"requires_tool\":true}],"
+            "\"description\":\"...\",\"requires_tool\":true,"
+            "\"allowed_tools\":[\"server.tool\"]}],"
             "\"ordered\":true}.\n"
             "<original_request>%1</original_request>")
             .arg(originalRequest.trimmed())};
@@ -312,7 +336,8 @@ chat::Message AgentPromptBuilder::taskPlanAcceptedMessage(
             "Return one call_tool action when a tool is required, including "
             "top-level plan_step_id copied exactly from the current step and "
             "completes_plan_step=false for intermediate calls or true only for "
-            "the final call that should finish the step. Use this exact "
+            "the final call that should finish the step. Call only a tool "
+            "listed in the current step's allowed_tools. Use this exact "
             "top-level shape: {\"action\":\"call_tool\",\"tool\":\"...\","
             "\"arguments\":{},\"plan_step_id\":\"step-1\","
             "\"completes_plan_step\":false}. Do not add a read-back call "
@@ -324,8 +349,9 @@ chat::Message AgentPromptBuilder::taskPlanAcceptedMessage(
             "read-back only when the controller reports unresolved "
             "verification or the result does not confirm the requested "
             "outcome. Do not repeat task_plan. Return final only after every "
-            "checklist item "
-            "is satisfied or a real blocker must be reported.")
+            "checklist item is satisfied. If a real blocker prevents the "
+            "current step, return blocked with a specific reason and explain "
+            "what the user must provide or change.")
             .arg(compactJson(steps))};
 }
 
@@ -336,8 +362,82 @@ chat::Message AgentPromptBuilder::taskPlanCorrectionMessage(
             QStringLiteral(
                 "The task plan was rejected by the local controller: %1 Return "
                 "one corrected task_plan action with every requested step and "
-                "ordered=true. Do not call a tool or return final yet.")
+                "ordered=true. Every step must include allowed_tools: exact "
+                "qualified tool names for a tool-required step and [] for a "
+                "non-tool step. Do not call a tool or return final yet.")
                 .arg(errorMessage)};
+}
+
+chat::Message AgentPromptBuilder::planStepReviewMessage(
+    const QString& originalRequest, const QJsonObject& step,
+    const QList<QJsonObject>& toolEvidence, int evidenceStart, int evidenceEnd,
+    const QJsonObject& ledgerState, const QString& verificationReason)
+{
+    QList<QJsonObject> relevantEvidence;
+    for (const auto& evidence : toolEvidence)
+    {
+        const auto sequence =
+            evidence.value(QStringLiteral("sequence")).toInt();
+        if (sequence >= evidenceStart && sequence <= evidenceEnd)
+            relevantEvidence.append(evidence);
+    }
+    return {
+        chat::Role::User,
+        QStringLiteral(
+            "Review only the current ordered task-plan step before any other "
+            "action. Compare its exact description and the original request "
+            "with the recorded tool names, arguments, and structured results. "
+            "A successful result is not sufficient when it used the wrong "
+            "target, path, name, type, value, unit, or order. Use status "
+            "satisfied only when the cited evidence proves this exact step; "
+            "otherwise use pending and state the next corrective action. Cite "
+            "only evidence sequences from %1 through %2, including %2 when "
+            "satisfied. Do not call a tool, return final, repeat the task "
+            "plan, "
+            "or review later steps. Return exactly: {\"action\":"
+            "\"review_plan_step\",\"step_id\":\"%3\",\"status\":"
+            "\"satisfied\",\"evidence\":[%2],\"detail\":\"...\"}.\n"
+            "<original_request>%4</original_request>\n"
+            "<current_step>%5</current_step>\n"
+            "<step_evidence>%6</step_evidence>\n"
+            "<run_ledger>%7</run_ledger>\n"
+            "<verification_requirement>%8</verification_requirement>")
+            .arg(evidenceStart)
+            .arg(evidenceEnd)
+            .arg(step.value(QStringLiteral("id")).toString(),
+                 originalRequest.trimmed(), compactJson(step),
+                 compactJson(completionEvidenceSummary(relevantEvidence)),
+                 compactJson(ledgerState),
+                 verificationReason.isEmpty() ? QStringLiteral("none")
+                                              : verificationReason)};
+}
+
+chat::Message AgentPromptBuilder::planStepReviewCorrectionMessage(
+    const QString& errorMessage, const QJsonObject& step)
+{
+    return {
+        chat::Role::User,
+        QStringLiteral(
+            "The current-step review was rejected: %1 Re-review only this "
+            "recorded step: <current_step>%2</current_step> Return exactly one "
+            "review_plan_step with its unchanged step_id, status satisfied or "
+            "pending, numeric evidence sequence values, and non-empty detail. "
+            "Do not call a tool or return final during this review.")
+            .arg(errorMessage, compactJson(step))};
+}
+
+chat::Message AgentPromptBuilder::planStepContinuationMessage(
+    const QJsonObject& step, const QString& detail)
+{
+    return {
+        chat::Role::User,
+        QStringLiteral(
+            "The current task-plan step remains pending: %1 Continue only "
+            "this step: <current_step>%2</current_step> Use one of its "
+            "allowed_tools and the same plan_step_id. Do not execute a later "
+            "step. If the required correction cannot be performed, return "
+            "blocked with the applicable reason.")
+            .arg(detail, compactJson(step))};
 }
 
 chat::Message AgentPromptBuilder::toolResultMessage(
@@ -528,7 +628,10 @@ chat::Message AgentPromptBuilder::unfinishedFinalMessage(
             "operation is unfinished: %1 Return a call_tool action that "
             "recovers the failed operation or checks the running operation. "
             "Do not return final until a successful terminal tool result "
-            "supports the requested outcome.")
+            "supports the requested outcome. If the current operation cannot "
+            "proceed because required input, authorization, an external "
+            "dependency, or capability is unavailable, return blocked with "
+            "the matching reason and a user-facing explanation.")
             .arg(errorMessage)};
 }
 
@@ -594,7 +697,9 @@ chat::Message AgentPromptBuilder::noProgressMessage(const QString& errorMessage)
             "would not advance the task: %1 The earlier tool result remains "
             "valid in the conversation or agent_progress evidence. Return "
             "one meaningfully different action for an unfinished step, or "
-            "return final now. Do not repeat the skipped action.")
+            "return final now only if the request is complete. If no valid "
+            "action can proceed because of a real blocker, return blocked. "
+            "Do not repeat the skipped action.")
             .arg(errorMessage)};
 }
 

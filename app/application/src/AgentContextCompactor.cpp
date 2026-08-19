@@ -230,7 +230,9 @@ QJsonArray minimizedCompletionSteps(const QJsonArray& steps)
         QJsonObject item{
             {QStringLiteral("id"), step.value(QStringLiteral("id"))},
             {QStringLiteral("requires_tool"),
-             step.value(QStringLiteral("requires_tool"))}};
+             step.value(QStringLiteral("requires_tool"))},
+            {QStringLiteral("allowed_tools"),
+             step.value(QStringLiteral("allowed_tools"))}};
         for (const auto& key :
              {QStringLiteral("status"), QStringLiteral("evidence")})
             if (step.contains(key)) item.insert(key, step.value(key));

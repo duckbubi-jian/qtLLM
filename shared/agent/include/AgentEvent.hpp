@@ -20,6 +20,7 @@ enum class EventType
     RecoveryStarted,
     Warning,
     Completed,
+    Blocked,
     Cancelled,
     Failed
 };

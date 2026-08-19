@@ -291,7 +291,8 @@ MainWindow::MainWindow(const QString& settingsFilePath, QWidget* parent)
                     pendingToolApproval_->markCancelled();
                     pendingToolApproval_ = nullptr;
                 }
-                if (state == application::AgentRun::State::Completed)
+                if (state == application::AgentRun::State::Completed ||
+                    state == application::AgentRun::State::Blocked)
                 {
                     conversationMessages_ =
                         agentController_.conversationMessages();
@@ -1749,6 +1750,7 @@ void MainWindow::updateAgentState(application::AgentRun::State state)
             chatView_->setStatusText(tr("Preparing the answer..."));
             break;
         case application::AgentRun::State::Completed:
+        case application::AgentRun::State::Blocked:
         case application::AgentRun::State::Cancelled:
         case application::AgentRun::State::Failed:
             break;

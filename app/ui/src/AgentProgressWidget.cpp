@@ -49,6 +49,7 @@ class ElidedLabel final : public QLabel
 bool isTerminal(application::AgentRun::State state)
 {
     return state == application::AgentRun::State::Completed ||
+           state == application::AgentRun::State::Blocked ||
            state == application::AgentRun::State::Cancelled ||
            state == application::AgentRun::State::Failed;
 }
@@ -178,6 +179,9 @@ void AgentProgressWidget::refresh()
         case application::AgentRun::State::Completed:
             stateText_ = tr("Agent complete");
             break;
+        case application::AgentRun::State::Blocked:
+            stateText_ = tr("Agent blocked");
+            break;
         case application::AgentRun::State::Cancelled:
             stateText_ = tr("Agent stopped");
             break;
@@ -203,7 +207,9 @@ void AgentProgressWidget::refresh()
                                           : snapshot_.finishMessage,
         320);
     finishLabel_->setText(finishText);
-    finishLabel_->setVisible(terminal_ && !finishText.isEmpty());
+    finishLabel_->setVisible(
+        terminal_ && snapshot_.state != application::AgentRun::State::Blocked &&
+        !finishText.isEmpty());
     refreshPlan();
     refreshElapsed();
 }

@@ -555,6 +555,23 @@ void AssistantResponseTest::showsStructuredAgentProgressUntilRunEnds()
     QCOMPARE(failedTitle->text(), QStringLiteral("Agent failed"));
     QVERIFY(!failedFinish->text().contains(QStringLiteral("do-not-display")));
     QVERIFY(failedFinish->text().contains(QStringLiteral("[redacted]")));
+
+    ui::AgentProgressWidget blockedProgress;
+    application::AgentProgressSnapshot blocked = running;
+    blocked.state = application::AgentRun::State::Blocked;
+    blocked.steps.at(1).status = application::AgentProgressStepStatus::Blocked;
+    blocked.steps.at(2).status = application::AgentProgressStepStatus::Pending;
+    blocked.finishCode = QStringLiteral("blocked_missing_input");
+    blocked.finishMessage = QStringLiteral("Provide the parent directory.");
+    blockedProgress.setSnapshot(blocked);
+    auto* blockedTitle = blockedProgress.findChild<QToolButton*>(
+        QStringLiteral("agentProgressStateToggle"));
+    auto* blockedFinish = blockedProgress.findChild<QLabel*>(
+        QStringLiteral("agentProgressFinish"));
+    QVERIFY(blockedTitle != nullptr);
+    QVERIFY(blockedFinish != nullptr);
+    QCOMPARE(blockedTitle->text(), QStringLiteral("Agent blocked"));
+    QVERIFY(blockedFinish->isHidden());
     QVERIFY(prompt->toPlainText().isEmpty());
 }
 

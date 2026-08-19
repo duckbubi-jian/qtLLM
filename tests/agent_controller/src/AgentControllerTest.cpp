@@ -43,7 +43,9 @@ class AgentControllerTest final : public QObject
     void rejectsUnchangedRetryAfterToolError();
     void repairsDynamicPropertyNameValidation();
     void repairsMissingOrderedPlanMetadata();
+    void blocksOrderedPlanWhenRequiredInputIsMissing();
     void successfulStructuredMutationAdvancesPlanWithoutReadBack();
+    void keepsOrderedStepPendingWhenEvidenceMissesRequestedTarget();
     void advancesPlanOneStepPerTerminalToolResult();
     void rejectsOutOfOrderCompletionReview();
     void rejectsRepeatedSuccessfulToolCall();
@@ -181,11 +183,17 @@ agent::ToolValidationResult acceptsToolArguments(const QString&,
 }
 
 QJsonObject planStep(const QString& id, const QString& description,
-                     bool requiresTool)
+                     bool requiresTool, QStringList allowedTools = {})
 {
+    if (requiresTool && allowedTools.isEmpty())
+        allowedTools.append(QStringLiteral("fake.echo"));
+    QJsonArray allowedToolValues;
+    for (const auto& tool : allowedTools)
+        allowedToolValues.append(tool);
     return {{QStringLiteral("id"), id},
             {QStringLiteral("description"), description},
-            {QStringLiteral("requires_tool"), requiresTool}};
+            {QStringLiteral("requires_tool"), requiresTool},
+            {QStringLiteral("allowed_tools"), allowedToolValues}};
 }
 
 QJsonObject reviewedStep(const QString& id, const QString& description,
@@ -225,6 +233,19 @@ QByteArray completionReviewAction(const QString& verdict,
                                       QStringLiteral("review_completion")},
                                      {QStringLiteral("verdict"), verdict},
                                      {QStringLiteral("steps"), steps},
+                                     {QStringLiteral("detail"), detail}})
+        .toJson(QJsonDocument::Compact);
+}
+
+QByteArray planStepReviewAction(const QString& stepId, const QString& status,
+                                const QJsonArray& evidence,
+                                const QString& detail)
+{
+    return QJsonDocument(QJsonObject{{QStringLiteral("action"),
+                                      QStringLiteral("review_plan_step")},
+                                     {QStringLiteral("step_id"), stepId},
+                                     {QStringLiteral("status"), status},
+                                     {QStringLiteral("evidence"), evidence},
                                      {QStringLiteral("detail"), detail}})
         .toJson(QJsonDocument::Compact);
 }
@@ -1456,11 +1477,11 @@ void AgentControllerTest::repairsMissingOrderedPlanMetadata()
                                             "2. Report the result."),
                              {},
                              {ledgerTool(QStringLiteral("inspect"), true)}));
-    const QJsonArray plan{
-        planStep(QStringLiteral("inspect"),
-                 QStringLiteral("Inspect the workspace"), true),
-        planStep(QStringLiteral("report"), QStringLiteral("Report the result"),
-                 false)};
+    const QJsonArray plan{planStep(QStringLiteral("inspect"),
+                                   QStringLiteral("Inspect the workspace"),
+                                   true, {QStringLiteral("fake.inspect")}),
+                          planStep(QStringLiteral("report"),
+                                   QStringLiteral("Report the result"), false)};
     controller.receiveToken(orderedTaskPlanAction(plan));
     controller.completeGeneration(false);
     controller.receiveToken(QByteArrayLiteral(
@@ -1503,6 +1524,75 @@ void AgentControllerTest::repairsMissingOrderedPlanMetadata()
     controller.cancel();
 }
 
+void AgentControllerTest::blocksOrderedPlanWhenRequiredInputIsMissing()
+{
+    auto toolCallCount = 0;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [](const QList<chat::Message>&, const models::InferencePreset&,
+               int) {},
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("unexpected");
+            },
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+    QSignalSpy finalSpy(&controller,
+                        &application::AgentController::finalAnswerReady);
+    QSignalSpy finishedSpy(&controller,
+                           &application::AgentController::runFinished);
+    QSignalSpy metricsSpy(&controller,
+                          &application::AgentController::metricsReady);
+
+    QVERIFY(controller.start(
+        QStringLiteral("1. Create the case.\n2. Report the result."), {},
+        {ledgerTool(QStringLiteral("create"), false)}));
+    const QJsonArray plan{
+        planStep(QStringLiteral("create"), QStringLiteral("Create the case"),
+                 true, {QStringLiteral("fake.create")}),
+        planStep(QStringLiteral("report"), QStringLiteral("Report the result"),
+                 false)};
+    controller.receiveToken(orderedTaskPlanAction(plan));
+    controller.completeGeneration(false);
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"blocked","reason":"missing_input","content":"Provide the parent directory for the case."})"));
+    controller.completeGeneration(false);
+
+    QCOMPARE(toolCallCount, 0);
+    QCOMPARE(controller.state(), application::AgentRun::State::Blocked);
+    QVERIFY(!controller.hasActiveRun());
+    QCOMPARE(finalSpy.count(), 1);
+    QCOMPARE(finalSpy.constFirst().at(1).toString(),
+             QStringLiteral("Provide the parent directory for the case."));
+    QCOMPARE(finishedSpy.count(), 1);
+    QCOMPARE(
+        finishedSpy.constFirst().at(1).value<application::AgentRun::State>(),
+        application::AgentRun::State::Blocked);
+    QCOMPARE(finishedSpy.constFirst().at(2).toString(),
+             QStringLiteral("blocked_missing_input"));
+    QCOMPARE(controller.conversationMessages().size(), 2);
+
+    const auto steps = controller.activeRun()->completionSteps;
+    QCOMPARE(steps.at(0).toObject().value(QStringLiteral("status")).toString(),
+             QStringLiteral("blocked"));
+    QCOMPARE(steps.at(1).toObject().value(QStringLiteral("status")).toString(),
+             QString{});
+    const auto progress = controller.progressSnapshot();
+    QCOMPARE(progress.currentStepId, QString{});
+    QCOMPARE(progress.steps.at(0).status,
+             application::AgentProgressStepStatus::Blocked);
+    QCOMPARE(progress.steps.at(1).status,
+             application::AgentProgressStepStatus::Pending);
+    QCOMPARE(metricsSpy.count(), 1);
+    const auto metrics = metricsSpy.constFirst().at(1).toJsonObject();
+    QCOMPARE(metrics.value(QStringLiteral("state")).toString(),
+             QStringLiteral("blocked"));
+    QCOMPARE(metrics.value(QStringLiteral("failureCategory")).toString(),
+             QStringLiteral("blocked"));
+}
+
 void AgentControllerTest::
     successfulStructuredMutationAdvancesPlanWithoutReadBack()
 {
@@ -1528,9 +1618,11 @@ void AgentControllerTest::
          ledgerTool(QStringLiteral("add_object"), false)}));
     const QJsonArray plan{
         planStep(QStringLiteral("workspace"),
-                 QStringLiteral("Provision workspace2"), true),
+                 QStringLiteral("Provision workspace2"), true,
+                 {QStringLiteral("fake.provision_workspace")}),
         planStep(QStringLiteral("resource"),
-                 QStringLiteral("Create the resource"), true)};
+                 QStringLiteral("Create the resource"), true,
+                 {QStringLiteral("fake.add_object")})};
     controller.receiveToken(orderedTaskPlanAction(plan));
     controller.completeGeneration(false);
     controller.receiveToken(QByteArrayLiteral(
@@ -1550,6 +1642,20 @@ void AgentControllerTest::
         {QStringLiteral("result"), QJsonObject{}}};
     controller.receiveToolResult(created);
 
+    QCOMPARE(controller.activeRun()
+                 ->completionSteps.at(0)
+                 .toObject()
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QString{});
+    QVERIFY(controller.activeRun()->awaitingPlanStepReview);
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("review_plan_step")));
+    controller.receiveToken(planStepReviewAction(
+        QStringLiteral("workspace"), QStringLiteral("satisfied"), QJsonArray{1},
+        QStringLiteral("workspace2 was created at the requested target.")));
+    controller.completeGeneration(false);
+
     const auto steps = controller.activeRun()->completionSteps;
     QCOMPARE(steps.at(0).toObject().value(QStringLiteral("status")).toString(),
              QStringLiteral("satisfied"));
@@ -1561,7 +1667,81 @@ void AgentControllerTest::
     QCOMPARE(controller.progressSnapshot().currentStepId,
              QStringLiteral("resource"));
     QVERIFY(generatedMessages.constLast().content.contains(
-        QStringLiteral("next allowed step is 'Create the resource'")));
+        QStringLiteral("Create the resource")));
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("fake.add_object")));
+}
+
+void AgentControllerTest::
+    keepsOrderedStepPendingWhenEvidenceMissesRequestedTarget()
+{
+    auto toolCallCount = 0;
+    QList<chat::Message> generatedMessages;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>& messages,
+                const models::InferencePreset&, int)
+            { generatedMessages = messages; },
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-%1").arg(toolCallCount);
+            },
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+
+    QVERIFY(controller.start(
+        QStringLiteral("1. Create case demo-mcp.\n"
+                       "2. Create its fluid region."),
+        {},
+        {ledgerTool(QStringLiteral("create_case"), false),
+         ledgerTool(QStringLiteral("create_fluid_region"), false)}));
+    const QJsonArray plan{
+        planStep(QStringLiteral("case"), QStringLiteral("Create case demo-mcp"),
+                 true, {QStringLiteral("fake.create_case")}),
+        planStep(QStringLiteral("fluid"),
+                 QStringLiteral("Create the fluid region"), true,
+                 {QStringLiteral("fake.create_fluid_region")})};
+    controller.receiveToken(orderedTaskPlanAction(plan));
+    controller.completeGeneration(false);
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.create_case","arguments":{"case_name":"stl_case1"},"plan_step_id":"case","completes_plan_step":true})"));
+    controller.completeGeneration(false);
+
+    agent::ToolResult wrongCase;
+    wrongCase.requestId = QStringLiteral("tool-request-1");
+    wrongCase.serverId = QStringLiteral("fake");
+    wrongCase.toolName = QStringLiteral("create_case");
+    wrongCase.structuredContent =
+        QJsonObject{{QStringLiteral("ok"), true},
+                    {QStringLiteral("case_name"), QStringLiteral("stl_case1")},
+                    {QStringLiteral("is_open"), true}};
+    controller.receiveToolResult(wrongCase);
+    QVERIFY(controller.activeRun()->awaitingPlanStepReview);
+
+    controller.receiveToken(planStepReviewAction(
+        QStringLiteral("case"), QStringLiteral("pending"), QJsonArray{1},
+        QStringLiteral(
+            "Evidence created stl_case1, not the requested demo-mcp.")));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.activeRun()
+                 ->completionSteps.at(0)
+                 .toObject()
+                 .value(QStringLiteral("status"))
+                 .toString(),
+             QString{});
+    QCOMPARE(controller.progressSnapshot().currentStepId,
+             QStringLiteral("case"));
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.create_fluid_region","arguments":{},"plan_step_id":"case","completes_plan_step":true})"));
+    controller.completeGeneration(false);
+    QCOMPARE(toolCallCount, 1);
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("not allowed for the current task-plan step")));
+    controller.cancel();
 }
 
 void AgentControllerTest::advancesPlanOneStepPerTerminalToolResult()
@@ -1586,10 +1766,12 @@ void AgentControllerTest::advancesPlanOneStepPerTerminalToolResult()
         QStringLiteral("1. Create the case.\n2. Report the result."), {},
         {ledgerTool(QStringLiteral("create"), false),
          ledgerTool(QStringLiteral("inspect"), true)}));
-    const QJsonArray plan{planStep(QStringLiteral("create"),
-                                   QStringLiteral("Create the case"), true),
-                          planStep(QStringLiteral("report"),
-                                   QStringLiteral("Report the result"), false)};
+    const QJsonArray plan{
+        planStep(
+            QStringLiteral("create"), QStringLiteral("Create the case"), true,
+            {QStringLiteral("fake.create"), QStringLiteral("fake.inspect")}),
+        planStep(QStringLiteral("report"), QStringLiteral("Report the result"),
+                 false)};
     controller.receiveToken(orderedTaskPlanAction(plan));
     controller.completeGeneration(false);
     controller.activeRun()->stagnationRecoveries = 1;
@@ -1641,6 +1823,12 @@ void AgentControllerTest::advancesPlanOneStepPerTerminalToolResult()
                     {QStringLiteral("name"), QStringLiteral("case")},
                     {QStringLiteral("uuid"), QStringLiteral("case-1")}};
     controller.receiveToolResult(result);
+    QVERIFY(controller.activeRun()->awaitingPlanStepReview);
+    controller.receiveToken(planStepReviewAction(
+        QStringLiteral("create"), QStringLiteral("satisfied"),
+        QJsonArray({1, 2}),
+        QStringLiteral("The requested case exists with its recorded ID.")));
+    controller.completeGeneration(false);
     QCOMPARE(controller.activeRun()
                  ->completionSteps.at(0)
                  .toObject()

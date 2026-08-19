@@ -13,7 +13,9 @@ enum class ActionType
 {
     CallTool,
     TaskPlan,
+    ReviewPlanStep,
     ReviewCompletion,
+    Blocked,
     Final
 };
 
@@ -28,6 +30,9 @@ struct Action
     QString completionVerdict;
     QJsonArray completionSteps;
     QString completionDetail;
+    QString planStepReviewStatus;
+    QJsonArray planStepReviewEvidence;
+    QString blockReason;
     std::optional<bool> orderedPlan;
 };
 

@@ -106,10 +106,15 @@ class AgentController final : public QObject
                                const QByteArray& rawAction);
     void handleCompletionReview(const agent::Action& action,
                                 const QByteArray& rawAction);
+    void beginPlanStepReview(int evidenceSequence);
+    void handlePlanStepReview(const agent::Action& action,
+                              const QByteArray& rawAction);
     void retryTaskPlan(const QByteArray& rawAction,
                        const QString& errorMessage);
     void retryCompletionReview(const QByteArray& rawAction,
                                const QString& errorMessage);
+    void retryPlanStepReview(const QByteArray& rawAction,
+                             const QString& errorMessage);
     void retryUnfinishedFinal(const QByteArray& rawAction,
                               const QString& errorMessage);
     [[nodiscard]] bool hasSufficientCompletionEvidence() const;
@@ -126,13 +131,15 @@ class AgentController final : public QObject
                                const QString& errorMessage);
     void retryOrderedPlanAction(const QByteArray& rawAction,
                                 const QString& errorMessage);
-    [[nodiscard]] QString advanceTaskPlanAfterToolResult(int evidenceSequence);
+    [[nodiscard]] QString validatePlanStepReview(
+        const agent::Action& action) const;
     void setState(AgentRun::State state);
     void recordEvent(agent::EventType type, const QString& message = {},
                      const QString& toolName = {},
                      const QJsonObject& data = {});
     void emitProgressChanged();
     void completeRun(const QString& content);
+    void blockRun(const QString& reason, const QString& content);
     void failRun(const QString& code, const QString& message);
 
     Dependencies dependencies_;

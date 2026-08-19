@@ -57,25 +57,54 @@ bool parsePlanSteps(const QJsonArray& values, QJsonArray& steps,
         const auto description =
             step.value(QStringLiteral("description")).toString().trimmed();
         const auto requiresTool = step.value(QStringLiteral("requires_tool"));
+        const auto allowedToolsValue =
+            step.value(QStringLiteral("allowed_tools"));
         if (!value.isObject() ||
             !hasOnlyKeys(step,
                          {QStringLiteral("id"), QStringLiteral("description"),
-                          QStringLiteral("requires_tool")}) ||
+                          QStringLiteral("requires_tool"),
+                          QStringLiteral("allowed_tools")}) ||
             id.isEmpty() || id.size() > 64 || description.isEmpty() ||
             description.size() > 256 || !requiresTool.isBool() ||
-            ids.contains(id))
+            !allowedToolsValue.isArray() || ids.contains(id))
         {
             errorMessage = QStringLiteral(
                 "Each task_plan step requires a unique non-empty id, a "
                 "description of at most 256 characters, and a boolean "
-                "requires_tool property.");
+                "requires_tool property plus an allowed_tools array.");
+            return false;
+        }
+        QSet<QString> allowedToolNames;
+        QJsonArray allowedTools;
+        for (const auto& toolValue : allowedToolsValue.toArray())
+        {
+            const auto toolName = toolValue.toString().trimmed();
+            if (!toolValue.isString() || toolName.isEmpty() ||
+                toolName.size() > 256 || allowedToolNames.contains(toolName))
+            {
+                errorMessage = QStringLiteral(
+                    "task_plan allowed_tools values must be unique, "
+                    "non-empty qualified tool names.");
+                return false;
+            }
+            allowedToolNames.insert(toolName);
+            allowedTools.append(toolName);
+        }
+        if ((requiresTool.toBool() && allowedTools.isEmpty()) ||
+            (!requiresTool.toBool() && !allowedTools.isEmpty()))
+        {
+            errorMessage = QStringLiteral(
+                "A tool-required task_plan step needs at least one "
+                "allowed_tools entry; a non-tool step must use an empty "
+                "allowed_tools array.");
             return false;
         }
         ids.insert(id);
         steps.append(QJsonObject{
             {QStringLiteral("id"), id},
             {QStringLiteral("description"), description},
-            {QStringLiteral("requires_tool"), requiresTool.toBool()}});
+            {QStringLiteral("requires_tool"), requiresTool.toBool()},
+            {QStringLiteral("allowed_tools"), allowedTools}});
     }
     return true;
 }
@@ -292,6 +321,84 @@ bool parseAction(const QByteArray& json, Action& action, QString& errorMessage)
         return true;
     }
 
+    if (actionValue.toString() == QStringLiteral("review_plan_step"))
+    {
+        const auto stepId =
+            object.value(QStringLiteral("step_id")).toString().trimmed();
+        const auto status =
+            object.value(QStringLiteral("status")).toString().trimmed();
+        const auto evidenceValue = object.value(QStringLiteral("evidence"));
+        const auto detail =
+            object.value(QStringLiteral("detail")).toString().trimmed();
+        if (!hasOnlyKeys(object,
+                         {QStringLiteral("action"), QStringLiteral("step_id"),
+                          QStringLiteral("status"), QStringLiteral("evidence"),
+                          QStringLiteral("detail")}) ||
+            stepId.isEmpty() || stepId.size() > 64 ||
+            (status != QLatin1String("satisfied") &&
+             status != QLatin1String("pending")) ||
+            !evidenceValue.isArray() || detail.isEmpty() ||
+            detail.size() > 2'048)
+        {
+            errorMessage = QStringLiteral(
+                "review_plan_step requires the current step_id, a satisfied "
+                "or pending status, an evidence array, and non-empty detail.");
+            return false;
+        }
+        QSet<int> evidenceIds;
+        QJsonArray evidence;
+        for (const auto& value : evidenceValue.toArray())
+        {
+            const auto sequence = value.toInt(-1);
+            if (!value.isDouble() || sequence <= 0 ||
+                value.toDouble() != static_cast<double>(sequence) ||
+                evidenceIds.contains(sequence))
+            {
+                errorMessage = QStringLiteral(
+                    "review_plan_step evidence values must be unique "
+                    "positive integer tool-call sequence numbers.");
+                return false;
+            }
+            evidenceIds.insert(sequence);
+            evidence.append(sequence);
+        }
+        action = {};
+        action.type = ActionType::ReviewPlanStep;
+        action.planStepId = stepId;
+        action.planStepReviewStatus = status;
+        action.planStepReviewEvidence = evidence;
+        action.completionDetail = detail;
+        return true;
+    }
+
+    if (actionValue.toString() == QStringLiteral("blocked"))
+    {
+        const auto reason =
+            object.value(QStringLiteral("reason")).toString().trimmed();
+        const auto content =
+            object.value(QStringLiteral("content")).toString().trimmed();
+        static const QSet<QString> reasons{
+            QStringLiteral("missing_input"), QStringLiteral("authorization"),
+            QStringLiteral("external_failure"), QStringLiteral("unsupported")};
+        if (!hasOnlyKeys(object,
+                         {QStringLiteral("action"), QStringLiteral("reason"),
+                          QStringLiteral("content")}) ||
+            !reasons.contains(reason) || content.isEmpty())
+        {
+            errorMessage = QStringLiteral(
+                "blocked requires only a missing_input, authorization, "
+                "external_failure, or unsupported reason and non-empty "
+                "content.");
+            return false;
+        }
+
+        action = {};
+        action.type = ActionType::Blocked;
+        action.blockReason = reason;
+        action.content = content;
+        return true;
+    }
+
     if (actionValue.toString() == QStringLiteral("final"))
     {
         const auto contentValue = object.value(QStringLiteral("content"));
@@ -319,9 +426,11 @@ bool parseAction(const QByteArray& json, Action& action, QString& errorMessage)
 QByteArray actionGrammar()
 {
     return QByteArrayLiteral(R"GBNF(
-root ::= ws (call-tool | task-plan | review-completion | final) ws
+root ::= ws (call-tool | task-plan | review-plan-step | review-completion | blocked | final) ws
 call-tool ::= "{" ws "\"action\"" ws ":" ws "\"call_tool\"" ws "," ws "\"tool\"" ws ":" ws string ws "," ws "\"arguments\"" ws ":" ws object ws "," ws "\"plan_step_id\"" ws ":" ws string ws "," ws "\"completes_plan_step\"" ws ":" ws boolean ws "}"
 task-plan ::= "{" ws "\"action\"" ws ":" ws "\"task_plan\"" ws "," ws "\"steps\"" ws ":" ws array ws "," ws "\"ordered\"" ws ":" ws "true" ws "}"
+review-plan-step ::= "{" ws "\"action\"" ws ":" ws "\"review_plan_step\"" ws "," ws "\"step_id\"" ws ":" ws string ws "," ws "\"status\"" ws ":" ws plan-step-review-status ws "," ws "\"evidence\"" ws ":" ws evidence-array ws "," ws "\"detail\"" ws ":" ws string ws "}"
+plan-step-review-status ::= "\"satisfied\"" | "\"pending\""
 review-completion ::= "{" ws "\"action\"" ws ":" ws "\"review_completion\"" ws "," ws "\"verdict\"" ws ":" ws completion-verdict ws "," ws "\"steps\"" ws ":" ws review-steps ws "," ws "\"detail\"" ws ":" ws string ws "}"
 completion-verdict ::= "\"complete\"" | "\"continue\"" | "\"blocked\""
 review-steps ::= "[" ws review-step (ws "," ws review-step)* ws "]"
@@ -329,6 +438,8 @@ review-step ::= "{" ws "\"id\"" ws ":" ws string ws "," ws "\"description\"" ws 
 review-status ::= "\"satisfied\"" | "\"pending\"" | "\"blocked\""
 evidence-array ::= "[" ws (positive-integer (ws "," ws positive-integer)*)? ws "]"
 positive-integer ::= [1-9] [0-9]*
+blocked ::= "{" ws "\"action\"" ws ":" ws "\"blocked\"" ws "," ws "\"reason\"" ws ":" ws block-reason ws "," ws "\"content\"" ws ":" ws string ws "}"
+block-reason ::= "\"missing_input\"" | "\"authorization\"" | "\"external_failure\"" | "\"unsupported\""
 final ::= "{" ws "\"action\"" ws ":" ws "\"final\"" ws "," ws "\"content\"" ws ":" ws string ws "}"
 value ::= object | array | string | number | "true" | "false" | "null"
 boolean ::= "true" | "false"

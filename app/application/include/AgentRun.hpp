@@ -23,6 +23,7 @@ struct AgentRun
         ExecutingTool,
         GeneratingAnswer,
         Completed,
+        Blocked,
         Cancelled,
         Failed
     };
@@ -55,10 +56,13 @@ struct AgentRun
     int orderedPlanRepairs = 0;
     int completionReviewFailures = 0;
     int completionPlanDriftRepairs = 0;
+    int planStepReviewFailures = 0;
     bool taskPlanRequired = false;
     bool orderedTaskPlan = false;
     bool awaitingCompletionReview = false;
+    bool awaitingPlanStepReview = false;
     int currentPlanStepEvidenceStart = 1;
+    int pendingPlanStepEvidenceEnd = 0;
     QJsonArray completionSteps;
     QString pendingFinalCandidate;
     int lastPromptTokens = 0;

@@ -71,7 +71,7 @@ completion rules.
 
 ## Current qtLLM Baseline
 
-The current implementation already provides most of the outer loop:
+The current implementation provides the outer loop:
 
 - `PlanningTask`, serial `ExecutionTask` workers, and `SummaryTask` accept the
   structured actions valid for their own phase; `AgentController` schedules
@@ -101,6 +101,11 @@ The current implementation already provides most of the outer loop:
 - Tool results carry a normalized outcome and side-effect state. A dispatched
   mutation with an uncertain remote result stops instead of being repeated,
   while a read-only transport failure receives at most one exact retry.
+
+The remaining controller-owned operations are intentionally scheduler-only:
+materializing the validated plan into a serial `ExecutionTask` queue and
+advancing one queue index after a task's terminal directive. Neither operation
+chooses a provider tool or calls MCP.
 
 The first four implementation milestones close the largest gaps between tool
 discovery, execution, and verified state. Remaining work is to validate the

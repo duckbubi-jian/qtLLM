@@ -371,7 +371,7 @@ Acceptance criteria:
 
 ### M6: Controller Reduction And UI Projection
 
-Status: in progress. Per-task timing and Activity task boundaries are projected
+Status: completed. Per-task timing and Activity task boundaries are projected
 from task snapshots/events. The legacy global completion-review state machine,
 unordered-plan compatibility path, and controller-owned model token buffer are
 removed. Generic tool lookup, risk classification, schema validation, policy
@@ -383,8 +383,13 @@ Tool request dispatch, request identity, cancellation, and status-poll
 throttling also live in `AgentToolRuntime`; the controller only routes the
 completed call to the active task and owns Qt timer wiring.
 
-- Remove obsolete plan, review, and ordered-repair fields from `AgentRun` and
-  `AgentController`.
+The controller intentionally retains queue construction from the validated
+planning directive and the single serial queue index. Those are scheduler
+responsibilities, not provider/tool-runtime responsibilities; no tool call is
+executed while the queue is being built.
+
+- Keep obsolete global plan-review and ordered-repair state out of `AgentRun`
+  and `AgentController`.
 - Project progress directly from task snapshots.
 - Display the active task's text activity and elapsed time.
 - Preserve aggregate run metrics separately from per-task metrics.
@@ -454,8 +459,9 @@ The refactor is complete when:
 1. `PlanningTask`, `ExecutionTask`, and `SummaryTask` share the common `AgentTask`
    lifecycle.
 1. Every model or tool callback is routed to one identifiable active task.
-1. `AgentController` contains no task-plan parsing, step-review semantics, or
-   ordered repair prompts.
+1. `AgentController` contains no step-review semantics or ordered repair
+   prompts; it only converts an already validated planning directive into the
+   serial queue and advances that queue.
 1. All task transitions and queue advancement are enforced by code.
 1. Each task exposes an independent elapsed time and progress snapshot.
 1. The runtime remains generic across MCP providers.

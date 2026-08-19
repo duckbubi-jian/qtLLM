@@ -24,12 +24,17 @@ class AgentToolRuntime final
         std::function<infrastructure::mcp::ToolDecision(const QString&)>;
     using RiskHandler =
         std::function<infrastructure::mcp::ToolRisk(const QString&)>;
+    using CallHandler =
+        std::function<QString(const QString&, const QJsonObject&)>;
+    using CancelHandler = std::function<void(const QString&)>;
 
     struct Dependencies
     {
         ValidateHandler validate;
         PolicyHandler policy;
         RiskHandler risk;
+        CallHandler call;
+        CancelHandler cancel;
     };
 
     struct ToolDescriptor
@@ -42,11 +47,33 @@ class AgentToolRuntime final
     {
         QString signature;
         QString errorMessage;
+        bool statusPoll = false;
 
         [[nodiscard]] bool allowed() const
         {
             return errorMessage.isEmpty();
         }
+    };
+
+    struct DispatchResult
+    {
+        enum class Status
+        {
+            Started,
+            Delayed,
+            Failed
+        };
+
+        Status status = Status::Failed;
+        int delayMilliseconds = 0;
+        bool statusPoll = false;
+    };
+
+    struct CompletedCall
+    {
+        agent::Action action;
+        agent::ToolResult result;
+        ToolOperationKind operationKind = ToolOperationKind::Unknown;
     };
 
     explicit AgentToolRuntime(Dependencies dependencies = {});
@@ -64,10 +91,19 @@ class AgentToolRuntime final
     void clearPendingApproval();
     [[nodiscard]] QString callSignature(const agent::Action& action) const;
     [[nodiscard]] CallGuardResult guardCall(const agent::Action& action,
-                                            bool isStatusPoll) const;
+                                            bool isStatusPoll = false) const;
     void recordCallResult(const agent::Action& action,
                           agent::ToolOutcome outcome);
     void resetCallHistory();
+    [[nodiscard]] DispatchResult dispatch(const agent::Action& action,
+                                          qint64 nowMilliseconds);
+    [[nodiscard]] std::optional<CompletedCall> completeCall(
+        const agent::ToolResult& result, qint64 nowMilliseconds);
+    [[nodiscard]] std::optional<agent::Action> takePendingPoll();
+    [[nodiscard]] const std::optional<agent::Action>& activeAction() const;
+    [[nodiscard]] const std::optional<agent::Action>& pendingPoll() const;
+    void cancelActiveCall();
+    void clearTransportState();
 
    private:
     [[nodiscard]] ToolOperationKind operationKind(
@@ -76,6 +112,12 @@ class AgentToolRuntime final
     Dependencies dependencies_;
     QList<agent::ToolDefinition> tools_;
     std::optional<agent::Action> pendingApproval_;
+    std::optional<agent::Action> activeAction_;
+    std::optional<agent::Action> pendingPoll_;
+    QString activeCallSignature_;
+    QString activeRequestId_;
+    QString pollableCallSignature_;
+    qint64 lastPollCompletedAtMs_ = 0;
     QString lastFailedCallSignature_;
     QStringList completedCallHistory_;
 };

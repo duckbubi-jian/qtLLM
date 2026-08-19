@@ -43,6 +43,7 @@ class AgentControllerTest final : public QObject
     void executionTaskOwnsToolResultReview();
     void toolRuntimeOwnsCatalogValidationPolicyAndRisk();
     void toolRuntimeOwnsDuplicateCallGuard();
+    void toolRuntimeOwnsTransportLifecycle();
     void repairsToolValidationWithFocusedContract();
     void rejectsUnchangedRetryAfterToolError();
     void repairsDynamicPropertyNameValidation();
@@ -249,7 +250,9 @@ void AgentControllerTest::toolRuntimeOwnsCatalogValidationPolicyAndRisk()
              return toolName == QLatin1String("provider.read")
                         ? infrastructure::mcp::ToolRisk::ReadOnly
                         : infrastructure::mcp::ToolRisk::ModifiesData;
-         }});
+         },
+         [](const QString&, const QJsonObject&)
+         { return QStringLiteral("request"); }});
     QVERIFY(runtime.isReady());
 
     auto readTool = namedTool(QStringLiteral("read"),
@@ -314,6 +317,54 @@ void AgentControllerTest::toolRuntimeOwnsDuplicateCallGuard()
     QVERIFY(
         repeatedCycle.errorMessage.contains(QStringLiteral("repeated cycle")));
     QVERIFY(runtime.guardCall(closeAction, true).allowed());
+}
+
+void AgentControllerTest::toolRuntimeOwnsTransportLifecycle()
+{
+    auto callCount = 0;
+    auto cancelCount = 0;
+    application::AgentToolRuntime runtime(
+        {acceptsToolArguments,
+         [](const QString&)
+         { return infrastructure::mcp::ToolDecision::Allow; },
+         {},
+         [&](const QString&, const QJsonObject&)
+         { return QStringLiteral("request-%1").arg(++callCount); },
+         [&](const QString&) { ++cancelCount; }});
+
+    agent::Action action;
+    action.type = agent::ActionType::CallTool;
+    action.toolName = QStringLiteral("provider.echo");
+    action.arguments = {{QStringLiteral("value"), 1}};
+    const auto started = runtime.dispatch(action, 0);
+    QCOMPARE(started.status,
+             application::AgentToolRuntime::DispatchResult::Status::Started);
+    QCOMPARE(callCount, 1);
+    QVERIFY(runtime.activeAction().has_value());
+
+    agent::ToolResult inProgress;
+    inProgress.requestId = QStringLiteral("request-1");
+    inProgress.structuredContent =
+        QJsonObject{{QStringLiteral("status"), QStringLiteral("running")}};
+    const auto completed = runtime.completeCall(inProgress, 0);
+    QVERIFY(completed.has_value());
+    QCOMPARE(completed->result.outcome, agent::ToolOutcome::InProgress);
+    QVERIFY(!runtime.activeAction().has_value());
+
+    const auto delayed = runtime.dispatch(action, 100);
+    QCOMPARE(delayed.status,
+             application::AgentToolRuntime::DispatchResult::Status::Delayed);
+    QVERIFY(delayed.delayMilliseconds > 0);
+    QCOMPARE(callCount, 1);
+    QVERIFY(runtime.takePendingPoll().has_value());
+
+    const auto restarted = runtime.dispatch(action, 1'100);
+    QCOMPARE(restarted.status,
+             application::AgentToolRuntime::DispatchResult::Status::Started);
+    QCOMPARE(callCount, 2);
+    runtime.cancelActiveCall();
+    QCOMPARE(cancelCount, 1);
+    QVERIFY(!runtime.activeAction().has_value());
 }
 
 void AgentControllerTest::toolCatalogIsStableAndValid()

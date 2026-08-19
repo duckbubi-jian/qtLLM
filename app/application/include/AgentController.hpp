@@ -28,9 +28,8 @@ class AgentController final : public QObject
     using GenerateHandler = std::function<void(
         const QList<chat::Message>&, const models::InferencePreset&, int)>;
     using CancelGenerationHandler = std::function<void()>;
-    using ToolCallHandler =
-        std::function<QString(const QString&, const QJsonObject&)>;
-    using CancelToolHandler = std::function<void(const QString&)>;
+    using ToolCallHandler = AgentToolRuntime::CallHandler;
+    using CancelToolHandler = AgentToolRuntime::CancelHandler;
     using ValidateToolHandler = AgentToolRuntime::ValidateHandler;
     using ToolPolicyHandler = AgentToolRuntime::PolicyHandler;
     using ToolRiskHandler = AgentToolRuntime::RiskHandler;
@@ -136,11 +135,6 @@ class AgentController final : public QObject
     std::optional<AgentRun> activeRun_;
     models::InferencePreset preset_;
     QList<chat::Message> conversationMessages_;
-    std::optional<agent::Action> activeToolAction_;
-    std::optional<agent::Action> pendingPollAction_;
-    QString activeToolCallSignature_;
-    QString pollableToolCallSignature_;
-    qint64 lastPollCompletedAtMs_ = 0;
     QList<QJsonObject> toolEvidence_;
     QTimer* runTimer_ = nullptr;
     QTimer* pollTimer_ = nullptr;

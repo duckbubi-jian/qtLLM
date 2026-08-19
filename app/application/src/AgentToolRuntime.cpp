@@ -1,5 +1,7 @@
 #include "AgentToolRuntime.hpp"
 
+#include "ToolResultStatus.hpp"
+
 #include <QJsonArray>
 #include <QJsonDocument>
 
@@ -11,6 +13,7 @@ namespace qtllm::application
 namespace
 {
 constexpr qsizetype maximumDetectedCycleLength = 4;
+constexpr auto minimumPollIntervalMilliseconds = 1'000;
 
 QJsonValue canonicalJsonValue(const QJsonValue& value)
 {
@@ -89,7 +92,7 @@ void AgentToolRuntime::setTools(QList<agent::ToolDefinition> tools)
 
 bool AgentToolRuntime::isReady() const
 {
-    return dependencies_.validate && dependencies_.policy;
+    return dependencies_.validate && dependencies_.policy && dependencies_.call;
 }
 
 std::optional<AgentToolRuntime::ToolDescriptor> AgentToolRuntime::inspect(
@@ -161,7 +164,10 @@ AgentToolRuntime::CallGuardResult AgentToolRuntime::guardCall(
             "attempt.");
         return result;
     }
-    if (!isStatusPoll)
+    result.statusPoll =
+        isStatusPoll || (!pollableCallSignature_.isEmpty() &&
+                         result.signature == pollableCallSignature_);
+    if (!result.statusPoll)
         result.errorMessage =
             repeatedCompletedCallError(completedCallHistory_, result.signature);
     return result;
@@ -183,6 +189,110 @@ void AgentToolRuntime::resetCallHistory()
 {
     lastFailedCallSignature_.clear();
     completedCallHistory_.clear();
+}
+
+AgentToolRuntime::DispatchResult AgentToolRuntime::dispatch(
+    const agent::Action& action, qint64 nowMilliseconds)
+{
+    DispatchResult result;
+    const auto signature = callSignature(action);
+    result.statusPoll = !pollableCallSignature_.isEmpty() &&
+                        signature == pollableCallSignature_;
+    if (result.statusPoll && lastPollCompletedAtMs_ > 0)
+    {
+        const auto elapsed = nowMilliseconds - lastPollCompletedAtMs_;
+        const auto remaining = minimumPollIntervalMilliseconds - elapsed;
+        if (remaining > 0)
+        {
+            pendingPoll_ = action;
+            result.status = DispatchResult::Status::Delayed;
+            result.delayMilliseconds = static_cast<int>(remaining);
+            return result;
+        }
+    }
+
+    pendingPoll_.reset();
+    activeAction_ = action;
+    activeCallSignature_ = signature;
+    if (dependencies_.call)
+        activeRequestId_ =
+            dependencies_.call(action.toolName, action.arguments);
+    if (activeRequestId_.isEmpty())
+    {
+        activeAction_.reset();
+        activeCallSignature_.clear();
+        result.status = DispatchResult::Status::Failed;
+        return result;
+    }
+    result.status = DispatchResult::Status::Started;
+    return result;
+}
+
+std::optional<AgentToolRuntime::CompletedCall> AgentToolRuntime::completeCall(
+    const agent::ToolResult& result, qint64 nowMilliseconds)
+{
+    if (result.requestId != activeRequestId_ || !activeAction_.has_value())
+        return std::nullopt;
+
+    auto normalizedResult = result;
+    normalizedResult.outcome = normalizedToolOutcome(result);
+    normalizedResult.sideEffectState = normalizedToolSideEffectState(result);
+    normalizedResult.isError =
+        normalizedResult.outcome != agent::ToolOutcome::Succeeded &&
+        normalizedResult.outcome != agent::ToolOutcome::InProgress;
+
+    const auto action = std::exchange(activeAction_, std::nullopt);
+    const auto signature = std::exchange(activeCallSignature_, QString{});
+    activeRequestId_.clear();
+    recordCallResult(*action, normalizedResult.outcome);
+    if (normalizedResult.outcome == agent::ToolOutcome::InProgress)
+    {
+        pollableCallSignature_ = signature;
+        lastPollCompletedAtMs_ = nowMilliseconds;
+    }
+    else
+    {
+        pollableCallSignature_.clear();
+        lastPollCompletedAtMs_ = 0;
+    }
+
+    auto operation = ToolOperationKind::Unknown;
+    const auto descriptor = inspect(action->toolName);
+    if (descriptor.has_value()) operation = descriptor->operationKind;
+    return CompletedCall{*action, std::move(normalizedResult), operation};
+}
+
+std::optional<agent::Action> AgentToolRuntime::takePendingPoll()
+{
+    return std::exchange(pendingPoll_, std::nullopt);
+}
+
+const std::optional<agent::Action>& AgentToolRuntime::activeAction() const
+{
+    return activeAction_;
+}
+
+const std::optional<agent::Action>& AgentToolRuntime::pendingPoll() const
+{
+    return pendingPoll_;
+}
+
+void AgentToolRuntime::cancelActiveCall()
+{
+    const auto requestId = activeRequestId_;
+    clearTransportState();
+    if (!requestId.isEmpty() && dependencies_.cancel)
+        dependencies_.cancel(requestId);
+}
+
+void AgentToolRuntime::clearTransportState()
+{
+    activeAction_.reset();
+    pendingPoll_.reset();
+    activeCallSignature_.clear();
+    activeRequestId_.clear();
+    pollableCallSignature_.clear();
+    lastPollCompletedAtMs_ = 0;
 }
 
 ToolOperationKind AgentToolRuntime::operationKind(

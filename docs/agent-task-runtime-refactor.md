@@ -379,8 +379,9 @@ decisions, and task-local duplicate-call protection now live in
 `AgentToolRuntime`. Queue construction and task boundaries remain outside it.
 Policy-driven approval state also lives in `AgentToolRuntime`; the controller
 only projects that state to the UI and forwards the user's decision.
-Asynchronous MCP transport and polling still remain in `AgentController` and
-are the next extraction boundary.
+Tool request dispatch, request identity, cancellation, and status-poll
+throttling also live in `AgentToolRuntime`; the controller only routes the
+completed call to the active task and owns Qt timer wiring.
 
 - Remove obsolete plan, review, and ordered-repair fields from `AgentRun` and
   `AgentController`.

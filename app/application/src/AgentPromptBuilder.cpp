@@ -1,5 +1,4 @@
 #include "AgentPromptBuilder.hpp"
-#include "PlanTraceability.hpp"
 #include "ToolCatalogBuilder.hpp"
 #include "ToolResultStatus.hpp"
 
@@ -292,7 +291,6 @@ bool AgentPromptBuilder::requiresCompletionReview(const QString& userRequest)
 chat::Message AgentPromptBuilder::taskPlanMessage(
     const QString& originalRequest)
 {
-    const PlanTraceability traceability(originalRequest);
     return {
         chat::Role::User,
         QStringLiteral(
@@ -321,27 +319,18 @@ chat::Message AgentPromptBuilder::taskPlanMessage(
             "tools. Do not include mutating tools for later steps. A directly "
             "relevant read-only tool may still inspect or recover the current "
             "step if it was not anticipated. Use allowed_tools=[] for "
-            "non-tool steps. The Host assigned stable IDs to exact clauses "
-            "from the current user request in <request_clauses>. Every step "
-            "must include a non-empty source_ids array using only those IDs. "
-            "Map every request clause to at least one owning step; a clause "
-            "may map to multiple steps when its outcomes are independent. "
-            "source_ids are provenance, not a substitute for a complete "
-            "description. Keep "
+            "non-tool steps. Keep "
             "literal names, paths, values, and ordering constraints from the "
             "original request in the relevant step description. Preserve "
             "every explicit operation once within its owning outcome task. "
             "Do not call a tool "
             "or return final in this decision. Use this shape: "
             "{\"action\":\"task_plan\",\"steps\":[{\"id\":\"step-1\","
-            "\"description\":\"...\",\"source_ids\":[\"request-1\"],"
-            "\"requires_tool\":true,"
+            "\"description\":\"...\",\"requires_tool\":true,"
             "\"allowed_tools\":[\"server.tool\"]}],"
             "\"ordered\":true}.\n"
-            "<request_clauses>%1</request_clauses> "
-            "<original_request>%2</original_request>")
-            .arg(compactJson(traceability.requestClauses()),
-                 originalRequest.trimmed())};
+            "<original_request>%1</original_request>")
+            .arg(originalRequest.trimmed())};
 }
 
 chat::Message AgentPromptBuilder::planTaskActivationMessage(
@@ -355,11 +344,10 @@ chat::Message AgentPromptBuilder::planTaskActivationMessage(
             "on <current_task>%1</current_task>. Do not start, partially "
             "perform, inspect for, or substitute any other task. The manager "
             "alone advances the plan and marks tasks. "
-            "The current_task.source_refs were copied by the Host from the "
-            "user request and are authoritative constraints for this task. "
-            "Preserve every literal name, path, value, unit, and ordering "
-            "constraint in them. The complete request remains available for "
-            "context at <original_request>%4</original_request>. "
+            "The complete original request remains authoritative context at "
+            "<original_request>%4</original_request>. Do not reinterpret the "
+            "current task as replacing or narrowing explicit user "
+            "constraints that apply to it. "
             "Completed task context is provided only for stable identifiers "
             "or outputs needed by the current task: "
             "<completed_tasks>%2</completed_tasks> "
@@ -420,10 +408,7 @@ chat::Message AgentPromptBuilder::taskPlanCorrectionMessage(
                 "one corrected task_plan action with every requested step and "
                 "ordered=true. Every step must include allowed_tools: exact "
                 "qualified tool names for a tool-required step and [] for a "
-                "non-tool step. Every step must also include non-empty "
-                "source_ids copied from request_clauses. Cover every request "
-                "clause and preserve its literal constraints in the mapped "
-                "step descriptions. Each task must represent an independently "
+                "non-tool step. Each task must represent an independently "
                 "verifiable result explicitly requested by the user. Keep "
                 "causally dependent calls with no independent requested "
                 "result in the same outcome task. Do not use numbering or "

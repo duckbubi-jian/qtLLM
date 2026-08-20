@@ -79,11 +79,6 @@ The current implementation provides the outer loop:
 - Plans use semantic outcome-level tasks. Numbering and expected tool-call
   count do not determine task boundaries; the planner groups calls that jointly
   establish one requested result and splits independently requested results.
-- Every planned step carries model-selected `source_ids` that refer to
-  Host-generated `request_clauses`. The Host rejects unknown IDs, uncovered
-  clauses, and descriptions that drop literal names, paths, values, or numeric
-  constraints. After acceptance, it injects immutable `source_refs` containing
-  the exact user text and records the step-to-source map in the run events.
 - `AgentToolRuntime` owns generic catalog lookup, risk classification, schema
   validation, policy and approval state, and task-local duplicate-call
   protection. It also owns request identity, dispatch, cancellation, result
@@ -198,19 +193,16 @@ satisfies a task step.
 
 ## Plan Provenance
 
-Planning is a lossy model operation, so a plan summary cannot replace the user
-request. Before planning, the Host splits the request into stable
-`request_clauses` and exposes their IDs and exact text. Every `task_plan` step
-must cite one or more clauses through `source_ids`, and every clause must be
-covered. Literal constraints extracted from a clause must remain present across
-the descriptions of its owning steps.
+Planning is a lossy model operation, so a plan summary never replaces the user
+request or becomes a sentence-level requirements database. Plans contain only
+semantic, user-visible outcomes. Introductory text, shared constraints, and
+headings remain request context rather than synthetic tasks.
 
-The model supplies only the references. Once the plan passes validation, the
-Host resolves them into `source_refs` containing the authoritative clause text.
-Each `ExecutionTask` receives its resolved references plus the complete
-`original_request`; context compaction preserves the source IDs. Accepted-plan
-events persist the mapping so an execution step can be traced back to the exact
-user wording without trusting a model-generated paraphrase.
+The Host retains the immutable original request on the run and records the
+accepted plan as a run event. Each `ExecutionTask` receives both its current
+outcome and the complete `original_request`, so execution remains traceable to
+the originating turn without requiring model-generated clause IDs or lexical
+coverage mappings.
 
 ## Tool Contract Delivery
 

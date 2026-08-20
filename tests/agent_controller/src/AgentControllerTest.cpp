@@ -53,7 +53,6 @@ class AgentControllerTest final : public QObject
     void repairsDynamicPropertyNameValidation();
     void bindsToolCallsToCurrentTaskInCode();
     void allowsSemanticTaskBoundaries();
-    void repairsUnfaithfulPlanAndPreservesSourceTrace();
     void blocksOrderedPlanWhenRequiredInputIsMissing();
     void successfulStructuredMutationAdvancesPlanWithoutReadBack();
     void dispatchesSharedMutationWithoutModelReview();
@@ -191,39 +190,24 @@ agent::ToolValidationResult acceptsToolArguments(const QString&,
 }
 
 QJsonObject planStep(const QString& id, const QString& description,
-                     bool requiresTool, QStringList allowedTools = {},
-                     QStringList sourceIds = {})
+                     bool requiresTool, QStringList allowedTools = {})
 {
     if (requiresTool && allowedTools.isEmpty())
         allowedTools.append(QStringLiteral("fake.echo"));
     QJsonArray allowedToolValues;
     for (const auto& tool : allowedTools)
         allowedToolValues.append(tool);
-    QJsonArray sourceIdValues;
-    for (const auto& sourceId : sourceIds)
-        sourceIdValues.append(sourceId);
     return {{QStringLiteral("id"), id},
             {QStringLiteral("description"), description},
-            {QStringLiteral("source_ids"), sourceIdValues},
             {QStringLiteral("requires_tool"), requiresTool},
             {QStringLiteral("allowed_tools"), allowedToolValues}};
 }
 
 QByteArray orderedTaskPlanAction(const QJsonArray& steps)
 {
-    QJsonArray tracedSteps;
-    for (auto index = 0; index < steps.size(); ++index)
-    {
-        auto step = steps.at(index).toObject();
-        if (step.value(QStringLiteral("source_ids")).toArray().isEmpty())
-            step.insert(
-                QStringLiteral("source_ids"),
-                QJsonArray{QStringLiteral("request-%1").arg(index + 1)});
-        tracedSteps.append(step);
-    }
     return QJsonDocument(QJsonObject{{QStringLiteral("action"),
                                       QStringLiteral("task_plan")},
-                                     {QStringLiteral("steps"), tracedSteps},
+                                     {QStringLiteral("steps"), steps},
                                      {QStringLiteral("ordered"), true}})
         .toJson(QJsonDocument::Compact);
 }
@@ -2039,15 +2023,12 @@ void AgentControllerTest::allowsSemanticTaskBoundaries()
     const QJsonArray semanticTasks{
         planStep(QStringLiteral("artifact-a"),
                  QStringLiteral("Produce artifact A"), true,
-                 {QStringLiteral("fake.create_a")},
-                 {QStringLiteral("request-1")}),
+                 {QStringLiteral("fake.create_a")}),
         planStep(QStringLiteral("artifact-b"),
                  QStringLiteral("Produce artifact B"), true,
-                 {QStringLiteral("fake.create_b")},
-                 {QStringLiteral("request-1")}),
+                 {QStringLiteral("fake.create_b")}),
         planStep(QStringLiteral("report"),
-                 QStringLiteral("Report both artifacts"), false, {},
-                 {QStringLiteral("request-2")})};
+                 QStringLiteral("Report both artifacts"), false)};
     controller.receiveToken(orderedTaskPlanAction(semanticTasks));
     controller.completeGeneration(false);
 
@@ -2056,91 +2037,6 @@ void AgentControllerTest::allowsSemanticTaskBoundaries()
     QCOMPARE(controller.activeRun()->executionTasks.size(), std::size_t{3});
     QCOMPARE(controller.progressSnapshot().currentStepId,
              QStringLiteral("artifact-a"));
-    controller.cancel();
-}
-
-void AgentControllerTest::repairsUnfaithfulPlanAndPreservesSourceTrace()
-{
-    QList<chat::Message> generatedMessages;
-    application::AgentController controller(
-        application::AgentController::Dependencies{
-            [&](const QList<chat::Message>& messages,
-                const models::InferencePreset&, int)
-            { generatedMessages = messages; },
-            [] {}, [](const QString&, const QJsonObject&)
-            { return QStringLiteral("unexpected"); }, [](const QString&) {},
-            acceptsToolArguments, [](const QString&)
-            { return infrastructure::mcp::ToolDecision::Allow; }});
-
-    const auto request = QStringLiteral(
-        "Use the preprocessing tools in E:/stl_case1:\n"
-        "1. Set 'Lubricating Oil' Density to 900, Kinematic Viscosity to "
-        "5e-6, and Wall Contact Angle to 10.\n"
-        "2. Report the result.");
-    QVERIFY(controller.start(request, {},
-                             {ledgerTool(QStringLiteral("update"), false)}));
-    QVERIFY(generatedMessages.constLast().content.contains(
-        QStringLiteral("<request_clauses>")));
-    QVERIFY(generatedMessages.constLast().content.contains(
-        QStringLiteral("\"id\":\"request-1\"")));
-
-    const QJsonArray incompletePlan{
-        planStep(QStringLiteral("update"),
-                 QStringLiteral("In E:/stl_case1 edit the Lubricating Oil "
-                                "fields"),
-                 true, {QStringLiteral("fake.update")},
-                 {QStringLiteral("request-1"), QStringLiteral("request-2")}),
-        planStep(QStringLiteral("report"), QStringLiteral("Report the result"),
-                 false, {}, {QStringLiteral("request-3")})};
-    controller.receiveToken(orderedTaskPlanAction(incompletePlan));
-    controller.completeGeneration(false);
-
-    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
-    QCOMPARE(controller.activeRun()->planningTask->repairCount(), 1);
-    QVERIFY(generatedMessages.constLast().content.contains(
-        QStringLiteral("dropped literal constraints from request-2")));
-    QVERIFY(
-        generatedMessages.constLast().content.contains(QStringLiteral("900")));
-    QVERIFY(
-        generatedMessages.constLast().content.contains(QStringLiteral("5e-6")));
-    QVERIFY(
-        generatedMessages.constLast().content.contains(QStringLiteral("10")));
-
-    const QJsonArray faithfulPlan{
-        planStep(
-            QStringLiteral("update"),
-            QStringLiteral("Set Lubricating Oil Density to 900, Kinematic "
-                           "Viscosity to 5e-6, and Wall Contact Angle to 10 in "
-                           "E:/stl_case1"),
-            true, {QStringLiteral("fake.update")},
-            {QStringLiteral("request-1"), QStringLiteral("request-2")}),
-        planStep(QStringLiteral("report"), QStringLiteral("Report the result"),
-                 false, {}, {QStringLiteral("request-3")})};
-    controller.receiveToken(orderedTaskPlanAction(faithfulPlan));
-    controller.completeGeneration(false);
-
-    QCOMPARE(controller.activeRun()->executionTasks.size(), std::size_t{2});
-    const auto acceptedStep =
-        controller.activeRun()->completionSteps.at(0).toObject();
-    QCOMPARE(
-        acceptedStep.value(QStringLiteral("source_ids")).toArray(),
-        QJsonArray({QStringLiteral("request-1"), QStringLiteral("request-2")}));
-    const auto sourceRefs =
-        acceptedStep.value(QStringLiteral("source_refs")).toArray();
-    QCOMPARE(sourceRefs.size(), 2);
-    QCOMPARE(
-        sourceRefs.at(0).toObject().value(QStringLiteral("text")).toString(),
-        QStringLiteral("Use the preprocessing tools in E:/stl_case1:"));
-    QCOMPARE(
-        sourceRefs.at(1).toObject().value(QStringLiteral("text")).toString(),
-        QStringLiteral(
-            "Set 'Lubricating Oil' Density to 900, Kinematic Viscosity "
-            "to 5e-6, and Wall Contact Angle to 10."));
-    const auto activation = generatedMessages.constLast().content;
-    QVERIFY(activation.contains(QStringLiteral("<original_request>")));
-    QVERIFY(activation.contains(request));
-    QVERIFY(activation.contains(QStringLiteral("source_refs")));
-    QVERIFY(activation.contains(QStringLiteral("5e-6")));
     controller.cancel();
 }
 

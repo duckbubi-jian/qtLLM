@@ -42,40 +42,20 @@ bool parsePlanSteps(const QJsonArray& values, QJsonArray& steps,
         const auto requiresTool = step.value(QStringLiteral("requires_tool"));
         const auto allowedToolsValue =
             step.value(QStringLiteral("allowed_tools"));
-        const auto sourceIdsValue = step.value(QStringLiteral("source_ids"));
         if (!value.isObject() ||
-            !hasOnlyKeys(
-                step,
-                {QStringLiteral("id"), QStringLiteral("description"),
-                 QStringLiteral("source_ids"), QStringLiteral("requires_tool"),
-                 QStringLiteral("allowed_tools")}) ||
+            !hasOnlyKeys(step,
+                         {QStringLiteral("id"), QStringLiteral("description"),
+                          QStringLiteral("requires_tool"),
+                          QStringLiteral("allowed_tools")}) ||
             id.isEmpty() || id.size() > 64 || description.isEmpty() ||
             description.size() > 256 || !requiresTool.isBool() ||
-            !allowedToolsValue.isArray() || !sourceIdsValue.isArray() ||
-            sourceIdsValue.toArray().isEmpty() || ids.contains(id))
+            !allowedToolsValue.isArray() || ids.contains(id))
         {
             errorMessage = QStringLiteral(
                 "Each task_plan step requires a unique non-empty id, a "
-                "description of at most 256 characters, a non-empty "
-                "source_ids array, and a boolean requires_tool property plus "
-                "an allowed_tools array.");
+                "description of at most 256 characters, and a boolean "
+                "requires_tool property plus an allowed_tools array.");
             return false;
-        }
-        QSet<QString> sourceIdSet;
-        QJsonArray sourceIds;
-        for (const auto& sourceValue : sourceIdsValue.toArray())
-        {
-            const auto sourceId = sourceValue.toString().trimmed();
-            if (!sourceValue.isString() || sourceId.isEmpty() ||
-                sourceId.size() > 64 || sourceIdSet.contains(sourceId))
-            {
-                errorMessage = QStringLiteral(
-                    "task_plan source_ids values must be unique, non-empty "
-                    "request clause IDs.");
-                return false;
-            }
-            sourceIdSet.insert(sourceId);
-            sourceIds.append(sourceId);
         }
         QSet<QString> allowedToolNames;
         QJsonArray allowedTools;
@@ -106,7 +86,6 @@ bool parsePlanSteps(const QJsonArray& values, QJsonArray& steps,
         steps.append(QJsonObject{
             {QStringLiteral("id"), id},
             {QStringLiteral("description"), description},
-            {QStringLiteral("source_ids"), sourceIds},
             {QStringLiteral("requires_tool"), requiresTool.toBool()},
             {QStringLiteral("allowed_tools"), allowedTools}});
     }

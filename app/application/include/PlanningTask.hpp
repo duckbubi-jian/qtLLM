@@ -20,8 +20,7 @@ class PlanningTask final : public AgentTask
     [[nodiscard]] int repairCount() const;
 
    private:
-    [[nodiscard]] QString validatePlan(const agent::Action& action,
-                                       const QString& originalRequest) const;
+    [[nodiscard]] QString validatePlan(const agent::Action& action) const;
     [[nodiscard]] Directive repair(const QByteArray& rawAction,
                                    const QString& errorMessage);
     [[nodiscard]] QString activity() const override;

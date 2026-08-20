@@ -575,13 +575,9 @@ void AgentController::completeGeneration(bool cancelled,
     }
     const auto verificationTaskId =
         task->kind() == AgentTask::Kind::Execution ? task->id() : QString{};
-    const auto taskContext =
-        task->kind() == AgentTask::Kind::Planning
-            ? activeRun_->userRequest
-            : activeRun_->ledger.unresolvedVerificationReason(
-                  verificationTaskId);
-    const auto directive =
-        task->completeTaskGeneration(cancelled, toolEvidence_, taskContext);
+    const auto directive = task->completeTaskGeneration(
+        cancelled, toolEvidence_,
+        activeRun_->ledger.unresolvedVerificationReason(verificationTaskId));
     if (task->kind() == AgentTask::Kind::Planning &&
         activeRun_->planningTask.has_value())
         activeRun_->taskPlanFailures = activeRun_->planningTask->repairCount();
@@ -1225,27 +1221,17 @@ void AgentController::acceptTaskPlan(const QJsonArray& steps)
                              "Agent task plan accepted: run=%1 steps=%2")
                              .arg(activeRun_->id)
                              .arg(activeRun_->completionSteps.size());
-    QJsonArray sourceMap;
-    for (const auto& value : steps)
-    {
-        const auto step = value.toObject();
-        sourceMap.append(QJsonObject{
-            {QStringLiteral("stepId"), step.value(QStringLiteral("id"))},
-            {QStringLiteral("sourceIds"),
-             step.value(QStringLiteral("source_ids"))}});
-    }
     recordEvent(
         agent::EventType::TaskPlanAccepted,
         QStringLiteral("Task plan accepted."), {},
-        {{QStringLiteral("stepCount"), activeRun_->completionSteps.size()},
-         {QStringLiteral("sourceMap"), sourceMap}});
+        {{QStringLiteral("stepCount"), activeRun_->completionSteps.size()}});
     activeRun_->executionTasks.clear();
     activeRun_->executionTasks.reserve(static_cast<std::size_t>(steps.size()));
     for (qsizetype index = 0; index < steps.size(); ++index)
         activeRun_->executionTasks.emplace_back(steps.at(index).toObject());
 
     // Each ExecutionTask gets a fresh user turn containing its assignment,
-    // Host-bound source references, and the original request.
+    // the original request, and completed-task context it may depend on.
     if (activeRun_->requestMessageIndex >= 0 &&
         activeRun_->requestMessageIndex < activeRun_->inferenceMessages.size())
         activeRun_->inferenceMessages.resize(activeRun_->requestMessageIndex);

@@ -542,7 +542,17 @@ QLabel#verificationConfirmationTitle {
     font-weight: 600;
 }
 QLabel#verificationReason {
+    color: #b42318;
+}
+QLabel#verificationDetailTitle {
     color: #5f6368;
+    font-weight: 600;
+}
+QLabel#verificationStep,
+QLabel#verificationOperation,
+QLabel#verificationTarget,
+QLabel#verificationExpectedEffects {
+    color: #202124;
 }
 QLabel#temporaryEvidenceLabel {
     color: #334155;

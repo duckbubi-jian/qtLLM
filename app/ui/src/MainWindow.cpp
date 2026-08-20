@@ -262,11 +262,13 @@ MainWindow::MainWindow(const QString& settingsFilePath, QWidget* parent)
             });
     connect(&agentController_,
             &application::AgentController::verificationRequested, this,
-            [this](const QString&, const QString& reason, const QJsonObject&)
+            [this](const QString&, const QString& reason,
+                   const QJsonObject& context)
             {
                 if (pendingVerification_ != nullptr)
                     pendingVerification_->markCancelled();
-                auto* confirmation = new VerificationConfirmationWidget(reason);
+                auto* confirmation =
+                    new VerificationConfirmationWidget(reason, context);
                 pendingVerification_ = confirmation;
                 chatView_->conversationLayout()->insertWidget(
                     chatView_->conversationLayout()->count() - 1, confirmation);

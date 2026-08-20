@@ -234,6 +234,10 @@ void AgentController::resolveVerification(VerificationDecision decision,
     const auto continuation = *verificationContinuation_;
     const auto taskId = verificationTaskId_;
     const auto reason = verificationReason_;
+    const auto evidenceSequence =
+        verificationContext(taskId)
+            .value(QStringLiteral("mutationEvidenceSequence"))
+            .toInt();
     if (decision == VerificationDecision::Stop)
     {
         recordEvent(agent::EventType::VerificationResolved,
@@ -250,21 +254,21 @@ void AgentController::resolveVerification(VerificationDecision decision,
         if (input.isEmpty())
         {
             emit verificationRequested(activeRun_->id, reason,
-                                       activeRun_->ledger.snapshot());
+                                       verificationContext(taskId));
             return;
         }
         if (continuation == VerificationContinuation::StartSummary)
         {
-            activateSummaryTask();
-            if (decisionMessages().isEmpty() ||
-                decisionMessages().constLast().role != chat::Role::User)
+            auto& messages = activeRun_->inferenceMessages;
+            if (messages.isEmpty() ||
+                messages.constLast().role != chat::Role::User)
             {
                 failRun(QStringLiteral("task_state_invalid"),
                         QStringLiteral(
-                            "The summary task cannot receive user evidence."));
+                            "The run context cannot receive user evidence."));
                 return;
             }
-            decisionMessages().last().content +=
+            messages.last().content +=
                 QStringLiteral(
                     "\n\n<user_evidence>\n%1\n</user_evidence>\n"
                     "This is user-attested evidence, not deterministic Host "
@@ -277,12 +281,12 @@ void AgentController::resolveVerification(VerificationDecision decision,
             if (!task || !task->resumeWithUserEvidence(input))
             {
                 emit verificationRequested(activeRun_->id, reason,
-                                           activeRun_->ledger.snapshot());
+                                           verificationContext(taskId));
                 return;
             }
         }
-        const auto attested =
-            activeRun_->ledger.attestUnresolvedVerification(taskId, input);
+        const auto attested = activeRun_->ledger.attestUnresolvedVerification(
+            taskId, evidenceSequence, input);
         if (continuation != VerificationContinuation::StartSummary)
         {
             if (auto* task = currentExecutionTask())
@@ -298,13 +302,23 @@ void AgentController::resolveVerification(VerificationDecision decision,
             {{QStringLiteral("decision"), QStringLiteral("provide_evidence")},
              {QStringLiteral("inputCharacters"), input.size()},
              {QStringLiteral("evidence"), attestedEvidence}});
+        const auto nextReason =
+            activeRun_->ledger.unresolvedVerificationReason(taskId);
+        if (!nextReason.isEmpty())
+        {
+            clearPendingVerification();
+            requestVerification(nextReason, continuation, taskId);
+            return;
+        }
         clearPendingVerification();
+        if (continuation == VerificationContinuation::StartSummary)
+            activateSummaryTask();
         requestDecision(QStringLiteral("Applying user-supplied evidence"));
         return;
     }
 
-    const auto accepted =
-        activeRun_->ledger.acceptUnresolvedVerification(taskId);
+    const auto accepted = activeRun_->ledger.acceptUnresolvedVerification(
+        taskId, evidenceSequence);
     QJsonArray acceptedEvidence;
     for (const auto sequence : accepted)
         acceptedEvidence.append(sequence);
@@ -313,6 +327,19 @@ void AgentController::resolveVerification(VerificationDecision decision,
         QStringLiteral("User accepted the unverified result."), {},
         {{QStringLiteral("decision"), QStringLiteral("accept_unverified")},
          {QStringLiteral("evidence"), acceptedEvidence}});
+    if (continuation != VerificationContinuation::StartSummary)
+    {
+        if (auto* task = currentExecutionTask())
+            task->allowUnverifiedCompletion(accepted);
+    }
+    const auto nextReason =
+        activeRun_->ledger.unresolvedVerificationReason(taskId);
+    if (!nextReason.isEmpty())
+    {
+        clearPendingVerification();
+        requestVerification(nextReason, continuation, taskId);
+        return;
+    }
     clearPendingVerification();
 
     switch (continuation)
@@ -327,7 +354,6 @@ void AgentController::resolveVerification(VerificationDecision decision,
                             "No active task can resume after verification."));
                 return;
             }
-            task->allowUnverifiedCompletion(accepted);
             const auto directive = task->completeTaskGeneration(
                 false, toolEvidence_,
                 activeRun_->ledger.unresolvedVerificationReason(taskId));
@@ -335,8 +361,6 @@ void AgentController::resolveVerification(VerificationDecision decision,
             return;
         }
         case VerificationContinuation::ResumeDecision:
-            if (auto* task = currentExecutionTask())
-                task->allowUnverifiedCompletion(accepted);
             requestDecision(
                 QStringLiteral("Recovering from an uncertain tool outcome"));
             return;
@@ -1126,6 +1150,39 @@ void AgentController::dispatchTool(const agent::Action& action)
     executeTool(action);
 }
 
+QJsonObject AgentController::verificationContext(const QString& taskId) const
+{
+    if (!activeRun_) return {};
+    auto context = activeRun_->ledger.unresolvedVerificationContext(taskId);
+    const auto contextTaskId =
+        context.value(QStringLiteral("taskId")).toString(taskId);
+    context.insert(QStringLiteral("taskId"), contextTaskId);
+    if (activeRun_->directTask.has_value())
+    {
+        context.insert(QStringLiteral("taskDescription"),
+                       activeRun_->directTask->description());
+        context.insert(QStringLiteral("stepNumber"), 1);
+        context.insert(QStringLiteral("stepCount"), 1);
+    }
+    else
+    {
+        for (std::size_t index = 0; index < activeRun_->executionTasks.size();
+             ++index)
+        {
+            const auto& task = activeRun_->executionTasks.at(index);
+            if (task.id() != contextTaskId) continue;
+            context.insert(QStringLiteral("taskDescription"),
+                           task.description());
+            context.insert(QStringLiteral("stepNumber"),
+                           static_cast<int>(index + 1));
+            context.insert(QStringLiteral("stepCount"),
+                           static_cast<int>(activeRun_->executionTasks.size()));
+            break;
+        }
+    }
+    return context;
+}
+
 void AgentController::requestVerification(const QString& reason,
                                           VerificationContinuation continuation,
                                           const QString& taskId)
@@ -1134,6 +1191,7 @@ void AgentController::requestVerification(const QString& reason,
     verificationContinuation_ = continuation;
     verificationTaskId_ = taskId;
     verificationReason_ = reason.trimmed();
+    const auto context = verificationContext(verificationTaskId_);
     if (auto* task = currentExecutionTask()) task->awaitVerification();
     setState(AgentRun::State::WaitingForVerification);
     recordEvent(
@@ -1143,8 +1201,7 @@ void AgentController::requestVerification(const QString& reason,
         {},
         {{QStringLiteral("reason"), verificationReason_},
          {QStringLiteral("taskId"), verificationTaskId_}});
-    emit verificationRequested(activeRun_->id, verificationReason_,
-                               activeRun_->ledger.snapshot());
+    emit verificationRequested(activeRun_->id, verificationReason_, context);
 }
 
 void AgentController::clearPendingVerification()

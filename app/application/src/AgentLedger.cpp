@@ -545,7 +545,8 @@ QJsonObject jobJson(const AgentJobRecord& job)
     return result;
 }
 
-QJsonObject verificationJson(const AgentVerificationRecord& verification)
+QJsonObject verificationJson(const AgentVerificationRecord& verification,
+                             bool includeExpectedValues = false)
 {
     QJsonArray ids;
     for (const auto& value : verification.targetIds)
@@ -554,8 +555,15 @@ QJsonObject verificationJson(const AgentVerificationRecord& verification)
     for (const auto& value : verification.targetNames)
         names.append(value);
     QJsonArray expectedEffectFields;
+    QJsonArray expectedEffects;
     for (const auto& expectation : verification.expectedEffects)
+    {
         expectedEffectFields.append(expectation.field);
+        if (includeExpectedValues)
+            expectedEffects.append(QJsonObject{
+                {QStringLiteral("field"), expectation.field},
+                {QStringLiteral("value"), expectation.expectedValue}});
+    }
     QJsonArray matchedEffectFields;
     for (const auto& field : verification.matchedEffectFields)
         matchedEffectFields.append(field);
@@ -578,6 +586,8 @@ QJsonObject verificationJson(const AgentVerificationRecord& verification)
         {QStringLiteral("matchedEffectFields"), matchedEffectFields},
         {QStringLiteral("missingEffectFields"), missingEffectFields},
         {QStringLiteral("mismatchedEffectFields"), mismatchedEffectFields}};
+    if (includeExpectedValues)
+        result.insert(QStringLiteral("expectedEffects"), expectedEffects);
     if (!verification.detail.isEmpty())
         result.insert(QStringLiteral("detail"), verification.detail);
     if (verification.verificationEvidenceSequence > 0)
@@ -847,13 +857,17 @@ bool AgentLedger::evidenceRequiresVerification(int sequence) const
            !verificationResolved(verification->state);
 }
 
-QList<int> AgentLedger::acceptUnresolvedVerification(const QString& taskId)
+QList<int> AgentLedger::acceptUnresolvedVerification(
+    const QString& taskId, int mutationEvidenceSequence)
 {
     QList<int> accepted;
+    if (mutationEvidenceSequence <= 0) return accepted;
     for (auto& verification : verifications_)
     {
         if (verificationResolved(verification.state) ||
-            (!taskId.isEmpty() && verification.taskId != taskId))
+            (!taskId.isEmpty() && verification.taskId != taskId) ||
+            (mutationEvidenceSequence > 0 &&
+             verification.mutationEvidenceSequence != mutationEvidenceSequence))
             continue;
         verification.state = QStringLiteral("accepted");
         verification.detail = QStringLiteral(
@@ -865,18 +879,21 @@ QList<int> AgentLedger::acceptUnresolvedVerification(const QString& taskId)
 }
 
 QList<int> AgentLedger::attestUnresolvedVerification(
-    const QString& taskId, const QString& userEvidence)
+    const QString& taskId, int mutationEvidenceSequence,
+    const QString& userEvidence)
 {
     QList<int> attested;
     const auto evidence = userEvidence.trimmed();
-    if (evidence.isEmpty()) return attested;
+    if (evidence.isEmpty() || mutationEvidenceSequence <= 0) return attested;
     const auto digest = QString::fromLatin1(
         QCryptographicHash::hash(evidence.toUtf8(), QCryptographicHash::Sha256)
             .toHex());
     for (auto& verification : verifications_)
     {
         if (verificationResolved(verification.state) ||
-            (!taskId.isEmpty() && verification.taskId != taskId))
+            (!taskId.isEmpty() && verification.taskId != taskId) ||
+            (mutationEvidenceSequence > 0 &&
+             verification.mutationEvidenceSequence != mutationEvidenceSequence))
             continue;
         verification.state = QStringLiteral("attested");
         verification.detail =
@@ -933,6 +950,21 @@ QString AgentLedger::unresolvedVerificationReason(const QString& taskId) const
                "Reuse its recorded identifiers with an existing inspection "
                "tool before completion.")
         .arg(verification->mutationEvidenceSequence);
+}
+
+QJsonObject AgentLedger::unresolvedVerificationContext(
+    const QString& taskId) const
+{
+    const auto verification = std::find_if(
+        verifications_.cbegin(), verifications_.cend(),
+        [&taskId](const AgentVerificationRecord& candidate)
+        {
+            return !verificationResolved(candidate.state) &&
+                   (taskId.isEmpty() || candidate.taskId == taskId);
+        });
+    return verification == verifications_.cend()
+               ? QJsonObject{}
+               : verificationJson(*verification, true);
 }
 
 QJsonObject AgentLedger::snapshot() const

@@ -24,6 +24,8 @@
 #include <QEnterEvent>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
@@ -427,8 +429,26 @@ void AssistantResponseTest::showsInlineToolApprovalAndRedactsSecrets()
 
 void AssistantResponseTest::collectsTemporaryVerificationEvidence()
 {
+    const QJsonObject context{
+        {QStringLiteral("taskDescription"),
+         QStringLiteral("Update lubricating oil properties")},
+        {QStringLiteral("stepNumber"), 2},
+        {QStringLiteral("stepCount"), 7},
+        {QStringLiteral("tool"), QStringLiteral("shondy-mcp.edit_object")},
+        {QStringLiteral("mutationEvidenceSequence"), 3},
+        {QStringLiteral("state"), QStringLiteral("pending")},
+        {QStringLiteral("targetNames"),
+         QJsonArray{QStringLiteral("Lubricating Oil")}},
+        {QStringLiteral("targetIds"), QJsonArray{QStringLiteral("oil-uuid")}},
+        {QStringLiteral("missingEffectFields"),
+         QJsonArray{QStringLiteral("changes./density/isotropic/fixedValue")}},
+        {QStringLiteral("expectedEffects"),
+         QJsonArray{QJsonObject{
+             {QStringLiteral("field"),
+              QStringLiteral("changes./density/isotropic/fixedValue")},
+             {QStringLiteral("value"), 900}}}}};
     ui::VerificationConfirmationWidget confirmation(
-        QStringLiteral("Read-back did not expose density."));
+        QStringLiteral("Read-back did not expose density."), context);
     confirmation.show();
     QSignalSpy decisionSpy(&confirmation,
                            &ui::VerificationConfirmationWidget::decisionMade);
@@ -446,6 +466,28 @@ void AssistantResponseTest::collectsTemporaryVerificationEvidence()
     QVERIFY(accept != nullptr);
     QVERIFY(stop != nullptr);
     QVERIFY(!submit->isEnabled());
+    QCOMPARE(
+        confirmation.findChild<QLabel*>(QStringLiteral("verificationStep"))
+            ->text(),
+        QStringLiteral("2 of 7: Update lubricating oil properties"));
+    QCOMPARE(confirmation
+                 .findChild<QLabel*>(QStringLiteral("verificationOperation"))
+                 ->text(),
+             QStringLiteral("shondy-mcp.edit_object | mutation evidence #3"));
+    QVERIFY(
+        confirmation.findChild<QLabel*>(QStringLiteral("verificationTarget"))
+            ->text()
+            .contains(QStringLiteral("Lubricating Oil")));
+    QVERIFY(
+        confirmation.findChild<QLabel*>(QStringLiteral("verificationReason"))
+            ->text()
+            .contains(QStringLiteral("density")));
+    QCOMPARE(
+        confirmation
+            .findChild<QLabel*>(QStringLiteral("verificationExpectedEffects"))
+            ->text(),
+        QStringLiteral("changes./density/isotropic/fixedValue = 900"));
+    QVERIFY(input->placeholderText().contains(QStringLiteral("fields")));
 
     input->setPlainText(QStringLiteral("I checked density = 900 in the UI."));
     QVERIFY(submit->isEnabled());

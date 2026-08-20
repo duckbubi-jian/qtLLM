@@ -201,8 +201,8 @@ void collectExpectations(const QJsonValue& value, const QString& path,
         {
             if (isEffectField(item.key(), normalized, hasStableIdentity,
                               nestedParent))
-                expectations.append(
-                    {fieldPath, normalized, scalarDigest(item.value())});
+                expectations.append({fieldPath, normalized,
+                                     scalarDigest(item.value()), item.value()});
             continue;
         }
         collectExpectations(item.value(), fieldPath, hasStableIdentity,

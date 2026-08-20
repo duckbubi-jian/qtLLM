@@ -333,6 +333,12 @@ a later matching read-back may still upgrade it to `verified`.
 An ambiguously dispatched mutation is recorded as unresolved `uncertain` until
 one of those resolution paths applies.
 
+The confirmation surface identifies the exact task, mutation tool, evidence
+sequence, target, verification problem, and expected fields and values. A user
+decision resolves only that displayed mutation evidence sequence. If several
+mutations remain unresolved in one task, the runtime asks about each one
+separately instead of applying one broad attestation to all of them.
+
 qtLLM must not invent verification mappings or add Shondy-specific conditionals.
 The controller marks a mutation as awaiting verification, exposes the known
 resource state to the model, and accepts a read-back selected from the existing

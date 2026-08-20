@@ -14,6 +14,7 @@ struct ToolEffectExpectation
     QString field;
     QString normalizedField;
     QByteArray expectedDigest;
+    QJsonValue expectedValue;
 };
 
 enum class ToolEffectVerificationStatus

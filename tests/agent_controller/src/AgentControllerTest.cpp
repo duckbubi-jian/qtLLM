@@ -31,6 +31,7 @@ class AgentControllerTest final : public QObject
     void cancellationRemainsTerminalAcrossApprovalAndToolResult();
     void doesNotRetryUncertainMutationAfterTransportFailure();
     void resumesUncertainMutationWithUserEvidence();
+    void resolvesOnlyTheDisplayedVerificationEvidence();
     void retriesReadOnlyTransportFailureOnce();
     void exportsStructuredRunMetrics();
     void classifiesRunMetricFailures();
@@ -1341,6 +1342,8 @@ void AgentControllerTest::resumesUncertainMutationWithUserEvidence()
             { return infrastructure::mcp::ToolDecision::Allow; }});
     QSignalSpy finalSpy(&controller,
                         &application::AgentController::finalAnswerReady);
+    QSignalSpy verificationSpy(
+        &controller, &application::AgentController::verificationRequested);
 
     QVERIFY(controller.start(QStringLiteral("Change the remote value"), {},
                              {ledgerTool(QStringLiteral("mutate"), false)}));
@@ -1363,6 +1366,36 @@ void AgentControllerTest::resumesUncertainMutationWithUserEvidence()
     QCOMPARE(controller.activeRun()->ledger.verifications().size(), 1);
     QCOMPARE(controller.activeRun()->ledger.verifications().constFirst().state,
              QStringLiteral("uncertain"));
+    QCOMPARE(verificationSpy.count(), 1);
+    const auto verificationContext =
+        verificationSpy.constFirst().at(2).toJsonObject();
+    QCOMPARE(
+        verificationContext.value(QStringLiteral("taskDescription")).toString(),
+        QStringLiteral("Change the remote value"));
+    QCOMPARE(verificationContext.value(QStringLiteral("stepNumber")).toInt(),
+             1);
+    QCOMPARE(verificationContext.value(QStringLiteral("tool")).toString(),
+             QStringLiteral("fake.mutate"));
+    QCOMPARE(
+        verificationContext.value(QStringLiteral("mutationEvidenceSequence"))
+            .toInt(),
+        1);
+    QCOMPARE(verificationContext.value(QStringLiteral("targetIds"))
+                 .toArray()
+                 .at(0)
+                 .toString(),
+             QStringLiteral("resource-1"));
+    const auto expectedEffects =
+        verificationContext.value(QStringLiteral("expectedEffects")).toArray();
+    QCOMPARE(expectedEffects.size(), 1);
+    QCOMPARE(expectedEffects.at(0)
+                 .toObject()
+                 .value(QStringLiteral("field"))
+                 .toString(),
+             QStringLiteral("value"));
+    QCOMPARE(
+        expectedEffects.at(0).toObject().value(QStringLiteral("value")).toInt(),
+        42);
 
     controller.resolveVerification(
         application::VerificationDecision::ProvideEvidence,
@@ -1377,6 +1410,94 @@ void AgentControllerTest::resumesUncertainMutationWithUserEvidence()
     QCOMPARE(controller.state(), application::AgentRun::State::Completed);
     QCOMPARE(toolCallCount, 1);
     QCOMPARE(finalSpy.count(), 1);
+}
+
+void AgentControllerTest::resolvesOnlyTheDisplayedVerificationEvidence()
+{
+    auto toolCallCount = 0;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [](const QList<chat::Message>&, const models::InferencePreset&,
+               int) {},
+            [] {},
+            [&](const QString&, const QJsonObject&)
+            {
+                ++toolCallCount;
+                return QStringLiteral("tool-request-%1").arg(toolCallCount);
+            },
+            [](const QString&) {}, acceptsToolArguments, [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+    QSignalSpy verificationSpy(
+        &controller, &application::AgentController::verificationRequested);
+
+    QVERIFY(controller.start(QStringLiteral("Update two remote values."), {},
+                             {ledgerTool(QStringLiteral("update"), false)}));
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.update","arguments":{"object_uuid":"resource-1","value":1}})"));
+    controller.completeGeneration(false);
+
+    agent::ToolResult firstResult;
+    firstResult.requestId = QStringLiteral("tool-request-1");
+    firstResult.serverId = QStringLiteral("fake");
+    firstResult.toolName = QStringLiteral("update");
+    firstResult.structuredContent =
+        QJsonObject{{QStringLiteral("uuid"), QStringLiteral("resource-1")}};
+    controller.receiveToolResult(firstResult);
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.update","arguments":{"object_uuid":"resource-2","value":2}})"));
+    controller.completeGeneration(false);
+    agent::ToolResult secondResult;
+    secondResult.requestId = QStringLiteral("tool-request-2");
+    secondResult.serverId = QStringLiteral("fake");
+    secondResult.toolName = QStringLiteral("update");
+    secondResult.structuredContent =
+        QJsonObject{{QStringLiteral("uuid"), QStringLiteral("resource-2")}};
+    controller.receiveToolResult(secondResult);
+
+    controller.receiveToken(
+        QByteArrayLiteral(R"({"action":"final","content":"Done"})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(),
+             application::AgentRun::State::WaitingForVerification);
+    QCOMPARE(verificationSpy.count(), 1);
+    QCOMPARE(verificationSpy.constFirst()
+                 .at(2)
+                 .toJsonObject()
+                 .value(QStringLiteral("mutationEvidenceSequence"))
+                 .toInt(),
+             1);
+
+    controller.resolveVerification(
+        application::VerificationDecision::AcceptUnverified);
+    QCOMPARE(controller.state(),
+             application::AgentRun::State::WaitingForVerification);
+    QCOMPARE(verificationSpy.count(), 2);
+    QCOMPARE(verificationSpy.constLast()
+                 .at(2)
+                 .toJsonObject()
+                 .value(QStringLiteral("mutationEvidenceSequence"))
+                 .toInt(),
+             2);
+    QCOMPARE(controller.activeRun()->ledger.verifications().at(0).state,
+             QStringLiteral("accepted"));
+    QCOMPARE(controller.activeRun()->ledger.verifications().at(1).state,
+             QStringLiteral("pending"));
+
+    controller.resolveVerification(
+        application::VerificationDecision::ProvideEvidence,
+        QStringLiteral("I checked resource-2; its value is 2."));
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(controller.activeRun()->ledger.verifications().at(0).state,
+             QStringLiteral("accepted"));
+    QCOMPARE(controller.activeRun()->ledger.verifications().at(1).state,
+             QStringLiteral("attested"));
+    QCOMPARE(toolCallCount, 2);
+
+    controller.receiveToken(
+        QByteArrayLiteral(R"({"action":"final","content":"Done"})"));
+    controller.completeGeneration(false);
+    QCOMPARE(controller.state(), application::AgentRun::State::Completed);
 }
 
 void AgentControllerTest::retriesReadOnlyTransportFailureOnce()
@@ -3327,6 +3448,28 @@ void AgentControllerTest::verifiesMutationEffectsWithinTaskScope()
     QCOMPARE(ledger.verifications().constFirst().expectedEffects.size(), 2);
     QVERIFY(ledger.unresolvedVerificationReason(QStringLiteral("task-b"))
                 .isEmpty());
+    const auto verificationContext =
+        ledger.unresolvedVerificationContext(QStringLiteral("task-a"));
+    QCOMPARE(verificationContext.value(QStringLiteral("tool")).toString(),
+             QStringLiteral("fake.update"));
+    QCOMPARE(verificationContext.value(QStringLiteral("targetIds"))
+                 .toArray()
+                 .at(0)
+                 .toString(),
+             QStringLiteral("object-1"));
+    const auto expectedEffects =
+        verificationContext.value(QStringLiteral("expectedEffects")).toArray();
+    QCOMPARE(expectedEffects.size(), 2);
+    QCOMPARE(expectedEffects.at(0)
+                 .toObject()
+                 .value(QStringLiteral("field"))
+                 .toString(),
+             QStringLiteral("unit"));
+    QCOMPARE(expectedEffects.at(0)
+                 .toObject()
+                 .value(QStringLiteral("value"))
+                 .toString(),
+             QStringLiteral("mm"));
 
     agent::Action inspect;
     inspect.type = agent::ActionType::CallTool;

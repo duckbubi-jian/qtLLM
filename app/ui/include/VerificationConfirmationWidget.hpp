@@ -2,6 +2,7 @@
 
 #include "AgentController.hpp"
 
+#include <QJsonObject>
 #include <QWidget>
 
 class QLabel;
@@ -16,6 +17,7 @@ class VerificationConfirmationWidget final : public QWidget
 
    public:
     explicit VerificationConfirmationWidget(const QString& reason,
+                                            const QJsonObject& context = {},
                                             QWidget* parent = nullptr);
 
     void markCancelled();
@@ -29,7 +31,7 @@ class VerificationConfirmationWidget final : public QWidget
     void setResolvedState(const QString& status, bool accepted);
 
     QLabel* statusLabel_ = nullptr;
-    QLabel* reasonLabel_ = nullptr;
+    QWidget* detailsContainer_ = nullptr;
     QLabel* evidenceLabel_ = nullptr;
     QPlainTextEdit* evidenceInput_ = nullptr;
     QPushButton* submitEvidenceButton_ = nullptr;

@@ -93,7 +93,7 @@ class AgentController final : public QObject
     void approvalRequested(const QString& runId, const QString& toolName,
                            const QJsonObject& arguments);
     void verificationRequested(const QString& runId, const QString& reason,
-                               const QJsonObject& ledgerState);
+                               const QJsonObject& context);
     void finalAnswerReady(const QString& runId, const QString& content);
     void metricsReady(const QString& runId, const QJsonObject& metrics);
     void runFinished(const QString& runId,
@@ -131,6 +131,7 @@ class AgentController final : public QObject
     void requestVerification(const QString& reason,
                              VerificationContinuation continuation,
                              const QString& taskId = {});
+    [[nodiscard]] QJsonObject verificationContext(const QString& taskId) const;
     void clearPendingVerification();
     void retryInvalidToolAction(const QByteArray& rawAction,
                                 const agent::ToolValidationIssue& issue,

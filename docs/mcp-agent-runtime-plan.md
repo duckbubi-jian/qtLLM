@@ -79,6 +79,11 @@ The current implementation provides the outer loop:
 - Plans use semantic outcome-level tasks. Numbering and expected tool-call
   count do not determine task boundaries; the planner groups calls that jointly
   establish one requested result and splits independently requested results.
+- Every planned step carries model-selected `source_ids` that refer to
+  Host-generated `request_clauses`. The Host rejects unknown IDs, uncovered
+  clauses, and descriptions that drop literal names, paths, values, or numeric
+  constraints. After acceptance, it injects immutable `source_refs` containing
+  the exact user text and records the step-to-source map in the run events.
 - `AgentToolRuntime` owns generic catalog lookup, risk classification, schema
   validation, policy and approval state, and task-local duplicate-call
   protection. It also owns request identity, dispatch, cancellation, result
@@ -190,6 +195,22 @@ satisfies a task step.
    identities, and evidence required for completion.
 1. The run ends only with verified completion, a concrete blocker, user
    cancellation, or an unrecoverable bounded failure.
+
+## Plan Provenance
+
+Planning is a lossy model operation, so a plan summary cannot replace the user
+request. Before planning, the Host splits the request into stable
+`request_clauses` and exposes their IDs and exact text. Every `task_plan` step
+must cite one or more clauses through `source_ids`, and every clause must be
+covered. Literal constraints extracted from a clause must remain present across
+the descriptions of its owning steps.
+
+The model supplies only the references. Once the plan passes validation, the
+Host resolves them into `source_refs` containing the authoritative clause text.
+Each `ExecutionTask` receives its resolved references plus the complete
+`original_request`; context compaction preserves the source IDs. Accepted-plan
+events persist the mapping so an execution step can be traced back to the exact
+user wording without trusting a model-generated paraphrase.
 
 ## Tool Contract Delivery
 
@@ -314,9 +335,18 @@ This is short-lived execution state, not cross-conversation memory.
 Verification should be proportional to risk and contract support:
 
 - Read-only queries need no additional read-back.
+- A successful mutation result is checked as one complete structured payload,
+  including sibling fields such as `target` and `applied_changes`. Selector
+  metadata such as `item_type` is not treated as an expected effect.
+- Matching requested fields in the structured payload completes deterministic
+  verification. A provider may also explicitly confirm verification with a
+  structured `confirmation`, `verification`, or `verificationState` value of
+  `verified` or `confirmed`; this can cover omitted fields but never overrides
+  an explicit value mismatch.
 - A create or edit call should be followed by an existing read-back operation
-  when its result provides a stable identifier and the current catalog already
-  contains an applicable inspection tool.
+  only when its own structured result is insufficient, it provides a stable
+  identifier, and the current catalog already contains an applicable
+  inspection tool.
 - A high-level task tool may return the created object and terminal state in
   one structured result; that can be sufficient when the output schema proves
   the requested fields.
@@ -332,6 +362,12 @@ the distinction between deterministic `verified`, user `attested`, and explicit
 a later matching read-back may still upgrade it to `verified`.
 An ambiguously dispatched mutation is recorded as unresolved `uncertain` until
 one of those resolution paths applies.
+
+The temporary-evidence path is a last recovery mechanism. It is not requested
+for every mutation: it appears only after structured self-verification and any
+available deterministic read-back cannot establish the result, or when those
+sources report missing fields, an explicit mismatch, or an uncertain final
+side effect.
 
 The confirmation surface identifies the exact task, mutation tool, evidence
 sequence, target, verification problem, and expected fields and values. A user

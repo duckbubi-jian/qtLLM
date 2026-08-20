@@ -26,7 +26,8 @@ class AgentPromptBuilder final
     static chat::Message taskPlanMessage(const QString& originalRequest);
     static chat::Message planTaskActivationMessage(
         const QJsonObject& currentStep, const QJsonArray& completedSteps,
-        const QList<QJsonObject>& priorToolEvidence);
+        const QList<QJsonObject>& priorToolEvidence,
+        const QString& originalRequest = {});
     static chat::Message allPlanTasksCompletedMessage(
         const QString& originalRequest, const QJsonArray& steps,
         const QList<QJsonObject>& toolEvidence);

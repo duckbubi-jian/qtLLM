@@ -86,6 +86,19 @@ qtLLM 当前已经具备 MCP Server 启动、初始化、工具发现、参数�
 新循环先放在运行时开关后，通过固定场景和真实模型进行对照。每个阶段都要有
 独立验收条件；任一阶段回滚不得关闭参数校验、审批或副作用保护。
 
+### 4.5 计划忠实于原始请求并可追溯
+
+模型生成的计划只是执行结构，不能替代用户原文。Host 在规划前把原始请求拆为带
+稳定 ID 的 `request_clauses`；每个计划步骤必须通过非空 `source_ids` 引用其来源，
+所有请求条目都必须被至少一个步骤覆盖。Host 拒绝未知 ID、未覆盖条目，以及丢失
+名称、路径、文件名、数字、科学计数法或引号内容等字面约束的计划。
+
+计划通过后，Host 根据 `source_ids` 注入不可由模型伪造的 `source_refs`，其中保存
+对应的精确用户原文，并在计划接受事件中记录步骤到来源的映射。每个
+`ExecutionTask` 同时获得当前步骤的 `source_refs` 和完整 `original_request`；上下文
+压缩必须保留来源 ID。这样可以从执行步骤追溯到用户原话，而不是把模型的计划摘要
+当作新的需求来源。
+
 ## 5. 目标控制流程
 
 ```text
@@ -215,6 +228,16 @@ enum class VerificationStatus
 验证规则必须来自通用操作元数据、结构化结果和受信任的本地配置。MCP
 `annotations` 可以作为提示，但不得单独决定授权或是否跳过验证。
 
+mutation 的自验证必须检查完整 `structuredContent`，不能只检查 `target` 等局部
+子对象；例如同级的 `target` 与 `applied_changes` 应共同构成一次完整证据。
+`item_type`、`object_type`、`resource_type` 等选择器元数据不属于预期效果字段。
+
+如果结构化结果中的目标和请求字段明确匹配，Host 直接标记为 `verified`。Provider
+也可以通过结构化 `confirmation`、`verification` 或 `verificationState` 返回
+`verified`/`confirmed`；它可以补足未返回的效果字段，但不能覆盖任何明确的值不
+匹配。只有自验证不足时才尝试确定性 read-back，不能因为是 mutation 就默认要求
+用户举证。
+
 ### 7.4 条件式语义审查
 
 只有 `VerificationStatus::NeedsSemanticReview` 才创建 reviewer 请求。reviewer
@@ -267,6 +290,10 @@ reviewer 不允许调用工具、修改任务状态或输出新的计划。Host 
 稳定 ID、Host 判定的问题，以及需要用户检查的字段和期望值。一次提交或接受只能解除
 卡片当前展示的 evidence sequence；同一步存在多条未验证 mutation 时，Host 必须逐条
 继续阻塞和询问，不能用一条笼统确认批量解除。
+
+人工举证是最后恢复路径，不是每次 mutation 的固定步骤。只有完整结构化结果和可用
+的确定性 read-back 仍无法确认、字段缺失、值明确不匹配，或副作用最终状态不确定时，
+才允许进入该输入框；已经由结构化证据验证的 mutation 不得再次要求用户确认。
 
 ## 8. 分阶段实施
 

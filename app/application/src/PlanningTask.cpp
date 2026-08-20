@@ -1,6 +1,7 @@
 #include "PlanningTask.hpp"
 
 #include "AgentPromptBuilder.hpp"
+#include "PlanTraceability.hpp"
 
 #include <utility>
 
@@ -23,7 +24,7 @@ void PlanningTask::activate(QList<chat::Message> messages)
 }
 
 AgentTask::Directive PlanningTask::completeTaskGeneration(
-    bool cancelled, const QList<QJsonObject>&, const QString&)
+    bool cancelled, const QList<QJsonObject>&, const QString& originalRequest)
 {
     const auto decision = completeDecision(cancelled);
     if (!decision.valid)
@@ -35,7 +36,7 @@ AgentTask::Directive PlanningTask::completeTaskGeneration(
                 "A task_plan is required before executing or completing "
                 "this multi-step request."));
 
-    const auto errorMessage = validatePlan(decision.action);
+    const auto errorMessage = validatePlan(decision.action, originalRequest);
     if (!errorMessage.isEmpty())
         return repair(decision.rawAction, errorMessage);
 
@@ -44,7 +45,8 @@ AgentTask::Directive PlanningTask::completeTaskGeneration(
     complete();
     Directive result;
     result.type = Directive::Type::TasksCreated;
-    result.tasks = decision.action.completionSteps;
+    result.tasks = PlanTraceability(originalRequest)
+                       .annotate(decision.action.completionSteps);
     return result;
 }
 
@@ -53,7 +55,8 @@ int PlanningTask::repairCount() const
     return repairCount_;
 }
 
-QString PlanningTask::validatePlan(const agent::Action& action) const
+QString PlanningTask::validatePlan(const agent::Action& action,
+                                   const QString& originalRequest) const
 {
     if (!action.orderedPlan.value_or(false))
         return QStringLiteral(
@@ -87,7 +90,7 @@ QString PlanningTask::validatePlan(const agent::Action& action) const
                 "user order and reserve non-tool steps for the trailing "
                 "final response.");
     }
-    return {};
+    return PlanTraceability(originalRequest).validate(action.completionSteps);
 }
 
 AgentTask::Directive PlanningTask::repair(const QByteArray& rawAction,

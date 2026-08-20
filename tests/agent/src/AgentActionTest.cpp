@@ -55,7 +55,7 @@ void AgentActionTest::parsesTaskPlan()
     QVERIFY2(
         agent::parseAction(
             QByteArrayLiteral(
-                R"({"action":"task_plan","steps":[{"id":"step-1","description":"Create the case","requires_tool":true,"allowed_tools":["files.create"]}],"ordered":true})"),
+                R"({"action":"task_plan","steps":[{"id":"step-1","description":"Create the case","source_ids":["request-1"],"requires_tool":true,"allowed_tools":["files.create"]}],"ordered":true})"),
             action, errorMessage),
         qPrintable(errorMessage));
     QCOMPARE(action.type, agent::ActionType::TaskPlan);
@@ -65,6 +65,11 @@ void AgentActionTest::parsesTaskPlan()
     QCOMPARE(action.completionSteps.at(0).toObject().value(
                  QStringLiteral("requires_tool")),
              QJsonValue(true));
+    QCOMPARE(action.completionSteps.at(0)
+                 .toObject()
+                 .value(QStringLiteral("source_ids"))
+                 .toArray(),
+             QJsonArray{QStringLiteral("request-1")});
 }
 
 void AgentActionTest::parsesBlockedResult()
@@ -100,11 +105,13 @@ void AgentActionTest::rejectsInvalidActions_data()
     QTest::newRow("extra-property") << QByteArrayLiteral(
         R"({"action":"final","content":"Done","extra":true})");
     QTest::newRow("duplicate-plan-step") << QByteArrayLiteral(
-        R"({"action":"task_plan","steps":[{"id":"same","description":"One","requires_tool":true,"allowed_tools":["files.read"]},{"id":"same","description":"Two","requires_tool":true,"allowed_tools":["files.read"]}]})");
+        R"({"action":"task_plan","steps":[{"id":"same","description":"One","source_ids":["request-1"],"requires_tool":true,"allowed_tools":["files.read"]},{"id":"same","description":"Two","source_ids":["request-2"],"requires_tool":true,"allowed_tools":["files.read"]}]})");
     QTest::newRow("plan-missing-allowed-tools") << QByteArrayLiteral(
-        R"({"action":"task_plan","steps":[{"id":"one","description":"One","requires_tool":true}],"ordered":true})");
+        R"({"action":"task_plan","steps":[{"id":"one","description":"One","source_ids":["request-1"],"requires_tool":true}],"ordered":true})");
+    QTest::newRow("plan-missing-source-ids") << QByteArrayLiteral(
+        R"({"action":"task_plan","steps":[{"id":"one","description":"One","requires_tool":true,"allowed_tools":["files.read"]}],"ordered":true})");
     QTest::newRow("non-tool-plan-with-tool") << QByteArrayLiteral(
-        R"({"action":"task_plan","steps":[{"id":"one","description":"Report","requires_tool":false,"allowed_tools":["files.read"]}],"ordered":true})");
+        R"({"action":"task_plan","steps":[{"id":"one","description":"Report","source_ids":["request-1"],"requires_tool":false,"allowed_tools":["files.read"]}],"ordered":true})");
     QTest::newRow("legacy-tool-task-metadata") << QByteArrayLiteral(
         R"({"action":"call_tool","tool":"files.read","arguments":{},"plan_step_id":"one","completes_plan_step":true})");
     QTest::newRow("removed-tool-call-review") << QByteArrayLiteral(

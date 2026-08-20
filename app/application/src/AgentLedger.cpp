@@ -180,6 +180,36 @@ bool explicitlyConfirmsSuccess(const QJsonValue& value)
     return false;
 }
 
+bool explicitlyConfirmsVerification(const QJsonValue& value,
+                                    qsizetype depth = 0)
+{
+    if (depth > maximumTraversalDepth) return false;
+    if (value.isArray())
+    {
+        for (const auto& entry : value.toArray())
+            if (explicitlyConfirmsVerification(entry, depth + 1)) return true;
+        return false;
+    }
+    if (!value.isObject()) return false;
+
+    const auto object = value.toObject();
+    for (auto entry = object.constBegin(); entry != object.constEnd(); ++entry)
+    {
+        const auto key = normalizedKey(entry.key());
+        const auto valueText = entry.value().toString().trimmed().toLower();
+        if ((key == QLatin1String("confirmation") ||
+             key == QLatin1String("verification") ||
+             key == QLatin1String("verificationstate")) &&
+            (valueText == QLatin1String("verified") ||
+             valueText == QLatin1String("confirmed")))
+            return true;
+        if ((entry.value().isObject() || entry.value().isArray()) &&
+            explicitlyConfirmsVerification(entry.value(), depth + 1))
+            return true;
+    }
+    return false;
+}
+
 bool hasStableResultLocator(const QJsonValue& value, qsizetype depth = 0,
                             bool parentContext = false)
 {
@@ -234,9 +264,11 @@ bool structuredResultConfirmsTarget(const QJsonValue& payload,
                                     const QStringList& resultIds,
                                     const QStringList& resultNames)
 {
-    return explicitlyConfirmsSuccess(payload) &&
-           hasStableResultLocator(payload) &&
-           targetTokensMatch(requestedIds, requestedNames, resultIds,
+    if (!explicitlyConfirmsSuccess(payload) || !hasStableResultLocator(payload))
+        return false;
+    if (requestedIds.isEmpty() && requestedNames.isEmpty())
+        return !resultIds.isEmpty() || !resultNames.isEmpty();
+    return targetTokensMatch(requestedIds, requestedNames, resultIds,
                              resultNames);
 }
 
@@ -780,16 +812,16 @@ void AgentLedger::recordToolResult(const QString& taskId, int evidenceSequence,
         ToolEffectVerifier::captureExpectations(action.arguments);
     const auto selfTargetVerified = structuredResultConfirmsTarget(
         payload, actionIds, actionNames, resultIds, resultNames);
-    auto selfEffectPayload = payload;
-    visited = 0;
-    const auto selfTargetObject =
-        findTargetObject(payload, targetIds, targetNames, 0, visited);
-    if (selfTargetObject.has_value()) selfEffectPayload = *selfTargetObject;
     const auto selfEffectVerification =
-        ToolEffectVerifier::verify(expectedEffects, selfEffectPayload);
+        ToolEffectVerifier::verify(expectedEffects, payload);
+    const auto providerVerified = !result.isError && selfTargetVerified &&
+                                  selfEffectVerification.status !=
+                                      ToolEffectVerificationStatus::Mismatch &&
+                                  explicitlyConfirmsVerification(payload);
     const auto selfVerified =
         !result.isError && selfTargetVerified &&
-        selfEffectVerification.status == ToolEffectVerificationStatus::Verified;
+        (providerVerified || selfEffectVerification.status ==
+                                 ToolEffectVerificationStatus::Verified);
     const auto hasVerificationTarget =
         !targetIds.isEmpty() || !targetNames.isEmpty();
     AgentVerificationRecord verification;
@@ -806,18 +838,23 @@ void AgentLedger::recordToolResult(const QString& taskId, int evidenceSequence,
     verification.targetNames = targetNames;
     verification.expectedEffects = expectedEffects;
     verification.matchedEffectFields = selfEffectVerification.matchedFields;
-    verification.missingEffectFields = selfEffectVerification.missingFields;
-    verification.mismatchedEffectFields =
-        selfEffectVerification.mismatchedFields;
+    if (!providerVerified)
+    {
+        verification.missingEffectFields = selfEffectVerification.missingFields;
+        verification.mismatchedEffectFields =
+            selfEffectVerification.mismatchedFields;
+    }
     if (uncertainMutationFailure)
         verification.detail = QStringLiteral(
             "The mutation was dispatched, but its final outcome is unknown.");
-    else if (selfTargetVerified && selfEffectVerification.status ==
-                                       ToolEffectVerificationStatus::Incomplete)
+    else if (!providerVerified && selfTargetVerified &&
+             selfEffectVerification.status ==
+                 ToolEffectVerificationStatus::Incomplete)
         verification.detail = QStringLiteral(
             "The mutation result did not expose every expected effect field.");
-    else if (selfTargetVerified && selfEffectVerification.status ==
-                                       ToolEffectVerificationStatus::Mismatch)
+    else if (!providerVerified && selfTargetVerified &&
+             selfEffectVerification.status ==
+                 ToolEffectVerificationStatus::Mismatch)
         verification.detail = QStringLiteral(
             "The mutation result did not match the expected effect fields.");
     verification.verificationEvidenceSequence =

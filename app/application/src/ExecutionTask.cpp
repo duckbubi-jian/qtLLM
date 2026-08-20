@@ -71,10 +71,10 @@ QJsonObject ExecutionTask::completionSnapshot() const
 void ExecutionTask::activate(QList<chat::Message> messageSeed,
                              const QJsonArray& completedSteps,
                              const QList<QJsonObject>& priorToolEvidence,
-                             int evidenceStart)
+                             int evidenceStart, const QString& originalRequest)
 {
     messageSeed.append(AgentPromptBuilder::planTaskActivationMessage(
-        specification_, completedSteps, priorToolEvidence));
+        specification_, completedSteps, priorToolEvidence, originalRequest));
     const auto requestMessageIndex = messageSeed.size() - 1;
     evidenceStart_ = evidenceStart;
     evidenceEnd_ = 0;

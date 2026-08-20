@@ -125,6 +125,16 @@ bool isControlKey(const QString& normalized)
            normalized == QLatin1String("oldvalue");
 }
 
+bool isSelectorKey(const QString& normalized)
+{
+    return normalized == QLatin1String("itemtype") ||
+           normalized == QLatin1String("objecttype") ||
+           normalized == QLatin1String("resourcetype") ||
+           normalized == QLatin1String("entitytype") ||
+           normalized == QLatin1String("targettype") ||
+           normalized == QLatin1String("recordtype");
+}
+
 bool containsStableIdentity(const QJsonValue& value, qsizetype depth,
                             qsizetype& visited, bool parentContext)
 {
@@ -161,7 +171,7 @@ bool isEffectField(const QString& key, const QString& normalized,
 {
     if (parentContext || isParentKey(normalized) || isIdentityKey(key) ||
         isSensitiveKey(normalized) || isLocatorKey(normalized) ||
-        isControlKey(normalized))
+        isControlKey(normalized) || isSelectorKey(normalized))
         return false;
     if (isNameKey(normalized) && !hasStableIdentity) return false;
     return true;

@@ -53,6 +53,7 @@ class AgentControllerTest final : public QObject
     void repairsDynamicPropertyNameValidation();
     void bindsToolCallsToCurrentTaskInCode();
     void allowsSemanticTaskBoundaries();
+    void repairsUnfaithfulPlanAndPreservesSourceTrace();
     void blocksOrderedPlanWhenRequiredInputIsMissing();
     void successfulStructuredMutationAdvancesPlanWithoutReadBack();
     void dispatchesSharedMutationWithoutModelReview();
@@ -72,6 +73,7 @@ class AgentControllerTest final : public QObject
     void acceptsUnverifiedResultWithoutClaimingHostVerification();
     void requiresMatchingTargetForMutationSelfVerification();
     void acceptsSuccessfulTargetSelectionAsSelfVerified();
+    void acceptsStructuredMutationEffectsAndProviderConfirmation();
     void verifiesMutationEffectsWithinTaskScope();
     void treatsDefaultModifyRiskAsMutation();
     void hasNoToolCallCountLimit();
@@ -189,24 +191,39 @@ agent::ToolValidationResult acceptsToolArguments(const QString&,
 }
 
 QJsonObject planStep(const QString& id, const QString& description,
-                     bool requiresTool, QStringList allowedTools = {})
+                     bool requiresTool, QStringList allowedTools = {},
+                     QStringList sourceIds = {})
 {
     if (requiresTool && allowedTools.isEmpty())
         allowedTools.append(QStringLiteral("fake.echo"));
     QJsonArray allowedToolValues;
     for (const auto& tool : allowedTools)
         allowedToolValues.append(tool);
+    QJsonArray sourceIdValues;
+    for (const auto& sourceId : sourceIds)
+        sourceIdValues.append(sourceId);
     return {{QStringLiteral("id"), id},
             {QStringLiteral("description"), description},
+            {QStringLiteral("source_ids"), sourceIdValues},
             {QStringLiteral("requires_tool"), requiresTool},
             {QStringLiteral("allowed_tools"), allowedToolValues}};
 }
 
 QByteArray orderedTaskPlanAction(const QJsonArray& steps)
 {
+    QJsonArray tracedSteps;
+    for (auto index = 0; index < steps.size(); ++index)
+    {
+        auto step = steps.at(index).toObject();
+        if (step.value(QStringLiteral("source_ids")).toArray().isEmpty())
+            step.insert(
+                QStringLiteral("source_ids"),
+                QJsonArray{QStringLiteral("request-%1").arg(index + 1)});
+        tracedSteps.append(step);
+    }
     return QJsonDocument(QJsonObject{{QStringLiteral("action"),
                                       QStringLiteral("task_plan")},
-                                     {QStringLiteral("steps"), steps},
+                                     {QStringLiteral("steps"), tracedSteps},
                                      {QStringLiteral("ordered"), true}})
         .toJson(QJsonDocument::Compact);
 }
@@ -2022,12 +2039,15 @@ void AgentControllerTest::allowsSemanticTaskBoundaries()
     const QJsonArray semanticTasks{
         planStep(QStringLiteral("artifact-a"),
                  QStringLiteral("Produce artifact A"), true,
-                 {QStringLiteral("fake.create_a")}),
+                 {QStringLiteral("fake.create_a")},
+                 {QStringLiteral("request-1")}),
         planStep(QStringLiteral("artifact-b"),
                  QStringLiteral("Produce artifact B"), true,
-                 {QStringLiteral("fake.create_b")}),
+                 {QStringLiteral("fake.create_b")},
+                 {QStringLiteral("request-1")}),
         planStep(QStringLiteral("report"),
-                 QStringLiteral("Report both artifacts"), false)};
+                 QStringLiteral("Report both artifacts"), false, {},
+                 {QStringLiteral("request-2")})};
     controller.receiveToken(orderedTaskPlanAction(semanticTasks));
     controller.completeGeneration(false);
 
@@ -2036,6 +2056,91 @@ void AgentControllerTest::allowsSemanticTaskBoundaries()
     QCOMPARE(controller.activeRun()->executionTasks.size(), std::size_t{3});
     QCOMPARE(controller.progressSnapshot().currentStepId,
              QStringLiteral("artifact-a"));
+    controller.cancel();
+}
+
+void AgentControllerTest::repairsUnfaithfulPlanAndPreservesSourceTrace()
+{
+    QList<chat::Message> generatedMessages;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>& messages,
+                const models::InferencePreset&, int)
+            { generatedMessages = messages; },
+            [] {}, [](const QString&, const QJsonObject&)
+            { return QStringLiteral("unexpected"); }, [](const QString&) {},
+            acceptsToolArguments, [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+
+    const auto request = QStringLiteral(
+        "Use the preprocessing tools in E:/stl_case1:\n"
+        "1. Set 'Lubricating Oil' Density to 900, Kinematic Viscosity to "
+        "5e-6, and Wall Contact Angle to 10.\n"
+        "2. Report the result.");
+    QVERIFY(controller.start(request, {},
+                             {ledgerTool(QStringLiteral("update"), false)}));
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("<request_clauses>")));
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("\"id\":\"request-1\"")));
+
+    const QJsonArray incompletePlan{
+        planStep(QStringLiteral("update"),
+                 QStringLiteral("In E:/stl_case1 edit the Lubricating Oil "
+                                "fields"),
+                 true, {QStringLiteral("fake.update")},
+                 {QStringLiteral("request-1"), QStringLiteral("request-2")}),
+        planStep(QStringLiteral("report"), QStringLiteral("Report the result"),
+                 false, {}, {QStringLiteral("request-3")})};
+    controller.receiveToken(orderedTaskPlanAction(incompletePlan));
+    controller.completeGeneration(false);
+
+    QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
+    QCOMPARE(controller.activeRun()->planningTask->repairCount(), 1);
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("dropped literal constraints from request-2")));
+    QVERIFY(
+        generatedMessages.constLast().content.contains(QStringLiteral("900")));
+    QVERIFY(
+        generatedMessages.constLast().content.contains(QStringLiteral("5e-6")));
+    QVERIFY(
+        generatedMessages.constLast().content.contains(QStringLiteral("10")));
+
+    const QJsonArray faithfulPlan{
+        planStep(
+            QStringLiteral("update"),
+            QStringLiteral("Set Lubricating Oil Density to 900, Kinematic "
+                           "Viscosity to 5e-6, and Wall Contact Angle to 10 in "
+                           "E:/stl_case1"),
+            true, {QStringLiteral("fake.update")},
+            {QStringLiteral("request-1"), QStringLiteral("request-2")}),
+        planStep(QStringLiteral("report"), QStringLiteral("Report the result"),
+                 false, {}, {QStringLiteral("request-3")})};
+    controller.receiveToken(orderedTaskPlanAction(faithfulPlan));
+    controller.completeGeneration(false);
+
+    QCOMPARE(controller.activeRun()->executionTasks.size(), std::size_t{2});
+    const auto acceptedStep =
+        controller.activeRun()->completionSteps.at(0).toObject();
+    QCOMPARE(
+        acceptedStep.value(QStringLiteral("source_ids")).toArray(),
+        QJsonArray({QStringLiteral("request-1"), QStringLiteral("request-2")}));
+    const auto sourceRefs =
+        acceptedStep.value(QStringLiteral("source_refs")).toArray();
+    QCOMPARE(sourceRefs.size(), 2);
+    QCOMPARE(
+        sourceRefs.at(0).toObject().value(QStringLiteral("text")).toString(),
+        QStringLiteral("Use the preprocessing tools in E:/stl_case1:"));
+    QCOMPARE(
+        sourceRefs.at(1).toObject().value(QStringLiteral("text")).toString(),
+        QStringLiteral(
+            "Set 'Lubricating Oil' Density to 900, Kinematic Viscosity "
+            "to 5e-6, and Wall Contact Angle to 10."));
+    const auto activation = generatedMessages.constLast().content;
+    QVERIFY(activation.contains(QStringLiteral("<original_request>")));
+    QVERIFY(activation.contains(request));
+    QVERIFY(activation.contains(QStringLiteral("source_refs")));
+    QVERIFY(activation.contains(QStringLiteral("5e-6")));
     controller.cancel();
 }
 
@@ -2389,8 +2494,14 @@ void AgentControllerTest::dispatchesSharedMutationWithoutModelReview()
         QStringLiteral("<current_task>")));
     QVERIFY(generatedMessages.constLast().content.contains(
         QStringLiteral("inlet_shaft.stl")));
-    QVERIFY(!generatedMessages.constLast().content.contains(
-        QStringLiteral("qyck_shaft.stl")));
+    const auto activationMessage = generatedMessages.constLast().content;
+    const auto currentTaskEnd =
+        activationMessage.indexOf(QStringLiteral("</current_task>"));
+    QVERIFY(currentTaskEnd > 0);
+    QVERIFY(!activationMessage.left(currentTaskEnd)
+                 .contains(QStringLiteral("qyck_shaft.stl")));
+    QVERIFY(activationMessage.contains(QStringLiteral("<original_request>")));
+    QVERIFY(activationMessage.contains(QStringLiteral("qyck_shaft.stl")));
     QCOMPARE(controller.activeRun()
                  ->completionSteps.at(0)
                  .toObject()
@@ -3393,12 +3504,95 @@ void AgentControllerTest::acceptsSuccessfulTargetSelectionAsSelfVerified()
     QCOMPARE(ledger.verifications().size(), 1);
     const auto& verification = ledger.verifications().constFirst();
     QCOMPARE(verification.state, QStringLiteral("verified"));
-    QCOMPARE(verification.expectedEffects.size(), 1);
-    QCOMPARE(verification.matchedEffectFields,
-             QStringList{QStringLiteral("item_type")});
+    QVERIFY(verification.expectedEffects.isEmpty());
+    QVERIFY(verification.matchedEffectFields.isEmpty());
     QCOMPARE(verification.verificationEvidenceSequence, 2);
     QVERIFY(ledger.unresolvedVerificationReason(QStringLiteral("step-2"))
                 .isEmpty());
+}
+
+void AgentControllerTest::
+    acceptsStructuredMutationEffectsAndProviderConfirmation()
+{
+    agent::Action edit;
+    edit.type = agent::ActionType::CallTool;
+    edit.toolName = QStringLiteral("shondy-mcp.edit_object");
+    edit.arguments = {
+        {QStringLiteral("item_type"), QStringLiteral("fluidMaterial")},
+        {QStringLiteral("name_uuid"), QStringLiteral("oil-uuid")},
+        {QStringLiteral("changes"),
+         QJsonObject{{QStringLiteral("/density/isotropic/fixedValue"), 900},
+                     {QStringLiteral("/wallContactAngle"), 10}}}};
+
+    agent::ToolResult edited;
+    edited.serverId = QStringLiteral("shondy-mcp");
+    edited.toolName = QStringLiteral("edit_object");
+    edited.structuredContent = QJsonObject{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("target"),
+         QJsonObject{{QStringLiteral("uuid"), QStringLiteral("oil-uuid")}}},
+        {QStringLiteral("applied_changes"),
+         QJsonObject{{QStringLiteral("/density/isotropic/fixedValue"), 900},
+                     {QStringLiteral("/wallContactAngle"), 10}}}};
+
+    application::AgentLedger ledger;
+    ledger.recordToolResult(QStringLiteral("edit"), 1, edit, edited,
+                            application::ToolOperationKind::Mutation);
+    QCOMPARE(ledger.verifications().size(), 1);
+    QCOMPARE(ledger.verifications().constFirst().state,
+             QStringLiteral("verified"));
+    QCOMPARE(ledger.verifications().constFirst().expectedEffects.size(), 2);
+    QCOMPARE(ledger.verifications().constFirst().matchedEffectFields.size(), 2);
+    QVERIFY(!ledger.hasUnresolvedVerification());
+
+    agent::Action import;
+    import.type = agent::ActionType::CallTool;
+    import.toolName = QStringLiteral("shondy-mcp.import_geometry");
+    import.arguments = {
+        {QStringLiteral("source_file"), QStringLiteral("shaft.stl")},
+        {QStringLiteral("object_type"), QStringLiteral("solidRegion")}};
+    agent::ToolResult imported;
+    imported.serverId = QStringLiteral("shondy-mcp");
+    imported.toolName = QStringLiteral("import_geometry");
+    imported.structuredContent = QJsonObject{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("object_uuid"), QStringLiteral("solid-uuid")},
+        {QStringLiteral("source_file"), QStringLiteral("shaft.stl")}};
+    application::AgentLedger creationLedger;
+    creationLedger.recordToolResult(QStringLiteral("import"), 1, import,
+                                    imported,
+                                    application::ToolOperationKind::Mutation);
+    QCOMPARE(creationLedger.verifications().size(), 1);
+    QCOMPARE(creationLedger.verifications().constFirst().state,
+             QStringLiteral("verified"));
+    QVERIFY(
+        creationLedger.verifications().constFirst().expectedEffects.isEmpty());
+    QVERIFY(!creationLedger.hasUnresolvedVerification());
+
+    agent::Action hide;
+    hide.type = agent::ActionType::CallTool;
+    hide.toolName = QStringLiteral("shondy-mcp.edit_object");
+    hide.arguments = {
+        {QStringLiteral("object_uuid"), QStringLiteral("region-uuid")},
+        {QStringLiteral("hidden"), true}};
+    agent::ToolResult hidden;
+    hidden.serverId = QStringLiteral("shondy-mcp");
+    hidden.toolName = QStringLiteral("edit_object");
+    hidden.structuredContent = QJsonObject{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("confirmation"), QStringLiteral("verified")},
+        {QStringLiteral("target"),
+         QJsonObject{{QStringLiteral("uuid"), QStringLiteral("region-uuid")}}}};
+
+    application::AgentLedger confirmedLedger;
+    confirmedLedger.recordToolResult(QStringLiteral("hide"), 1, hide, hidden,
+                                     application::ToolOperationKind::Mutation);
+    QCOMPARE(confirmedLedger.verifications().size(), 1);
+    const auto& confirmation = confirmedLedger.verifications().constFirst();
+    QCOMPARE(confirmation.state, QStringLiteral("verified"));
+    QVERIFY(confirmation.missingEffectFields.isEmpty());
+    QVERIFY(confirmation.mismatchedEffectFields.isEmpty());
+    QVERIFY(!confirmedLedger.hasUnresolvedVerification());
 }
 
 void AgentControllerTest::verifiesMutationEffectsWithinTaskScope()

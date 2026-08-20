@@ -51,7 +51,7 @@ class ExecutionTask final : public AgentTask
     void activate(QList<chat::Message> messageSeed,
                   const QJsonArray& completedSteps,
                   const QList<QJsonObject>& priorToolEvidence,
-                  int evidenceStart);
+                  int evidenceStart, const QString& originalRequest = {});
     void activateDirect(QList<chat::Message> messages);
     [[nodiscard]] bool requiresTool() const;
     [[nodiscard]] ActionResult handleAction(

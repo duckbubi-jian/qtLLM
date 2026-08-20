@@ -8,11 +8,13 @@
 
 namespace qtllm::application
 {
-ExecutionTask::ExecutionTask(QJsonObject specification)
+ExecutionTask::ExecutionTask(QJsonObject specification,
+                             bool requiresMutationEvidence)
     : AgentTask(Kind::Execution,
                 specification.value(QStringLiteral("id")).toString(),
                 specification.value(QStringLiteral("description")).toString()),
-      specification_(std::move(specification))
+      specification_(std::move(specification)),
+      requiresMutationEvidence_(requiresMutationEvidence)
 {
 }
 
@@ -483,6 +485,8 @@ QString ExecutionTask::completeWithEvidence(
         return unresolvedVerificationReason;
 
     QJsonArray successfulEvidence;
+    QJsonArray successfulMutationEvidence;
+    QJsonArray explicitlyVerifiedEvidence;
     const QJsonObject* latestEvidence = nullptr;
     for (const auto& evidence : toolEvidence)
     {
@@ -496,7 +500,15 @@ QString ExecutionTask::completeWithEvidence(
         if (evidence.value(QStringLiteral("outcome")).toString() ==
                 QLatin1String("success") &&
             evidence.value(QStringLiteral("terminal")).toBool())
+        {
             successfulEvidence.append(sequence);
+            if (evidence.value(QStringLiteral("operationKind")).toString() ==
+                QLatin1String("mutation"))
+                successfulMutationEvidence.append(sequence);
+            if (evidence.value(QStringLiteral("verificationConfirmed"))
+                    .toBool())
+                explicitlyVerifiedEvidence.append(sequence);
+        }
     }
     if (!latestEvidence ||
         (successfulEvidence.isEmpty() && userResolvedEvidence_.isEmpty()))
@@ -506,6 +518,15 @@ QString ExecutionTask::completeWithEvidence(
         return QStringLiteral(
             "The latest tool operation for the current task is still in "
             "progress.");
+    if (requiresMutationEvidence_ && successfulMutationEvidence.isEmpty() &&
+        explicitlyVerifiedEvidence.isEmpty() && userResolvedEvidence_.isEmpty())
+        return QStringLiteral(
+            "The current outcome is assigned a mutating tool, but its task "
+            "evidence contains only read-only results. Inspection evidence "
+            "cannot by itself prove that the requested state change was "
+            "completed. Execute the required mutation, or use a provider "
+            "result with an explicit structured verification confirmation "
+            "when the requested state is already satisfied.");
 
     messages().append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
     pendingVerificationAction_.clear();

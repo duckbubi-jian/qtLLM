@@ -613,7 +613,8 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
     }
     const auto evidenceSequence = static_cast<int>(toolEvidence_.size() + 1);
     toolEvidence_.append(AgentContextCompactor::toolEvidence(
-        evidenceSequence, completedToolAction, normalizedResult));
+        evidenceSequence, completedToolAction, normalizedResult,
+        completedOperationKind));
     const auto* executionTask = currentExecutionTask();
     const auto verificationTaskId =
         executionTask ? executionTask->id() : QString{};
@@ -1228,7 +1229,22 @@ void AgentController::acceptTaskPlan(const QJsonArray& steps)
     activeRun_->executionTasks.clear();
     activeRun_->executionTasks.reserve(static_cast<std::size_t>(steps.size()));
     for (qsizetype index = 0; index < steps.size(); ++index)
-        activeRun_->executionTasks.emplace_back(steps.at(index).toObject());
+    {
+        const auto step = steps.at(index).toObject();
+        auto requiresMutationEvidence = false;
+        for (const auto& toolValue :
+             step.value(QStringLiteral("allowed_tools")).toArray())
+        {
+            const auto descriptor = toolRuntime_.inspect(toolValue.toString());
+            if (descriptor.has_value() &&
+                descriptor->operationKind == ToolOperationKind::Mutation)
+            {
+                requiresMutationEvidence = true;
+                break;
+            }
+        }
+        activeRun_->executionTasks.emplace_back(step, requiresMutationEvidence);
+    }
 
     // Each ExecutionTask gets a fresh user turn containing its assignment,
     // the original request, and completed-task context it may depend on.

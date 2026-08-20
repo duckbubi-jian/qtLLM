@@ -1,4 +1,5 @@
 #include "AgentContextCompactor.hpp"
+#include "ToolEffectVerifier.hpp"
 #include "ToolResultStatus.hpp"
 
 #include <QJsonArray>
@@ -29,6 +30,20 @@ struct Fact
     QJsonValue value;
     int priority = 0;
 };
+
+QString operationKindName(ToolOperationKind kind)
+{
+    switch (kind)
+    {
+        case ToolOperationKind::ReadOnly:
+            return QStringLiteral("read_only");
+        case ToolOperationKind::Mutation:
+            return QStringLiteral("mutation");
+        case ToolOperationKind::Unknown:
+            return QStringLiteral("unknown");
+    }
+    return QStringLiteral("unknown");
+}
 
 int factPriority(const QString& path)
 {
@@ -322,13 +337,16 @@ bool AgentContextCompactor::shouldCompact(int promptTokens,
 
 QJsonObject AgentContextCompactor::toolEvidence(int sequence,
                                                 const agent::Action& action,
-                                                const agent::ToolResult& result)
+                                                const agent::ToolResult& result,
+                                                ToolOperationKind operationKind)
 {
     const auto outcome = normalizedToolOutcome(result);
     const auto sideEffectState = normalizedToolSideEffectState(result);
+    const auto payload = resultPayload(result);
     QJsonObject evidence{
         {QStringLiteral("sequence"), sequence},
         {QStringLiteral("tool"), action.toolName},
+        {QStringLiteral("operationKind"), operationKindName(operationKind)},
         {QStringLiteral("arguments"),
          compactJson(action.arguments, maximumArgumentBytes)},
         {QStringLiteral("outcome"),
@@ -340,8 +358,9 @@ QJsonObject AgentContextCompactor::toolEvidence(int sequence,
         {QStringLiteral("sideEffectState"),
          toolSideEffectStateName(sideEffectState)},
         {QStringLiteral("terminal"), !toolResultIndicatesInProgress(result)},
-        {QStringLiteral("result"),
-         compactJson(resultPayload(result), maximumEvidenceBytes)}};
+        {QStringLiteral("verificationConfirmed"),
+         ToolEffectVerifier::explicitlyConfirmsVerification(payload)},
+        {QStringLiteral("result"), compactJson(payload, maximumEvidenceBytes)}};
     if (!result.errorCode.isEmpty())
         evidence.insert(QStringLiteral("errorCode"), result.errorCode);
     if (!result.errorMessage.isEmpty())

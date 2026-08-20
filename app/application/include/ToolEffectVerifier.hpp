@@ -41,5 +41,7 @@ class ToolEffectVerifier final
     [[nodiscard]] static ToolEffectVerificationResult verify(
         const QList<ToolEffectExpectation>& expectations,
         const QJsonValue& readBack);
+    [[nodiscard]] static bool explicitlyConfirmsVerification(
+        const QJsonValue& value);
 };
 }  // namespace qtllm::application

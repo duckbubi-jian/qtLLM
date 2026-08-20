@@ -11,6 +11,8 @@ class AgentActionTest final : public QObject
    private slots:
     void parsesToolCall();
     void parsesTaskPlan();
+    void normalizesRecoverableTaskPlanMetadata();
+    void reportsTaskPlanFieldErrors();
     void parsesBlockedResult();
     void parsesFinalAnswer();
     void rejectsInvalidActions_data();
@@ -67,6 +69,45 @@ void AgentActionTest::parsesTaskPlan()
              QJsonValue(true));
 }
 
+void AgentActionTest::normalizesRecoverableTaskPlanMetadata()
+{
+    agent::Action action;
+    QString errorMessage;
+    QVERIFY2(
+        agent::parseAction(
+            QByteArrayLiteral(
+                R"({"action":"task_plan","steps":[{"description":"Inspect the case","allowed_tools":["files.read","files.read"]},{"id":"step-1","description":"Report","requires_tool":false}],"ordered":true})"),
+            action, errorMessage),
+        qPrintable(errorMessage));
+
+    QCOMPARE(action.completionSteps.size(), 2);
+    const auto first = action.completionSteps.at(0).toObject();
+    QCOMPARE(first.value(QStringLiteral("id")).toString(),
+             QStringLiteral("step-1"));
+    QCOMPARE(first.value(QStringLiteral("requires_tool")).toBool(), true);
+    QCOMPARE(first.value(QStringLiteral("allowed_tools")).toArray(),
+             QJsonArray{QStringLiteral("files.read")});
+    const auto second = action.completionSteps.at(1).toObject();
+    QCOMPARE(second.value(QStringLiteral("id")).toString(),
+             QStringLiteral("step-2"));
+    QCOMPARE(second.value(QStringLiteral("allowed_tools")).toArray(),
+             QJsonArray{});
+}
+
+void AgentActionTest::reportsTaskPlanFieldErrors()
+{
+    agent::Action action;
+    QString errorMessage;
+    QVERIFY(!agent::parseAction(
+        QByteArrayLiteral(
+            R"({"action":"task_plan","steps":[{"id":"case-open","description":"Create or open demo-mcp","requires_tool":true}],"ordered":true})"),
+        action, errorMessage));
+    QCOMPARE(
+        errorMessage,
+        QStringLiteral("task_plan steps[0].allowed_tools is required for a "
+                       "tool-required step."));
+}
+
 void AgentActionTest::parsesBlockedResult()
 {
     agent::Action action;
@@ -99,8 +140,6 @@ void AgentActionTest::rejectsInvalidActions_data()
         R"({"action":"blocked","reason":"missing_input","content":""})");
     QTest::newRow("extra-property") << QByteArrayLiteral(
         R"({"action":"final","content":"Done","extra":true})");
-    QTest::newRow("duplicate-plan-step") << QByteArrayLiteral(
-        R"({"action":"task_plan","steps":[{"id":"same","description":"One","requires_tool":true,"allowed_tools":["files.read"]},{"id":"same","description":"Two","requires_tool":true,"allowed_tools":["files.read"]}]})");
     QTest::newRow("plan-missing-allowed-tools") << QByteArrayLiteral(
         R"({"action":"task_plan","steps":[{"id":"one","description":"One","requires_tool":true}],"ordered":true})");
     QTest::newRow("non-tool-plan-with-tool") << QByteArrayLiteral(
@@ -130,6 +169,8 @@ void AgentActionTest::providesGenerationGrammar()
     QVERIFY(grammar.contains("root ::="));
     QVERIFY(grammar.contains("call_tool"));
     QVERIFY(grammar.contains("task_plan"));
+    QVERIFY(grammar.contains("plan-step"));
+    QVERIFY(grammar.contains("string-array"));
     QVERIFY(grammar.contains("ordered"));
     QVERIFY(!grammar.contains("plan_step_id"));
     QVERIFY(!grammar.contains("completes_plan_step"));

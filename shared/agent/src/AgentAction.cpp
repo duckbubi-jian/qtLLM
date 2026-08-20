@@ -11,6 +11,8 @@ namespace qtllm::agent
 {
 namespace
 {
+constexpr qsizetype maximumPlanDescriptionCharacters = 4'096;
+
 bool hasOnlyKeys(const QJsonObject& object,
                  std::initializer_list<QString> allowedKeys)
 {
@@ -33,61 +35,108 @@ bool parsePlanSteps(const QJsonArray& values, QJsonArray& steps,
         return false;
     }
     QSet<QString> ids;
-    for (const auto& value : values)
+    for (qsizetype index = 0; index < values.size(); ++index)
     {
-        const auto step = value.toObject();
-        const auto id = step.value(QStringLiteral("id")).toString().trimmed();
-        const auto description =
-            step.value(QStringLiteral("description")).toString().trimmed();
-        const auto requiresTool = step.value(QStringLiteral("requires_tool"));
-        const auto allowedToolsValue =
-            step.value(QStringLiteral("allowed_tools"));
-        if (!value.isObject() ||
-            !hasOnlyKeys(step,
-                         {QStringLiteral("id"), QStringLiteral("description"),
-                          QStringLiteral("requires_tool"),
-                          QStringLiteral("allowed_tools")}) ||
-            id.isEmpty() || id.size() > 64 || description.isEmpty() ||
-            description.size() > 256 || !requiresTool.isBool() ||
-            !allowedToolsValue.isArray() || ids.contains(id))
+        const auto value = values.at(index);
+        const auto fieldPath = QStringLiteral("task_plan steps[%1]").arg(index);
+        if (!value.isObject())
         {
-            errorMessage = QStringLiteral(
-                "Each task_plan step requires a unique non-empty id, a "
-                "description of at most 256 characters, and a boolean "
-                "requires_tool property plus an allowed_tools array.");
+            errorMessage =
+                QStringLiteral("%1 must be an object.").arg(fieldPath);
             return false;
         }
+        const auto step = value.toObject();
+        auto id = step.value(QStringLiteral("id")).toString().trimmed();
+        const auto description =
+            step.value(QStringLiteral("description")).toString().trimmed();
+        const auto descriptionValue = step.value(QStringLiteral("description"));
+        const auto requiresToolValue =
+            step.value(QStringLiteral("requires_tool"));
+        const auto allowedToolsValue =
+            step.value(QStringLiteral("allowed_tools"));
+        if (!descriptionValue.isString() || description.isEmpty())
+        {
+            errorMessage =
+                QStringLiteral("%1.description must be a non-empty string.")
+                    .arg(fieldPath);
+            return false;
+        }
+        if (description.size() > maximumPlanDescriptionCharacters)
+        {
+            errorMessage =
+                QStringLiteral("%1.description exceeds %2 characters.")
+                    .arg(fieldPath)
+                    .arg(maximumPlanDescriptionCharacters);
+            return false;
+        }
+        if (!requiresToolValue.isUndefined() && !requiresToolValue.isBool())
+        {
+            errorMessage = QStringLiteral("%1.requires_tool must be boolean.")
+                               .arg(fieldPath);
+            return false;
+        }
+        if (!allowedToolsValue.isUndefined() && !allowedToolsValue.isArray())
+        {
+            errorMessage = QStringLiteral("%1.allowed_tools must be an array.")
+                               .arg(fieldPath);
+            return false;
+        }
+        if (allowedToolsValue.isUndefined() &&
+            (!requiresToolValue.isBool() || requiresToolValue.toBool()))
+        {
+            errorMessage = QStringLiteral(
+                               "%1.allowed_tools is required for a "
+                               "tool-required step.")
+                               .arg(fieldPath);
+            return false;
+        }
+
         QSet<QString> allowedToolNames;
         QJsonArray allowedTools;
         for (const auto& toolValue : allowedToolsValue.toArray())
         {
             const auto toolName = toolValue.toString().trimmed();
             if (!toolValue.isString() || toolName.isEmpty() ||
-                toolName.size() > 256 || allowedToolNames.contains(toolName))
+                toolName.size() > 256)
             {
-                errorMessage = QStringLiteral(
-                    "task_plan allowed_tools values must be unique, "
-                    "non-empty qualified tool names.");
+                errorMessage =
+                    QStringLiteral(
+                        "%1.allowed_tools must contain only non-empty "
+                        "qualified tool names of at most 256 characters.")
+                        .arg(fieldPath);
                 return false;
             }
+            if (allowedToolNames.contains(toolName)) continue;
             allowedToolNames.insert(toolName);
             allowedTools.append(toolName);
         }
-        if ((requiresTool.toBool() && allowedTools.isEmpty()) ||
-            (!requiresTool.toBool() && !allowedTools.isEmpty()))
+        auto requiresTool = requiresToolValue.isBool()
+                                ? requiresToolValue.toBool()
+                                : !allowedTools.isEmpty();
+        if (requiresTool != !allowedTools.isEmpty())
         {
-            errorMessage = QStringLiteral(
-                "A tool-required task_plan step needs at least one "
-                "allowed_tools entry; a non-tool step must use an empty "
-                "allowed_tools array.");
+            errorMessage =
+                QStringLiteral(
+                    "%1 requires a non-empty allowed_tools array exactly "
+                    "when requires_tool is true.")
+                    .arg(fieldPath);
             return false;
         }
+
+        if (id.isEmpty() || id.size() > 64 || ids.contains(id))
+        {
+            id = QStringLiteral("step-%1").arg(index + 1);
+            auto suffix = 2;
+            const auto base = id;
+            while (ids.contains(id))
+                id = QStringLiteral("%1-%2").arg(base).arg(suffix++);
+        }
         ids.insert(id);
-        steps.append(QJsonObject{
-            {QStringLiteral("id"), id},
-            {QStringLiteral("description"), description},
-            {QStringLiteral("requires_tool"), requiresTool.toBool()},
-            {QStringLiteral("allowed_tools"), allowedTools}});
+        steps.append(
+            QJsonObject{{QStringLiteral("id"), id},
+                        {QStringLiteral("description"), description},
+                        {QStringLiteral("requires_tool"), requiresTool},
+                        {QStringLiteral("allowed_tools"), allowedTools}});
     }
     return true;
 }
@@ -222,7 +271,9 @@ QByteArray actionGrammar()
     return QByteArrayLiteral(R"GBNF(
 root ::= ws (call-tool | task-plan | blocked | final) ws
 call-tool ::= "{" ws "\"action\"" ws ":" ws "\"call_tool\"" ws "," ws "\"tool\"" ws ":" ws string ws "," ws "\"arguments\"" ws ":" ws object ws "}"
-task-plan ::= "{" ws "\"action\"" ws ":" ws "\"task_plan\"" ws "," ws "\"steps\"" ws ":" ws array ws "," ws "\"ordered\"" ws ":" ws "true" ws "}"
+task-plan ::= "{" ws "\"action\"" ws ":" ws "\"task_plan\"" ws "," ws "\"steps\"" ws ":" ws "[" ws plan-step (ws "," ws plan-step)* ws "]" ws "," ws "\"ordered\"" ws ":" ws "true" ws "}"
+plan-step ::= "{" ws "\"id\"" ws ":" ws string ws "," ws "\"description\"" ws ":" ws string ws "," ws "\"requires_tool\"" ws ":" ws boolean ws "," ws "\"allowed_tools\"" ws ":" ws string-array ws "}"
+string-array ::= "[" ws (string (ws "," ws string)*)? ws "]"
 blocked ::= "{" ws "\"action\"" ws ":" ws "\"blocked\"" ws "," ws "\"reason\"" ws ":" ws block-reason ws "," ws "\"content\"" ws ":" ws string ws "}"
 block-reason ::= "\"missing_input\"" | "\"authorization\"" | "\"external_failure\"" | "\"unsupported\""
 final ::= "{" ws "\"action\"" ws ":" ws "\"final\"" ws "," ws "\"content\"" ws ":" ws string ws "}"

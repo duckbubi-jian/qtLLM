@@ -39,7 +39,8 @@ class ExecutionTask final : public AgentTask
         int evidenceEnd = 0;
     };
 
-    explicit ExecutionTask(QJsonObject specification = {});
+    explicit ExecutionTask(QJsonObject specification = {},
+                           bool requiresMutationEvidence = false);
     explicit ExecutionTask(QString directDescription);
 
     [[nodiscard]] const QJsonObject& specification() const;
@@ -91,6 +92,7 @@ class ExecutionTask final : public AgentTask
 
     QJsonObject specification_;
     bool managedPlan_ = true;
+    bool requiresMutationEvidence_ = false;
     int evidenceStart_ = 1;
     int evidenceEnd_ = 0;
     QJsonArray evidence_;

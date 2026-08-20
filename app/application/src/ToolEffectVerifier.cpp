@@ -38,6 +38,35 @@ bool isScalarArray(const QJsonValue& value)
                        [](const QJsonValue& item) { return isScalar(item); });
 }
 
+bool confirmsVerification(const QJsonValue& value, qsizetype depth = 0)
+{
+    if (depth > maximumTraversalDepth) return false;
+    if (value.isArray())
+    {
+        for (const auto& entry : value.toArray())
+            if (confirmsVerification(entry, depth + 1)) return true;
+        return false;
+    }
+    if (!value.isObject()) return false;
+
+    const auto object = value.toObject();
+    for (auto entry = object.constBegin(); entry != object.constEnd(); ++entry)
+    {
+        const auto key = normalizedKey(entry.key());
+        const auto valueText = entry.value().toString().trimmed().toLower();
+        if ((key == QLatin1String("confirmation") ||
+             key == QLatin1String("verification") ||
+             key == QLatin1String("verificationstate")) &&
+            (valueText == QLatin1String("verified") ||
+             valueText == QLatin1String("confirmed")))
+            return true;
+        if ((entry.value().isObject() || entry.value().isArray()) &&
+            confirmsVerification(entry.value(), depth + 1))
+            return true;
+    }
+    return false;
+}
+
 QByteArray scalarDigest(const QJsonValue& value)
 {
     const auto serialized =
@@ -310,5 +339,10 @@ ToolEffectVerificationResult ToolEffectVerifier::verify(
     else
         result.status = ToolEffectVerificationStatus::Verified;
     return result;
+}
+
+bool ToolEffectVerifier::explicitlyConfirmsVerification(const QJsonValue& value)
+{
+    return confirmsVerification(value);
 }
 }  // namespace qtllm::application

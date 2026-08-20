@@ -3,6 +3,7 @@
 #include "AgentAction.hpp"
 #include "ChatMessage.hpp"
 #include "ModelPackage.hpp"
+#include "ToolOperationKind.hpp"
 #include "ToolResult.hpp"
 
 #include <QJsonObject>
@@ -24,7 +25,8 @@ class AgentContextCompactor final
         int promptTokens, const models::InferencePreset& preset);
     [[nodiscard]] static QJsonObject toolEvidence(
         int sequence, const agent::Action& action,
-        const agent::ToolResult& result);
+        const agent::ToolResult& result,
+        ToolOperationKind operationKind = ToolOperationKind::Unknown);
     [[nodiscard]] static Result compact(QList<chat::Message>& messages,
                                         qsizetype& requestMessageIndex,
                                         const QString& originalRequest,

@@ -48,6 +48,7 @@ class AgentControllerTest final : public QObject
     void rejectsUnchangedRetryAfterToolError();
     void repairsDynamicPropertyNameValidation();
     void repairsMissingOrderedPlanMetadata();
+    void repairsOverDecomposedTaskPlan();
     void blocksOrderedPlanWhenRequiredInputIsMissing();
     void successfulStructuredMutationAdvancesPlanWithoutReadBack();
     void keepsSharedMutationWithinCurrentPlanStep();
@@ -1701,6 +1702,73 @@ void AgentControllerTest::repairsMissingOrderedPlanMetadata()
     QVERIFY(generatedMessages.constLast().content.contains(
         QStringLiteral("Task-plan step 'inspect' remains current")));
 
+    controller.cancel();
+}
+
+void AgentControllerTest::repairsOverDecomposedTaskPlan()
+{
+    QList<chat::Message> generatedMessages;
+    application::AgentController controller(
+        application::AgentController::Dependencies{
+            [&](const QList<chat::Message>& messages,
+                const models::InferencePreset&, int)
+            { generatedMessages = messages; },
+            [] {}, [](const QString&, const QJsonObject&)
+            { return QStringLiteral("unexpected"); }, [](const QString&) {},
+            acceptsToolArguments, [](const QString&)
+            { return infrastructure::mcp::ToolDecision::Allow; }});
+
+    const auto request = QStringLiteral(
+        "1. Focus, inspect, and configure the existing material.\n"
+        "2. Create a region and hide it.");
+    const QList<agent::ToolDefinition> tools{
+        namedTool(QStringLiteral("focus"), QStringLiteral("Focus material")),
+        namedTool(QStringLiteral("get"), QStringLiteral("Inspect material")),
+        namedTool(QStringLiteral("edit"), QStringLiteral("Edit material")),
+        namedTool(QStringLiteral("create_region"),
+                  QStringLiteral("Create region")),
+        namedTool(QStringLiteral("hide"), QStringLiteral("Hide region"))};
+    QVERIFY(controller.start(request, {}, tools));
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("at most one task for each numbered instruction")));
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("task may require several sequential tool calls")));
+
+    const QJsonArray overDecomposed{
+        planStep(QStringLiteral("focus"), QStringLiteral("Focus material"),
+                 true, {QStringLiteral("fake.focus")}),
+        planStep(QStringLiteral("inspect"), QStringLiteral("Inspect material"),
+                 true, {QStringLiteral("fake.get")}),
+        planStep(QStringLiteral("configure"),
+                 QStringLiteral("Configure material"), true,
+                 {QStringLiteral("fake.edit")})};
+    controller.receiveToken(orderedTaskPlanAction(overDecomposed));
+    controller.completeGeneration(false);
+
+    QVERIFY(controller.activeRun()->planningTask.has_value());
+    QCOMPARE(controller.activeRun()->planningTask->repairCount(), 1);
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("3 tasks for 2 numbered user instructions")));
+    QVERIFY(generatedMessages.constLast().content.contains(
+        QStringLiteral("Group dependent discovery, focus, inspection")));
+
+    const QJsonArray outcomeTasks{
+        planStep(QStringLiteral("configure"),
+                 QStringLiteral("Focus, inspect, and configure material"), true,
+                 {QStringLiteral("fake.focus"), QStringLiteral("fake.get"),
+                  QStringLiteral("fake.edit")}),
+        planStep(QStringLiteral("region"),
+                 QStringLiteral("Create a region and hide it"), true,
+                 {QStringLiteral("fake.create_region"),
+                  QStringLiteral("fake.hide")})};
+    controller.receiveToken(orderedTaskPlanAction(outcomeTasks));
+    controller.completeGeneration(false);
+
+    QCOMPARE(controller.activeRun()->planningTask->status(),
+             application::AgentTask::Status::Completed);
+    QCOMPARE(controller.activeRun()->executionTasks.size(), std::size_t{2});
+    QCOMPARE(controller.progressSnapshot().currentStepId,
+             QStringLiteral("configure"));
     controller.cancel();
 }
 

@@ -40,24 +40,25 @@ has reached a terminal state accepted by the scheduler.
 | Component | Owns | Must Not Own |
 | --- | --- | --- |
 | `AgentTask` | Common lifecycle, messages, token buffer, timing, cancellation, failure, and snapshots | MCP-specific task semantics |
-| `PlanningTask` | Deciding whether a plan is needed, validating the returned plan, and producing task specifications | Executing later plan steps |
-| `ExecutionTask` | One planned step or direct request, including decisions, allowed-tool boundary, MCP action lifecycle, evidence, review, and bounded repair | Advancing the queue or operating on a later step |
+| `PlanningTask` | Deciding whether a plan is needed, validating outcome-level granularity, and producing task specifications | Executing later plan steps or creating one task per tool call |
+| `ExecutionTask` | One requested outcome or direct request, including its dependent MCP calls, allowed-tool boundary, evidence, review, and bounded repair | Advancing the queue or operating on a later outcome |
 | `SummaryTask` | Building the final answer from immutable completed-task snapshots | Calling MCP tools or changing completed steps |
 | `AgentController` | Queue order, active task, run-level state, and routing asynchronous callbacks to the active task | Interpreting task actions, reviewing step completion, or choosing recovery prompts |
-| `AgentToolRuntime` | Tool catalog lookup, risk classification, schema validation, and policy decisions | Understanding plan structure or deciding whether a task is complete |
-| Tool transport | Approval transport, MCP dispatch, cancellation, and normalized tool results | Choosing tools or interpreting task completion |
+| `AgentToolRuntime` | Tool catalog lookup, risk classification, schema validation, policy and approval state, dispatch, cancellation, polling, and normalized tool results | Understanding plan structure or deciding whether a task is complete |
 
 The task owns the semantic MCP workflow. `AgentToolRuntime` owns provider-neutral
-tool contracts, while the controller currently drives asynchronous callbacks
-because Qt delivers model and MCP results through application-level signals.
-That transport detail must not give the controller authority to choose a tool,
-alter arguments, review evidence, or advance a task. `PlanningTask` may inspect
-the supplied catalog when constructing tasks, but only `ExecutionTask` may
-produce a `CallTool` directive.
+tool contracts and transport state, while the controller routes asynchronous
+Qt callbacks. That routing detail must not give the controller authority to
+choose a tool, alter arguments, review evidence, or advance a task.
+`PlanningTask` may inspect the supplied catalog when constructing tasks, but
+only `ExecutionTask` may produce a `CallTool` directive.
 
 ## Runtime Invariants
 
 1. At most one `AgentTask` is active.
+1. One planned task represents one explicit user outcome or numbered
+   instruction, not one MCP call. Dependent discovery, focus, inspection,
+   import, parsing, mutation, and verification calls remain inside that task.
 1. Every model completion and tool result is routed to the task that initiated
    it.
 1. A tool action is valid only when the active task accepts it.

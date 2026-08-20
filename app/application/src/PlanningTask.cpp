@@ -2,14 +2,30 @@
 
 #include "AgentPromptBuilder.hpp"
 
+#include <QRegularExpression>
+
 #include <utility>
 
 namespace qtllm::application
 {
-PlanningTask::PlanningTask(QStringList availableTools)
+namespace
+{
+int numberedInstructionCount(const QString& request)
+{
+    static const QRegularExpression numberedInstruction(
+        QStringLiteral(R"(^\s*\d+\s*[.):]\s+)"));
+    auto count = 0;
+    for (const auto& line : request.split(QLatin1Char('\n')))
+        if (numberedInstruction.match(line).hasMatch()) ++count;
+    return count;
+}
+}  // namespace
+
+PlanningTask::PlanningTask(QString originalRequest, QStringList availableTools)
     : AgentTask(Kind::Planning, QStringLiteral("planning"),
                 QStringLiteral("Plan the requested work")),
-      availableTools_()
+      availableTools_(),
+      numberedInstructionCount_(numberedInstructionCount(originalRequest))
 {
     for (const auto& tool : availableTools)
         availableTools_.insert(tool);
@@ -59,6 +75,16 @@ QString PlanningTask::validatePlan(const agent::Action& action) const
         return QStringLiteral(
             "task_plan must explicitly include ordered=true so the "
             "scheduler can enforce step-by-step execution.");
+    if (numberedInstructionCount_ >= 2 &&
+        action.completionSteps.size() > numberedInstructionCount_)
+        return QStringLiteral(
+                   "The plan has %1 tasks for %2 numbered user "
+                   "instructions. Use at most one task per numbered "
+                   "instruction. Keep dependent focus, lookup, inspection, "
+                   "edit, import, parse, and verification calls inside the "
+                   "same outcome task instead of creating tool-level tasks.")
+            .arg(action.completionSteps.size())
+            .arg(numberedInstructionCount_);
 
     auto sawNonToolStep = false;
     for (const auto& value : action.completionSteps)

@@ -75,7 +75,10 @@ The current implementation provides the outer loop:
 
 - `PlanningTask`, serial `ExecutionTask` workers, and `SummaryTask` accept the
   structured actions valid for their own phase; `AgentController` schedules
-  their directives and transports tool calls without parsing model output.
+  their directives and routes completed calls without parsing model output.
+- Plans use outcome-level tasks. A numbered user instruction remains one task
+  even when it needs several dependent MCP calls; tool-level prerequisites do
+  not become separate queue entries.
 - `AgentToolRuntime` owns generic catalog lookup, risk classification, schema
   validation, policy and approval state, and task-local duplicate-call
   protection. It also owns request identity, dispatch, cancellation, result

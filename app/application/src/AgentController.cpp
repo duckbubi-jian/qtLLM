@@ -149,7 +149,7 @@ bool AgentController::start(const QString& userRequest,
         availableToolNames.reserve(tools.size());
         for (const auto& tool : tools)
             availableToolNames.append(tool.qualifiedName);
-        run.planningTask.emplace(std::move(availableToolNames));
+        run.planningTask.emplace(request, std::move(availableToolNames));
         run.planningTask->activate(run.inferenceMessages);
     }
     else

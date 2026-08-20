@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AgentAction.hpp"
+#include "ToolEffectVerifier.hpp"
 #include "ToolOperationKind.hpp"
 #include "ToolResult.hpp"
 
@@ -41,11 +42,18 @@ struct AgentJobRecord
 
 struct AgentVerificationRecord
 {
+    QString taskId;
+    QString serverId;
     int mutationEvidenceSequence = 0;
     QString tool;
     QString state;
     QStringList targetIds;
     QStringList targetNames;
+    QList<ToolEffectExpectation> expectedEffects;
+    QStringList matchedEffectFields;
+    QStringList missingEffectFields;
+    QStringList mismatchedEffectFields;
+    QString detail;
     int verificationEvidenceSequence = 0;
 };
 
@@ -53,7 +61,8 @@ class AgentLedger final
 {
    public:
     void clear();
-    void recordToolResult(int evidenceSequence, const agent::Action& action,
+    void recordToolResult(const QString& taskId, int evidenceSequence,
+                          const agent::Action& action,
                           const agent::ToolResult& result,
                           ToolOperationKind operationKind);
 
@@ -62,7 +71,8 @@ class AgentLedger final
     [[nodiscard]] const QList<AgentVerificationRecord>& verifications() const;
     [[nodiscard]] bool hasUnresolvedVerification() const;
     [[nodiscard]] bool evidenceRequiresVerification(int sequence) const;
-    [[nodiscard]] QString unresolvedVerificationReason() const;
+    [[nodiscard]] QString unresolvedVerificationReason(
+        const QString& taskId = {}) const;
     [[nodiscard]] QJsonObject snapshot() const;
 
    private:

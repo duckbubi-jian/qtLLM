@@ -8,6 +8,7 @@
 #include <QSet>
 
 #include <algorithm>
+#include <optional>
 #include <utility>
 
 namespace qtllm::application
@@ -209,24 +210,72 @@ bool hasStableResultLocator(const QJsonValue& value, qsizetype depth = 0,
     return false;
 }
 
-bool structuredResultConfirmsTarget(const agent::Action& action,
-                                    const QJsonValue& payload)
+bool targetTokensMatch(const QStringList& targetIds,
+                       const QStringList& targetNames,
+                       const QStringList& observedIds,
+                       const QStringList& observedNames)
 {
-    if (!explicitlyConfirmsSuccess(payload) || !hasStableResultLocator(payload))
-        return false;
+    if (!targetIds.isEmpty() && !observedIds.isEmpty())
+        return intersects(targetIds, observedIds);
+    return intersects(targetNames, observedNames);
+}
 
-    QStringList requestedIds;
-    QStringList requestedNames;
-    auto visited = qsizetype{0};
-    collectSemanticTokens(action.arguments, requestedIds, requestedNames, 0,
-                          visited, false, false);
-    QStringList resultIds;
-    QStringList resultNames;
-    visited = 0;
-    collectSemanticTokens(payload, resultIds, resultNames, 0, visited, false,
-                          false);
-    return intersects(requestedIds, resultIds) ||
-           intersects(requestedNames, resultNames);
+bool structuredResultConfirmsTarget(const QJsonValue& payload,
+                                    const QStringList& requestedIds,
+                                    const QStringList& requestedNames,
+                                    const QStringList& resultIds,
+                                    const QStringList& resultNames)
+{
+    return explicitlyConfirmsSuccess(payload) &&
+           hasStableResultLocator(payload) &&
+           targetTokensMatch(requestedIds, requestedNames, resultIds,
+                             resultNames);
+}
+
+std::optional<QJsonValue> findTargetObject(const QJsonValue& value,
+                                           const QStringList& targetIds,
+                                           const QStringList& targetNames,
+                                           qsizetype depth, qsizetype& visited)
+{
+    if (depth > maximumTraversalDepth || visited >= maximumVisitedValues)
+        return std::nullopt;
+    ++visited;
+    if (value.isArray())
+    {
+        for (const auto& item : value.toArray())
+        {
+            auto found = findTargetObject(item, targetIds, targetNames,
+                                          depth + 1, visited);
+            if (found.has_value()) return found;
+        }
+        return std::nullopt;
+    }
+    if (!value.isObject()) return std::nullopt;
+
+    QStringList directIds;
+    QStringList directNames;
+    const auto object = value.toObject();
+    for (auto item = object.constBegin(); item != object.constEnd(); ++item)
+    {
+        if (isParentContextKey(item.key())) continue;
+        const auto scalar = scalarText(item.value());
+        if (scalar.isEmpty()) continue;
+        if (identityKeyScore(item.key()) >= 0)
+            directIds.append(scalar);
+        else if (nameKeyScore(item.key()) >= 0)
+            directNames.append(scalar);
+    }
+    if (targetTokensMatch(targetIds, targetNames, directIds, directNames))
+        return value;
+
+    for (auto item = object.constBegin(); item != object.constEnd(); ++item)
+    {
+        if (!item.value().isObject() && !item.value().isArray()) continue;
+        auto found = findTargetObject(item.value(), targetIds, targetNames,
+                                      depth + 1, visited);
+        if (found.has_value()) return found;
+    }
+    return std::nullopt;
 }
 
 void collectResources(const QJsonValue& value, const QString& path,
@@ -496,12 +545,33 @@ QJsonObject verificationJson(const AgentVerificationRecord& verification)
     QJsonArray names;
     for (const auto& value : verification.targetNames)
         names.append(value);
-    QJsonObject result{{QStringLiteral("mutationEvidenceSequence"),
-                        verification.mutationEvidenceSequence},
-                       {QStringLiteral("tool"), verification.tool},
-                       {QStringLiteral("state"), verification.state},
-                       {QStringLiteral("targetIds"), ids},
-                       {QStringLiteral("targetNames"), names}};
+    QJsonArray expectedEffectFields;
+    for (const auto& expectation : verification.expectedEffects)
+        expectedEffectFields.append(expectation.field);
+    QJsonArray matchedEffectFields;
+    for (const auto& field : verification.matchedEffectFields)
+        matchedEffectFields.append(field);
+    QJsonArray missingEffectFields;
+    for (const auto& field : verification.missingEffectFields)
+        missingEffectFields.append(field);
+    QJsonArray mismatchedEffectFields;
+    for (const auto& field : verification.mismatchedEffectFields)
+        mismatchedEffectFields.append(field);
+    QJsonObject result{
+        {QStringLiteral("taskId"), verification.taskId},
+        {QStringLiteral("serverId"), verification.serverId},
+        {QStringLiteral("mutationEvidenceSequence"),
+         verification.mutationEvidenceSequence},
+        {QStringLiteral("tool"), verification.tool},
+        {QStringLiteral("state"), verification.state},
+        {QStringLiteral("targetIds"), ids},
+        {QStringLiteral("targetNames"), names},
+        {QStringLiteral("expectedEffectFields"), expectedEffectFields},
+        {QStringLiteral("matchedEffectFields"), matchedEffectFields},
+        {QStringLiteral("missingEffectFields"), missingEffectFields},
+        {QStringLiteral("mismatchedEffectFields"), mismatchedEffectFields}};
+    if (!verification.detail.isEmpty())
+        result.insert(QStringLiteral("detail"), verification.detail);
     if (verification.verificationEvidenceSequence > 0)
         result.insert(QStringLiteral("verificationEvidenceSequence"),
                       verification.verificationEvidenceSequence);
@@ -516,7 +586,7 @@ void AgentLedger::clear()
     verifications_.clear();
 }
 
-void AgentLedger::recordToolResult(int evidenceSequence,
+void AgentLedger::recordToolResult(const QString& taskId, int evidenceSequence,
                                    const agent::Action& action,
                                    const agent::ToolResult& result,
                                    ToolOperationKind operationKind)
@@ -556,18 +626,25 @@ void AgentLedger::recordToolResult(int evidenceSequence,
         existing->sourceEvidenceSequence = evidenceSequence;
     }
 
-    QStringList currentIds;
-    QStringList currentNames;
+    QStringList resultIds;
+    QStringList resultNames;
     for (const auto& resource : extractedResources)
     {
-        currentIds.append(resource.stableId);
-        if (!resource.name.isEmpty()) currentNames.append(resource.name);
+        resultIds.append(resource.stableId);
+        if (!resource.name.isEmpty()) resultNames.append(resource.name);
     }
     visited = 0;
-    collectSemanticTokens(action.arguments, currentIds, currentNames, 0,
-                          visited, true, false);
-    currentIds = uniqueTokens(std::move(currentIds));
-    currentNames = uniqueTokens(std::move(currentNames));
+    collectSemanticTokens(payload, resultIds, resultNames, 0, visited, false,
+                          false);
+    resultIds = uniqueTokens(std::move(resultIds));
+    resultNames = uniqueTokens(std::move(resultNames));
+    QStringList actionIds;
+    QStringList actionNames;
+    visited = 0;
+    collectSemanticTokens(action.arguments, actionIds, actionNames, 0, visited,
+                          true, false);
+    actionIds = uniqueTokens(std::move(actionIds));
+    actionNames = uniqueTokens(std::move(actionNames));
 
     const auto inProgress = toolResultIndicatesInProgress(result);
     const auto key = actionKey(action);
@@ -617,21 +694,58 @@ void AgentLedger::recordToolResult(int evidenceSequence,
 
     for (auto& verification : verifications_)
     {
+        if (verification.taskId != taskId ||
+            verification.serverId != result.serverId)
+            continue;
         if (verification.state != QLatin1String("pending") &&
             verification.state != QLatin1String("failed"))
             continue;
-        if (!intersects(verification.targetIds, currentIds) &&
-            !intersects(verification.targetNames, currentNames))
+        const auto& observedIds = resultIds.isEmpty() ? actionIds : resultIds;
+        const auto& observedNames =
+            resultNames.isEmpty() ? actionNames : resultNames;
+        if (!targetTokensMatch(verification.targetIds, verification.targetNames,
+                               observedIds, observedNames))
             continue;
-        if (operationKind == ToolOperationKind::Mutation) continue;
+        if (operationKind != ToolOperationKind::ReadOnly) continue;
         if (result.isError)
         {
             verification.state = QStringLiteral("failed");
+            verification.detail = QStringLiteral("The read-back tool failed.");
             verification.verificationEvidenceSequence = evidenceSequence;
         }
         else if (!inProgress)
         {
-            verification.state = QStringLiteral("verified");
+            auto effectPayload = payload;
+            visited = 0;
+            const auto targetObject =
+                findTargetObject(payload, verification.targetIds,
+                                 verification.targetNames, 0, visited);
+            if (targetObject.has_value()) effectPayload = *targetObject;
+            const auto effectVerification = ToolEffectVerifier::verify(
+                verification.expectedEffects, effectPayload);
+            verification.matchedEffectFields = effectVerification.matchedFields;
+            verification.missingEffectFields = effectVerification.missingFields;
+            verification.mismatchedEffectFields =
+                effectVerification.mismatchedFields;
+            switch (effectVerification.status)
+            {
+                case ToolEffectVerificationStatus::Verified:
+                    verification.state = QStringLiteral("verified");
+                    verification.detail.clear();
+                    break;
+                case ToolEffectVerificationStatus::Incomplete:
+                    verification.state = QStringLiteral("pending");
+                    verification.detail = QStringLiteral(
+                        "The read-back did not expose every expected effect "
+                        "field.");
+                    break;
+                case ToolEffectVerificationStatus::Mismatch:
+                    verification.state = QStringLiteral("failed");
+                    verification.detail = QStringLiteral(
+                        "The read-back returned a different value for one or "
+                        "more expected effect fields.");
+                    break;
+            }
             verification.verificationEvidenceSequence = evidenceSequence;
         }
     }
@@ -640,17 +754,51 @@ void AgentLedger::recordToolResult(int evidenceSequence,
         inProgress || verifications_.size() >= maximumVerifications)
         return;
 
-    const auto targetIds = currentIds;
-    const auto targetNames = currentNames;
-    const auto selfVerified = structuredResultConfirmsTarget(action, payload);
+    const auto targetIds = actionIds.isEmpty() ? resultIds : actionIds;
+    const auto targetNames = actionNames.isEmpty() ? resultNames : actionNames;
+    const auto expectedEffects =
+        ToolEffectVerifier::captureExpectations(action.arguments);
+    const auto selfTargetVerified = structuredResultConfirmsTarget(
+        payload, actionIds, actionNames, resultIds, resultNames);
+    auto selfEffectPayload = payload;
+    visited = 0;
+    const auto selfTargetObject =
+        findTargetObject(payload, targetIds, targetNames, 0, visited);
+    if (selfTargetObject.has_value()) selfEffectPayload = *selfTargetObject;
+    const auto selfEffectVerification =
+        ToolEffectVerifier::verify(expectedEffects, selfEffectPayload);
+    const auto selfVerified =
+        selfTargetVerified &&
+        selfEffectVerification.status == ToolEffectVerificationStatus::Verified;
     const auto hasVerificationTarget =
         !targetIds.isEmpty() || !targetNames.isEmpty();
-    verifications_.append(
-        {evidenceSequence, action.toolName,
-         selfVerified             ? QStringLiteral("verified")
-         : !hasVerificationTarget ? QStringLiteral("unavailable")
-                                  : QStringLiteral("pending"),
-         targetIds, targetNames, selfVerified ? evidenceSequence : 0});
+    AgentVerificationRecord verification;
+    verification.taskId = taskId;
+    verification.serverId = result.serverId;
+    verification.mutationEvidenceSequence = evidenceSequence;
+    verification.tool = action.toolName;
+    verification.state = selfVerified ? QStringLiteral("verified")
+                         : !hasVerificationTarget
+                             ? QStringLiteral("unavailable")
+                             : QStringLiteral("pending");
+    verification.targetIds = targetIds;
+    verification.targetNames = targetNames;
+    verification.expectedEffects = expectedEffects;
+    verification.matchedEffectFields = selfEffectVerification.matchedFields;
+    verification.missingEffectFields = selfEffectVerification.missingFields;
+    verification.mismatchedEffectFields =
+        selfEffectVerification.mismatchedFields;
+    if (selfTargetVerified && selfEffectVerification.status ==
+                                  ToolEffectVerificationStatus::Incomplete)
+        verification.detail = QStringLiteral(
+            "The mutation result did not expose every expected effect field.");
+    else if (selfTargetVerified && selfEffectVerification.status ==
+                                       ToolEffectVerificationStatus::Mismatch)
+        verification.detail = QStringLiteral(
+            "The mutation result did not match the expected effect fields.");
+    verification.verificationEvidenceSequence =
+        selfVerified ? evidenceSequence : 0;
+    verifications_.append(std::move(verification));
 }
 
 const QList<AgentResourceRecord>& AgentLedger::resources() const
@@ -686,12 +834,15 @@ bool AgentLedger::evidenceRequiresVerification(int sequence) const
            verification->state != QLatin1String("verified");
 }
 
-QString AgentLedger::unresolvedVerificationReason() const
+QString AgentLedger::unresolvedVerificationReason(const QString& taskId) const
 {
-    const auto verification =
-        std::find_if(verifications_.cbegin(), verifications_.cend(),
-                     [](const AgentVerificationRecord& candidate)
-                     { return candidate.state != QLatin1String("verified"); });
+    const auto verification = std::find_if(
+        verifications_.cbegin(), verifications_.cend(),
+        [&taskId](const AgentVerificationRecord& candidate)
+        {
+            return candidate.state != QLatin1String("verified") &&
+                   (taskId.isEmpty() || candidate.taskId == taskId);
+        });
     if (verification == verifications_.cend()) return {};
     if (verification->state == QLatin1String("unavailable"))
         return QStringLiteral(
@@ -700,10 +851,27 @@ QString AgentLedger::unresolvedVerificationReason() const
                    "limitation instead of claiming confirmed state.")
             .arg(verification->mutationEvidenceSequence);
     if (verification->state == QLatin1String("failed"))
+    {
+        if (!verification->mismatchedEffectFields.isEmpty())
+            return QStringLiteral(
+                       "The read-back for mutation evidence %1 returned "
+                       "different values for expected field(s): %2. Inspect "
+                       "the same target again before completion.")
+                .arg(verification->mutationEvidenceSequence)
+                .arg(verification->mismatchedEffectFields.join(
+                    QStringLiteral(", ")));
         return QStringLiteral(
                    "The read-back for mutation evidence %1 failed. Use the "
                    "known identifiers to inspect it again before completion.")
             .arg(verification->mutationEvidenceSequence);
+    }
+    if (!verification->missingEffectFields.isEmpty())
+        return QStringLiteral(
+                   "Mutation evidence %1 is still unverified because the "
+                   "read-back omitted expected field(s): %2. Inspect the "
+                   "same target with those fields before completion.")
+            .arg(verification->mutationEvidenceSequence)
+            .arg(verification->missingEffectFields.join(QStringLiteral(", ")));
     return QStringLiteral(
                "Mutation evidence %1 is awaiting read-back verification. "
                "Reuse its recorded identifiers with an existing inspection "

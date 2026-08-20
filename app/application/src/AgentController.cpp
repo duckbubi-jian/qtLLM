@@ -420,9 +420,11 @@ void AgentController::completeGeneration(bool cancelled,
             QStringLiteral("No active task can complete the model response."));
         return;
     }
+    const auto verificationTaskId =
+        task->kind() == AgentTask::Kind::Execution ? task->id() : QString{};
     const auto directive = task->completeTaskGeneration(
         cancelled, toolEvidence_,
-        activeRun_->ledger.unresolvedVerificationReason());
+        activeRun_->ledger.unresolvedVerificationReason(verificationTaskId));
     if (task->kind() == AgentTask::Kind::Planning &&
         activeRun_->planningTask.has_value())
         activeRun_->taskPlanFailures = activeRun_->planningTask->repairCount();
@@ -459,8 +461,11 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
     const auto evidenceSequence = static_cast<int>(toolEvidence_.size() + 1);
     toolEvidence_.append(AgentContextCompactor::toolEvidence(
         evidenceSequence, completedToolAction, normalizedResult));
-    activeRun_->ledger.recordToolResult(evidenceSequence, completedToolAction,
-                                        normalizedResult,
+    const auto* executionTask = currentExecutionTask();
+    const auto verificationTaskId =
+        executionTask ? executionTask->id() : QString{};
+    activeRun_->ledger.recordToolResult(verificationTaskId, evidenceSequence,
+                                        completedToolAction, normalizedResult,
                                         completedOperationKind);
     ++activeRun_->evidenceRevision;
     if (outcome == agent::ToolOutcome::Succeeded)
@@ -482,9 +487,9 @@ void AgentController::receiveToolResult(const agent::ToolResult& result)
                     "No active execution task can receive the tool result."));
         return;
     }
-    task->receiveToolResult(normalizedResult, evidenceSequence,
-                            activeRun_->ledger.snapshot(),
-                            activeRun_->ledger.unresolvedVerificationReason());
+    task->receiveToolResult(
+        normalizedResult, evidenceSequence, activeRun_->ledger.snapshot(),
+        activeRun_->ledger.unresolvedVerificationReason(task->id()));
 
     const auto uncertainDispatch = normalizedResult.sideEffectState ==
                                    agent::ToolSideEffectState::Uncertain;

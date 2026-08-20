@@ -68,6 +68,7 @@ class AgentControllerTest final : public QObject
     void compactsLongAgentContextAndPreservesEvidence();
     void tracksRunScopedLedgerAndRequiresVerification();
     void requiresMatchingTargetForMutationSelfVerification();
+    void verifiesMutationEffectsWithinTaskScope();
     void treatsDefaultModifyRiskAsMutation();
     void hasNoToolCallCountLimit();
     void longRunWarningDoesNotStopAgent();
@@ -3049,7 +3050,8 @@ void AgentControllerTest::requiresMatchingTargetForMutationSelfVerification()
                     {QStringLiteral("uuid"), QStringLiteral("resource-1")}};
 
     application::AgentLedger mismatchedLedger;
-    mismatchedLedger.recordToolResult(1, action, mismatched,
+    mismatchedLedger.recordToolResult(QStringLiteral("task-a"), 1, action,
+                                      mismatched,
                                       application::ToolOperationKind::Mutation);
     QCOMPARE(mismatchedLedger.verifications().size(), 1);
     QCOMPARE(mismatchedLedger.verifications().constFirst().state,
@@ -3063,7 +3065,8 @@ void AgentControllerTest::requiresMatchingTargetForMutationSelfVerification()
         {QStringLiteral("target_path"), QStringLiteral("E:/two/resource")},
         {QStringLiteral("uuid"), QStringLiteral("resource-3")}};
     application::AgentLedger basenameLedger;
-    basenameLedger.recordToolResult(1, action, sameBasename,
+    basenameLedger.recordToolResult(QStringLiteral("task-a"), 1, action,
+                                    sameBasename,
                                     application::ToolOperationKind::Mutation);
     QCOMPARE(basenameLedger.verifications().constFirst().state,
              QStringLiteral("pending"));
@@ -3082,7 +3085,8 @@ void AgentControllerTest::requiresMatchingTargetForMutationSelfVerification()
          QJsonObject{{QStringLiteral("uuid"), QStringLiteral("parent-1")},
                      {QStringLiteral("name"), QStringLiteral("container")}}}};
     application::AgentLedger parentLedger;
-    parentLedger.recordToolResult(1, action, matchingOnlyParent,
+    parentLedger.recordToolResult(QStringLiteral("task-a"), 1, action,
+                                  matchingOnlyParent,
                                   application::ToolOperationKind::Mutation);
     QCOMPARE(parentLedger.verifications().constFirst().state,
              QStringLiteral("pending"));
@@ -3095,7 +3099,8 @@ void AgentControllerTest::requiresMatchingTargetForMutationSelfVerification()
          QJsonObject{{QStringLiteral("uuid"), QStringLiteral("parent-1")}}}};
     application::AgentLedger parentLocatorLedger;
     parentLocatorLedger.recordToolResult(
-        1, action, parentLocatorOnly, application::ToolOperationKind::Mutation);
+        QStringLiteral("task-a"), 1, action, parentLocatorOnly,
+        application::ToolOperationKind::Mutation);
     QCOMPARE(parentLocatorLedger.verifications().constFirst().state,
              QStringLiteral("pending"));
 
@@ -3106,11 +3111,143 @@ void AgentControllerTest::requiresMatchingTargetForMutationSelfVerification()
                     {QStringLiteral("name"), QStringLiteral("requested")},
                     {QStringLiteral("uuid"), QStringLiteral("resource-2")}};
     application::AgentLedger matchingLedger;
-    matchingLedger.recordToolResult(1, action, matching,
+    matchingLedger.recordToolResult(QStringLiteral("task-a"), 1, action,
+                                    matching,
                                     application::ToolOperationKind::Mutation);
     QCOMPARE(matchingLedger.verifications().size(), 1);
     QCOMPARE(matchingLedger.verifications().constFirst().state,
              QStringLiteral("verified"));
+}
+
+void AgentControllerTest::verifiesMutationEffectsWithinTaskScope()
+{
+    const auto arrayExpectations =
+        application::ToolEffectVerifier::captureExpectations(QJsonObject{
+            {QStringLiteral("object_uuid"), QStringLiteral("object-1")},
+            {QStringLiteral("tags"),
+             QJsonArray{QStringLiteral("inlet"), QStringLiteral("primary")}}});
+    QCOMPARE(arrayExpectations.size(), 1);
+    QCOMPARE(application::ToolEffectVerifier::verify(
+                 arrayExpectations,
+                 QJsonObject{{QStringLiteral("tags"),
+                              QJsonArray{QStringLiteral("inlet"),
+                                         QStringLiteral("primary")}}})
+                 .status,
+             application::ToolEffectVerificationStatus::Verified);
+    QCOMPARE(application::ToolEffectVerifier::verify(
+                 arrayExpectations,
+                 QJsonObject{{QStringLiteral("tags"),
+                              QJsonArray{QStringLiteral("primary"),
+                                         QStringLiteral("inlet")}}})
+                 .status,
+             application::ToolEffectVerificationStatus::Mismatch);
+
+    agent::Action mutation;
+    mutation.type = agent::ActionType::CallTool;
+    mutation.toolName = QStringLiteral("fake.update");
+    mutation.arguments = {
+        {QStringLiteral("object_uuid"), QStringLiteral("object-1")},
+        {QStringLiteral("value"), 42},
+        {QStringLiteral("unit"), QStringLiteral("mm")}};
+
+    agent::ToolResult mutationResult;
+    mutationResult.serverId = QStringLiteral("fake");
+    mutationResult.toolName = QStringLiteral("update");
+    mutationResult.structuredContent =
+        QJsonObject{{QStringLiteral("uuid"), QStringLiteral("object-1")}};
+
+    application::AgentLedger ledger;
+    ledger.recordToolResult(QStringLiteral("task-a"), 1, mutation,
+                            mutationResult,
+                            application::ToolOperationKind::Mutation);
+    QCOMPARE(ledger.verifications().size(), 1);
+    QCOMPARE(ledger.verifications().constFirst().state,
+             QStringLiteral("pending"));
+    QCOMPARE(ledger.verifications().constFirst().expectedEffects.size(), 2);
+    QVERIFY(ledger.unresolvedVerificationReason(QStringLiteral("task-b"))
+                .isEmpty());
+
+    agent::Action inspect;
+    inspect.type = agent::ActionType::CallTool;
+    inspect.toolName = QStringLiteral("fake.inspect");
+    inspect.arguments = {
+        {QStringLiteral("object_uuid"), QStringLiteral("object-1")}};
+    agent::ToolResult readBack;
+    readBack.serverId = QStringLiteral("fake");
+    readBack.toolName = QStringLiteral("inspect");
+    readBack.structuredContent =
+        QJsonObject{{QStringLiteral("uuid"), QStringLiteral("object-1")},
+                    {QStringLiteral("value"), 42},
+                    {QStringLiteral("unit"), QStringLiteral("mm")}};
+
+    ledger.recordToolResult(QStringLiteral("task-b"), 2, inspect, readBack,
+                            application::ToolOperationKind::ReadOnly);
+    QCOMPARE(ledger.verifications().constFirst().state,
+             QStringLiteral("pending"));
+
+    readBack.serverId = QStringLiteral("other-server");
+    ledger.recordToolResult(QStringLiteral("task-a"), 3, inspect, readBack,
+                            application::ToolOperationKind::ReadOnly);
+    QCOMPARE(ledger.verifications().constFirst().state,
+             QStringLiteral("pending"));
+    readBack.serverId = QStringLiteral("fake");
+
+    readBack.structuredContent =
+        QJsonObject{{QStringLiteral("uuid"), QStringLiteral("object-2")},
+                    {QStringLiteral("value"), 42},
+                    {QStringLiteral("unit"), QStringLiteral("mm")}};
+    ledger.recordToolResult(QStringLiteral("task-a"), 4, inspect, readBack,
+                            application::ToolOperationKind::ReadOnly);
+    QCOMPARE(ledger.verifications().constFirst().state,
+             QStringLiteral("pending"));
+
+    readBack.structuredContent =
+        QJsonObject{{QStringLiteral("uuid"), QStringLiteral("object-1")},
+                    {QStringLiteral("value"), 42},
+                    {QStringLiteral("unit"), QStringLiteral("mm")}};
+    ledger.recordToolResult(QStringLiteral("task-a"), 5, inspect, readBack,
+                            application::ToolOperationKind::Unknown);
+    QCOMPARE(ledger.verifications().constFirst().state,
+             QStringLiteral("pending"));
+
+    readBack.structuredContent = QJsonObject{
+        {QStringLiteral("items"),
+         QJsonArray{
+             QJsonObject{{QStringLiteral("uuid"), QStringLiteral("object-1")},
+                         {QStringLiteral("value"), 41},
+                         {QStringLiteral("unit"), QStringLiteral("mm")}},
+             QJsonObject{{QStringLiteral("uuid"), QStringLiteral("object-2")},
+                         {QStringLiteral("value"), 42},
+                         {QStringLiteral("unit"), QStringLiteral("mm")}}}}};
+    ledger.recordToolResult(QStringLiteral("task-a"), 6, inspect, readBack,
+                            application::ToolOperationKind::ReadOnly);
+    QCOMPARE(ledger.verifications().constFirst().state,
+             QStringLiteral("failed"));
+    QCOMPARE(ledger.verifications().constFirst().mismatchedEffectFields,
+             QStringList{QStringLiteral("value")});
+    QVERIFY(ledger.unresolvedVerificationReason(QStringLiteral("task-a"))
+                .contains(QStringLiteral("value")));
+
+    readBack.structuredContent =
+        QJsonObject{{QStringLiteral("uuid"), QStringLiteral("object-1")},
+                    {QStringLiteral("value"), 42}};
+    ledger.recordToolResult(QStringLiteral("task-a"), 7, inspect, readBack,
+                            application::ToolOperationKind::ReadOnly);
+    QCOMPARE(ledger.verifications().constFirst().state,
+             QStringLiteral("pending"));
+    QCOMPARE(ledger.verifications().constFirst().missingEffectFields,
+             QStringList{QStringLiteral("unit")});
+
+    readBack.structuredContent =
+        QJsonObject{{QStringLiteral("uuid"), QStringLiteral("object-1")},
+                    {QStringLiteral("value"), 42},
+                    {QStringLiteral("unit"), QStringLiteral("mm")}};
+    ledger.recordToolResult(QStringLiteral("task-a"), 8, inspect, readBack,
+                            application::ToolOperationKind::ReadOnly);
+    QCOMPARE(ledger.verifications().constFirst().state,
+             QStringLiteral("verified"));
+    QCOMPARE(ledger.verifications().constFirst().verificationEvidenceSequence,
+             8);
 }
 
 void AgentControllerTest::treatsDefaultModifyRiskAsMutation()

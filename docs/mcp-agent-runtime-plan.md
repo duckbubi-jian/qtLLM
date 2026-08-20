@@ -76,9 +76,9 @@ The current implementation provides the outer loop:
 - `PlanningTask`, serial `ExecutionTask` workers, and `SummaryTask` accept the
   structured actions valid for their own phase; `AgentController` schedules
   their directives and routes completed calls without parsing model output.
-- Plans use outcome-level tasks. A numbered user instruction remains one task
-  even when it needs several dependent MCP calls; tool-level prerequisites do
-  not become separate queue entries.
+- Plans use semantic outcome-level tasks. Numbering and expected tool-call
+  count do not determine task boundaries; the planner groups calls that jointly
+  establish one requested result and splits independently requested results.
 - `AgentToolRuntime` owns generic catalog lookup, risk classification, schema
   validation, policy and approval state, and task-local duplicate-call
   protection. It also owns request identity, dispatch, cancellation, result
@@ -92,9 +92,12 @@ The current implementation provides the outer loop:
   path instead of being treated as completion.
 - Canonical call signatures reject repeated successful calls and unchanged
   retries after failures, while permitting legitimate status polling.
-- Tool evidence, task-local step review, strict serial scheduling, and context
-  compaction prevent a successful intermediate call from advancing or ending a
-  multi-step request early.
+- Code-owned task evidence, strict serial scheduling, and context compaction
+  prevent a successful intermediate call from advancing or ending a multi-step
+  request early.
+- Model tool actions contain only a tool name and arguments. The active
+  `ExecutionTask` binds results to itself, and a later `final` triggers
+  deterministic evidence and ledger checks before the scheduler can advance.
 - The prompt contains a separately budgeted compact tool index that preserves
   qualified names, required nesting, local references, discriminators, exact
   enum and const values, and union branches when full schemas are omitted.

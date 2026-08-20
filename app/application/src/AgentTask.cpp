@@ -77,6 +77,26 @@ qsizetype& AgentTask::requestMessageIndex()
     return requestMessageIndex_;
 }
 
+bool AgentTask::appendCorrectionTurn(const QByteArray& rawAction,
+                                     chat::Message correction,
+                                     bool recordAction)
+{
+    if (messages_.isEmpty() || correction.role != chat::Role::User ||
+        correction.content.isEmpty())
+        return false;
+
+    const auto expectedTailRole =
+        recordAction ? chat::Role::User : chat::Role::Assistant;
+    if (messages_.constLast().role != expectedTailRole) return false;
+    if (recordAction)
+    {
+        if (rawAction.isEmpty()) return false;
+        messages_.append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    }
+    messages_.append(std::move(correction));
+    return true;
+}
+
 void AgentTask::requestDecision(const GenerateHandler& generate,
                                 const models::InferencePreset& preset,
                                 int outputTokens)

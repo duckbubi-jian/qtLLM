@@ -92,7 +92,7 @@ class AgentController final : public QObject
 
    private:
     static bool isTerminal(AgentRun::State state);
-    void requestDecision();
+    void requestDecision(const QString& operation = {});
     void compactContextIfNeeded();
     [[nodiscard]] ExecutionTask* currentExecutionTask();
     [[nodiscard]] const ExecutionTask* currentExecutionTask() const;
@@ -113,11 +113,12 @@ class AgentController final : public QObject
     void retryInvalidToolAction(const QByteArray& rawAction,
                                 const agent::ToolValidationIssue& issue,
                                 const agent::ToolDefinition& tool,
-                                const QJsonObject& arguments);
+                                const QJsonObject& arguments,
+                                bool recordAction);
     void retryNoProgressAction(const QByteArray& rawAction,
-                               const QString& errorMessage);
+                               const QString& errorMessage, bool recordAction);
     void retryTaskAction(const QByteArray& rawAction,
-                         const QString& errorMessage);
+                         const QString& errorMessage, bool recordAction);
     void setState(AgentRun::State state);
     void recordEvent(agent::EventType type, const QString& message = {},
                      const QString& toolName = {},

@@ -490,24 +490,36 @@ void AssistantResponseTest::showsStructuredAgentProgressUntilRunEnds()
     }
     const auto stepRows =
         progress->findChildren<QWidget*>(QStringLiteral("agentProgressStep"));
+    const auto stepStatuses = progress->findChildren<QLabel*>(
+        QStringLiteral("agentProgressStepStatus"));
     const auto stepElapsed = progress->findChildren<QLabel*>(
         QStringLiteral("agentProgressStepElapsed"));
     QCOMPARE(stepRows.size(), 3);
-    QCOMPARE(stepElapsed.size(), 3);
+    QCOMPARE(stepStatuses.size(), 3);
+    QCOMPARE(stepElapsed.size(), 2);
+    QCOMPARE(stepStatuses.at(0)->text(), QStringLiteral("\u2713"));
+    QCOMPARE(stepStatuses.at(1)->text(), QStringLiteral("\u2610"));
+    QCOMPARE(stepStatuses.at(2)->text(), QStringLiteral("\u2610"));
+    QCOMPARE(stepRows.at(0)->property("stepState").toString(),
+             QStringLiteral("completed"));
+    QCOMPARE(stepRows.at(1)->property("stepState").toString(),
+             QStringLiteral("current"));
+    QCOMPARE(stepRows.at(2)->property("stepState").toString(),
+             QStringLiteral("pending"));
     QCOMPARE(stepElapsed.at(0)->text(), QStringLiteral("00:03"));
     QCOMPARE(stepElapsed.at(1)->text(), QStringLiteral("00:07"));
-    QCOMPARE(stepElapsed.at(2)->text(), QStringLiteral("00:00"));
     QCOMPARE(stepElapsed.at(1)->toolTip(),
              QStringLiteral("Waiting for the tool result"));
     QCOMPARE(stepLabels.at(0)->toolTip(),
-             QStringLiteral("1. Inspect the workspace"));
-    QVERIFY(stepLabels.at(1)->text().startsWith(QStringLiteral("2. ")));
-    QVERIFY(stepLabels.at(2)->text().startsWith(QStringLiteral("3. ")));
+             QStringLiteral("Inspect the workspace"));
+    QVERIFY(!stepLabels.at(0)->text().startsWith(QStringLiteral("1. ")));
+    QVERIFY(!stepLabels.at(1)->text().startsWith(QStringLiteral("2. ")));
+    QVERIFY(!stepLabels.at(2)->text().startsWith(QStringLiteral("3. ")));
     for (const auto* row : stepRows)
     {
         QVERIFY(
             !row->accessibleName().contains(QStringLiteral("do-not-display")));
-        QCOMPARE(row->height(), 28);
+        QCOMPARE(row->height(), 26);
     }
     window.resize(720, 520);
     window.show();

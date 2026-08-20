@@ -84,6 +84,7 @@ class AgentTask
         QString content;
         QString code;
         QString detail;
+        QString activity;
         int evidenceEnd = 0;
         bool toolCallAlreadyRecorded = false;
     };
@@ -106,6 +107,9 @@ class AgentTask
     [[nodiscard]] QList<chat::Message>& messages();
     [[nodiscard]] const QList<chat::Message>& messages() const;
     [[nodiscard]] qsizetype& requestMessageIndex();
+    [[nodiscard]] bool appendCorrectionTurn(const QByteArray& rawAction,
+                                            chat::Message correction,
+                                            bool recordAction);
 
     void requestDecision(const GenerateHandler& generate,
                          const models::InferencePreset& preset,

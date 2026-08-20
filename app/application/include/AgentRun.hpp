@@ -69,6 +69,7 @@ struct AgentRun
     QDateTime startedAt;
     QList<agent::Event> events;
     QList<chat::Message> inferenceMessages;
+    QString decisionOperation;
     QString finishCode;
     QString finishMessage;
     AgentLedger ledger;

@@ -41,7 +41,7 @@ has reached a terminal state accepted by the scheduler.
 | --- | --- | --- |
 | `AgentTask` | Common lifecycle, messages, token buffer, timing, cancellation, failure, and snapshots | MCP-specific task semantics |
 | `PlanningTask` | Deciding whether a plan is needed, validating outcome-level granularity, and producing task specifications | Executing later plan steps or creating one task per tool call |
-| `ExecutionTask` | One requested outcome or direct request, including its dependent MCP calls, allowed-tool boundary, evidence, review, and bounded repair | Advancing the queue or operating on a later outcome |
+| `ExecutionTask` | One requested outcome or direct request, including its dependent MCP calls, allowed-tool boundary, code-owned evidence, completion checks, and bounded repair | Advancing the queue or operating on a later outcome |
 | `SummaryTask` | Building the final answer from immutable completed-task snapshots | Calling MCP tools or changing completed steps |
 | `AgentController` | Queue order, active task, run-level state, and routing asynchronous callbacks to the active task | Interpreting task actions, reviewing step completion, or choosing recovery prompts |
 | `AgentToolRuntime` | Tool catalog lookup, risk classification, schema validation, policy and approval state, dispatch, cancellation, polling, and normalized tool results | Understanding plan structure or deciding whether a task is complete |
@@ -56,18 +56,28 @@ only `ExecutionTask` may produce a `CallTool` directive.
 ## Runtime Invariants
 
 1. At most one `AgentTask` is active.
-1. One planned task represents one explicit user outcome or numbered
-   instruction, not one MCP call. Dependent discovery, focus, inspection,
-   import, parsing, mutation, and verification calls remain inside that task.
+1. Each planned task represents an independently verifiable result explicitly
+   requested by the user. Task boundaries do not come from numbering or tool
+   count; causally dependent calls without their own requested result remain
+   inside the outcome task.
 1. Every model completion and tool result is routed to the task that initiated
    it.
 1. A tool action is valid only when the active task accepts it.
-1. An `ExecutionTask` can reference only its own task ID and task-local evidence
-   range.
+1. Every accepted tool call and result is bound by code to the active
+   `ExecutionTask` and its task-local evidence range.
 1. The scheduler advances only after the active task returns a terminal
    `Completed` result.
-1. Task state is maintained by code. The model reports actions and evidence;
-   it does not select the next task or rewrite queue status.
+1. Task state and evidence assignment are maintained by code. The model emits
+   only ordinary task actions and may use `final` to claim the current outcome
+   is complete; it never emits task IDs, completion markers, evidence IDs, or
+   queue status.
+1. A tool-backed task accepts `final` only when its own evidence range contains
+   successful terminal evidence, its latest operation is terminal, and the
+   ledger has no unresolved verification. The task then attaches evidence and
+   returns `Completed` without another model review turn.
+1. Aggregate progress exposes the active decision stage, such as argument
+   correction, task-boundary review, completion validation, or next-action
+   selection, without exposing hidden model reasoning.
 1. Completed-task snapshots are immutable inputs to later tasks.
 1. `SummaryTask` cannot invoke tools.
 1. Provider-specific MCP names, tool names, argument fields, and domain rules

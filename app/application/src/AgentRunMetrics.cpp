@@ -135,11 +135,6 @@ AgentRunMetrics AgentRunMetrics::fromRun(const AgentRun& run)
     metrics.duplicateMutationActions = run.duplicateMutationActions;
     metrics.redundantDiscoveryCalls = run.redundantDiscoveryCalls;
     metrics.pollRequests = run.pollRequests;
-    for (const auto& task : run.executionTasks)
-    {
-        metrics.completionReviewAttempts += task.stepReviewAttempts();
-        metrics.completionReviewSuccesses += task.stepReviewSuccesses();
-    }
     metrics.contextCompactions = run.contextCompactions;
     metrics.successfulToolResults = run.successfulToolResults;
     metrics.toolEvidenceCount = run.evidenceRevision;
@@ -150,7 +145,6 @@ AgentRunMetrics AgentRunMetrics::fromRun(const AgentRun& run)
                                              run.toolValidationFailures) /
                              static_cast<double>(run.toolValidationAttempts),
                          0.0, 1.0);
-    metrics.completionReviewSucceeded = metrics.completionReviewSuccesses > 0;
     if (run.planningTask.has_value())
         metrics.taskTimings.append(taskTiming(*run.planningTask));
     if (run.directTask.has_value())
@@ -183,11 +177,6 @@ QJsonObject AgentRunMetrics::toJson() const
         {QStringLiteral("duplicateMutationActions"), duplicateMutationActions},
         {QStringLiteral("redundantDiscoveryCalls"), redundantDiscoveryCalls},
         {QStringLiteral("pollRequests"), pollRequests},
-        {QStringLiteral("completionReviewAttempts"), completionReviewAttempts},
-        {QStringLiteral("completionReviewSuccesses"),
-         completionReviewSuccesses},
-        {QStringLiteral("completionReviewSucceeded"),
-         completionReviewSucceeded},
         {QStringLiteral("contextCompactions"), contextCompactions},
         {QStringLiteral("successfulToolResults"), successfulToolResults},
         {QStringLiteral("toolEvidenceCount"), toolEvidenceCount},

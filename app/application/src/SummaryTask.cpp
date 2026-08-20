@@ -65,8 +65,8 @@ AgentTask::Directive SummaryTask::repair(const QByteArray& rawAction,
         AgentPromptBuilder::summaryCorrectionMessage(errorMessage));
     Directive result;
     result.type = Directive::Type::Generate;
-    result.code = QStringLiteral("summary_repair");
     result.detail = errorMessage;
+    result.activity = QStringLiteral("Correcting the final summary");
     return result;
 }
 

@@ -21,21 +21,6 @@ class ExecutionTask final : public AgentTask
         QString detail;
     };
 
-    struct StepReviewResult
-    {
-        enum class Status
-        {
-            Invalid,
-            Pending,
-            Satisfied
-        };
-
-        Status status = Status::Invalid;
-        QString errorMessage;
-        QString detail;
-        QJsonArray evidence;
-    };
-
     struct ActionResult
     {
         enum class Type
@@ -51,7 +36,6 @@ class ExecutionTask final : public AgentTask
         {
             General,
             ToolCallReview,
-            StepReview,
             PrematureFinal
         };
 
@@ -90,44 +74,35 @@ class ExecutionTask final : public AgentTask
 
     void awaitTool();
     void awaitApproval();
-    void receiveToolResult(const agent::Action& action,
-                           const agent::ToolResult& result,
-                           int evidenceSequence,
-                           const QList<QJsonObject>& toolEvidence,
-                           const QJsonObject& ledgerState,
+    void receiveToolResult(const agent::ToolResult& result,
+                           int evidenceSequence, const QJsonObject& ledgerState,
                            const QString& verificationReason);
     [[nodiscard]] bool repairAction(const QByteArray& rawAction,
-                                    const QString& errorMessage);
+                                    const QString& errorMessage,
+                                    bool recordAction = true);
     void markBlocked();
 
-    [[nodiscard]] bool awaitingReview() const;
     [[nodiscard]] int evidenceStart() const;
     [[nodiscard]] int evidenceEnd() const;
-    [[nodiscard]] int stepReviewAttempts() const;
-    [[nodiscard]] int stepReviewSuccesses() const;
 
     [[nodiscard]] bool hasPendingToolCallReview() const;
 
    private:
     [[nodiscard]] QString activity() const override;
-    void beginReview(int evidenceEnd);
     void beginToolCallReview(const agent::Action& action,
                              const QByteArray& rawAction);
     [[nodiscard]] bool repairToolCallReview(const QByteArray& rawAction,
                                             const QString& errorMessage);
-    [[nodiscard]] bool repairStepReview(const QByteArray& rawAction,
-                                        const QString& errorMessage);
     [[nodiscard]] bool repairPrematureFinal(const QByteArray& rawAction,
                                             const QString& errorMessage);
     [[nodiscard]] std::optional<ToolCallReviewResult> resolveToolCallReview(
         const agent::Action& review, const QByteArray& rawAction);
-    [[nodiscard]] StepReviewResult reviewStep(
-        const agent::Action& review, const QByteArray& rawAction,
-        const QList<QJsonObject>& toolEvidence,
-        const QString& unresolvedVerificationReason);
     [[nodiscard]] bool completeWithoutTool(const agent::Action& action,
                                            const QByteArray& rawAction);
-    void markPending();
+    [[nodiscard]] QString completeWithEvidence(
+        const agent::Action& action, const QByteArray& rawAction,
+        const QList<QJsonObject>& toolEvidence,
+        const QString& unresolvedVerificationReason);
     void markSatisfied(const QJsonArray& evidence);
 
     QJsonObject specification_;
@@ -137,11 +112,7 @@ class ExecutionTask final : public AgentTask
     int evidenceEnd_ = 0;
     QJsonArray evidence_;
     QString output_;
-    bool awaitingStepReview_ = false;
     std::optional<agent::Action> pendingToolCallReview_;
-    int planStepReviewFailures_ = 0;
-    int stepReviewAttempts_ = 0;
-    int stepReviewSuccesses_ = 0;
     int toolCallReviewFailures_ = 0;
     int actionRepairFailures_ = 0;
     int prematureFinalFailures_ = 0;

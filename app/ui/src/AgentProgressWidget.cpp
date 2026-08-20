@@ -77,6 +77,37 @@ QString elapsedText(qint64 milliseconds)
                            .arg(minutes, 2, 10, QLatin1Char('0'))
                            .arg(seconds, 2, 10, QLatin1Char('0'));
 }
+
+QString stepStateName(application::AgentProgressStepStatus status)
+{
+    switch (status)
+    {
+        case application::AgentProgressStepStatus::Current:
+            return QStringLiteral("current");
+        case application::AgentProgressStepStatus::Completed:
+            return QStringLiteral("completed");
+        case application::AgentProgressStepStatus::Blocked:
+            return QStringLiteral("blocked");
+        case application::AgentProgressStepStatus::Pending:
+            return QStringLiteral("pending");
+    }
+    return QStringLiteral("pending");
+}
+
+QString stepStatusText(application::AgentProgressStepStatus status)
+{
+    switch (status)
+    {
+        case application::AgentProgressStepStatus::Completed:
+            return QStringLiteral("\u2713");
+        case application::AgentProgressStepStatus::Blocked:
+            return QStringLiteral("!");
+        case application::AgentProgressStepStatus::Current:
+        case application::AgentProgressStepStatus::Pending:
+            return QStringLiteral("\u2610");
+    }
+    return QStringLiteral("\u2610");
+}
 }  // namespace
 
 AgentProgressWidget::AgentProgressWidget(QWidget* parent) : QWidget(parent)
@@ -112,7 +143,7 @@ AgentProgressWidget::AgentProgressWidget(QWidget* parent) : QWidget(parent)
     plan_->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Maximum);
     planLayout_ = new QVBoxLayout(plan_);
     planLayout_->setContentsMargins(6, 3, 6, 3);
-    planLayout_->setSpacing(0);
+    planLayout_->setSpacing(1);
     planLayout_->setSizeConstraint(QLayout::SetMinAndMaxSize);
     plan_->setVisible(false);
     layout->addWidget(plan_);
@@ -236,31 +267,45 @@ void AgentProgressWidget::refreshPlan()
         const auto& step = snapshot_.steps.at(index);
         auto* row = new QWidget(plan_);
         row->setObjectName(QStringLiteral("agentProgressStep"));
+        const auto stepState = stepStateName(step.status);
+        row->setProperty("stepState", stepState);
         const auto descriptionText = redactSensitiveText(step.description, 256);
-        const auto displayText =
-            QStringLiteral("%1. %2").arg(index + 1).arg(descriptionText);
-        row->setAccessibleName(displayText);
+        row->setAccessibleName(descriptionText);
         row->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-        row->setFixedHeight(28);
+        row->setFixedHeight(26);
         auto* rowLayout = new QHBoxLayout(row);
-        rowLayout->setContentsMargins(8, 0, 8, 0);
+        rowLayout->setContentsMargins(7, 0, 7, 0);
+        rowLayout->setSpacing(6);
+        auto* status = new QLabel(stepStatusText(step.status), row);
+        status->setObjectName(QStringLiteral("agentProgressStepStatus"));
+        status->setProperty("stepState", stepState);
+        status->setAlignment(Qt::AlignCenter);
+        status->setFixedWidth(16);
+        status->setAccessibleName(tr("Task status"));
+        rowLayout->addWidget(status);
         auto* description = new ElidedLabel(row);
         description->setObjectName(
             QStringLiteral("agentProgressStepDescription"));
-        description->setFullText(displayText);
+        description->setProperty("stepState", stepState);
+        description->setFullText(descriptionText);
         description->setAlignment(Qt::AlignVCenter | Qt::AlignLeft);
         description->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
-        description->setFixedHeight(26);
+        description->setFixedHeight(24);
         description->setTextInteractionFlags(Qt::TextSelectableByMouse);
         rowLayout->addWidget(description, 1);
-        auto* elapsed = new QLabel(elapsedText(step.elapsedMilliseconds), row);
-        elapsed->setObjectName(QStringLiteral("agentProgressStepElapsed"));
-        elapsed->setProperty("elapsedBase", step.elapsedMilliseconds);
-        elapsed->setProperty(
-            "active",
-            step.status == application::AgentProgressStepStatus::Current);
-        elapsed->setToolTip(redactSensitiveText(step.activity, 160));
-        rowLayout->addWidget(elapsed);
+        if (step.status != application::AgentProgressStepStatus::Pending)
+        {
+            auto* elapsed =
+                new QLabel(elapsedText(step.elapsedMilliseconds), row);
+            elapsed->setObjectName(QStringLiteral("agentProgressStepElapsed"));
+            elapsed->setProperty("stepState", stepState);
+            elapsed->setProperty("elapsedBase", step.elapsedMilliseconds);
+            elapsed->setProperty(
+                "active",
+                step.status == application::AgentProgressStepStatus::Current);
+            elapsed->setToolTip(redactSensitiveText(step.activity, 160));
+            rowLayout->addWidget(elapsed);
+        }
         planLayout_->addWidget(row);
     }
 }

@@ -112,8 +112,8 @@ QWidget#promptComposer {
     border-radius: 8px;
 }
 QWidget#promptComposer[agentMode="true"] {
-    background: #f8fbff;
-    border-color: #bfdbfe;
+    background: #fbfcfe;
+    border-color: #b8c8bd;
 }
 QToolButton#mcpMenuButton {
     min-width: 28px;
@@ -359,7 +359,7 @@ QLabel#userAvatar {
     background: #3b82f6;
 }
 QLabel#assistantAvatar {
-    background: #14a38b;
+    background: #3f7f5a;
 }
 QWidget#userMessageContent,
 QWidget#assistantMessageContent {
@@ -380,8 +380,8 @@ QTextBrowser#assistantMessageBody {
 QWidget#agentProgressCard {
     margin: 6px 12px;
     color: #202124;
-    background: #f7f9fc;
-    border: 1px solid #d8e0ea;
+    background: #fafbfc;
+    border: 1px solid #dfe4e8;
     border-radius: 5px;
 }
 QWidget#agentProgressCard[progressState="terminal"] {
@@ -391,15 +391,15 @@ QWidget#agentProgressCard[progressState="terminal"] {
 QToolButton#agentProgressStateToggle {
     min-height: 24px;
     padding: 0 8px 0 4px;
-    color: #30445f;
-    background: #eaf2fc;
+    color: #2f3b34;
+    background: #f0f3f1;
     border: none;
     border-radius: 4px;
     font-weight: 600;
     text-align: left;
 }
 QToolButton#agentProgressStateToggle:hover {
-    background: #e1ecf9;
+    background: #e8ece9;
 }
 QLabel#agentProgressElapsed {
     min-height: 24px;
@@ -411,8 +411,8 @@ QLabel#agentProgressElapsed {
     font-family: "Cascadia Mono", "Consolas", monospace;
 }
 QWidget#agentProgressPlan {
-    background: #fbfcfe;
-    border-top: 1px solid #e2e8f0;
+    background: #fbfcfc;
+    border-top: 1px solid #e5e9e6;
 }
 QLabel#agentProgressFinish {
     color: #991b1b;
@@ -421,13 +421,37 @@ QWidget#agentProgressStep {
     background: transparent;
     border-bottom: 1px solid #edf1f5;
 }
+QWidget#agentProgressStep[stepState="current"] {
+    background: #eef8f1;
+    border-left: 2px solid #22a05a;
+    border-bottom-color: #d7eadc;
+}
+QLabel#agentProgressStepStatus {
+    color: #94a3b8;
+    font-weight: 600;
+}
+QLabel#agentProgressStepStatus[stepState="current"] {
+    color: #159447;
+}
 QLabel#agentProgressStepDescription {
-    color: #475569;
+    color: #64748b;
+}
+QLabel#agentProgressStepDescription[stepState="current"] {
+    color: #185b32;
+    font-weight: 600;
 }
 QLabel#agentProgressStepElapsed {
     min-width: 42px;
+    padding: 1px 5px;
     color: #64748b;
+    background: transparent;
+    border-radius: 3px;
     font-family: "Cascadia Mono", "Consolas", monospace;
+}
+QLabel#agentProgressStepElapsed[stepState="current"] {
+    color: #12833c;
+    background: transparent;
+    font-weight: 600;
 }
 QWidget#toolApprovalCard {
     margin: 5px 12px;

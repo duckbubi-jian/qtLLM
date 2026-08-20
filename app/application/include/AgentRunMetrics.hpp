@@ -27,13 +27,10 @@ struct AgentRunMetrics
     int duplicateMutationActions = 0;
     int redundantDiscoveryCalls = 0;
     int pollRequests = 0;
-    int completionReviewAttempts = 0;
-    int completionReviewSuccesses = 0;
     int contextCompactions = 0;
     int successfulToolResults = 0;
     int toolEvidenceCount = 0;
     double schemaValidArgumentRate = 1.0;
-    bool completionReviewSucceeded = false;
     QJsonArray taskTimings;
 
     [[nodiscard]] static AgentRunMetrics fromRun(const AgentRun& run);

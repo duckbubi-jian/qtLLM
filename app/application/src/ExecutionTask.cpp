@@ -4,7 +4,6 @@
 
 #include <QJsonDocument>
 
-#include <algorithm>
 #include <utility>
 
 namespace qtllm::application
@@ -83,12 +82,9 @@ void ExecutionTask::activate(QList<chat::Message> messageSeed,
     evidenceEnd_ = 0;
     evidence_ = {};
     output_.clear();
-    awaitingStepReview_ = false;
     pendingToolCallReview_.reset();
     actionRepairFailures_ = 0;
     prematureFinalFailures_ = 0;
-    stepReviewAttempts_ = 0;
-    stepReviewSuccesses_ = 0;
     activateConversation(std::move(messageSeed), requestMessageIndex);
 }
 
@@ -99,12 +95,9 @@ void ExecutionTask::activateDirect(QList<chat::Message> messages)
     evidenceEnd_ = 0;
     evidence_ = {};
     output_.clear();
-    awaitingStepReview_ = false;
     pendingToolCallReview_.reset();
     actionRepairFailures_ = 0;
     prematureFinalFailures_ = 0;
-    stepReviewAttempts_ = 0;
-    stepReviewSuccesses_ = 0;
     activateConversation(std::move(messages), requestMessageIndex);
 }
 
@@ -124,23 +117,18 @@ AgentTask::Directive ExecutionTask::completeTaskGeneration(
     {
         auto repaired = false;
         auto failureCode = QStringLiteral("invalid_agent_action");
-        auto repairCode = QStringLiteral("ordered_action_repair");
+        auto activity = QStringLiteral("Correcting the current task action");
         switch (repairType)
         {
             case ActionResult::Repair::ToolCallReview:
                 repaired = repairToolCallReview(rawAction, errorMessage);
                 failureCode = QStringLiteral("tool_call_review_failed");
-                repairCode = QStringLiteral("tool_call_review_repair");
-                break;
-            case ActionResult::Repair::StepReview:
-                repaired = repairStepReview(rawAction, errorMessage);
-                failureCode = QStringLiteral("plan_step_unverified");
-                repairCode = QStringLiteral("plan_step_review_repair");
+                activity = QStringLiteral("Correcting the tool-call review");
                 break;
             case ActionResult::Repair::PrematureFinal:
                 repaired = repairPrematureFinal(rawAction, errorMessage);
                 failureCode = QStringLiteral("completion_unverified");
-                repairCode = QStringLiteral("unfinished_task_repair");
+                activity = QStringLiteral("Continuing unfinished task work");
                 break;
             case ActionResult::Repair::General:
                 repaired = repairAction(rawAction, errorMessage);
@@ -150,8 +138,9 @@ AgentTask::Directive ExecutionTask::completeTaskGeneration(
         Directive directive;
         directive.type =
             repaired ? Directive::Type::Generate : Directive::Type::Failed;
-        directive.code = repaired ? repairCode : failureCode;
+        if (!repaired) directive.code = failureCode;
         directive.detail = errorMessage;
+        directive.activity = activity;
         if (!repaired) fail();
         return directive;
     };
@@ -161,8 +150,6 @@ AgentTask::Directive ExecutionTask::completeTaskGeneration(
         auto repairType = ActionResult::Repair::General;
         if (hasPendingToolCallReview())
             repairType = ActionResult::Repair::ToolCallReview;
-        else if (awaitingReview())
-            repairType = ActionResult::Repair::StepReview;
         return repair(decision.rawAction, decision.errorMessage, repairType);
     }
 
@@ -205,9 +192,7 @@ AgentTask::Directive ExecutionTask::completeTaskGeneration(
             ActionResult::Repair::General);
     }
 
-    const auto wasAwaitingReview = awaitingReview();
     const auto wasAwaitingToolCallReview = hasPendingToolCallReview();
-    if (wasAwaitingReview) ++stepReviewAttempts_;
     const auto result =
         handleAction(decision.action, decision.rawAction, toolEvidence,
                      unresolvedVerificationReason);
@@ -222,7 +207,8 @@ AgentTask::Directive ExecutionTask::completeTaskGeneration(
             {
                 beginToolCallReview(result.toolAction, decision.rawAction);
                 directive.type = Directive::Type::Generate;
-                directive.code = QStringLiteral("tool_call_review");
+                directive.activity =
+                    QStringLiteral("Reviewing a proposed tool call");
                 return directive;
             }
             directive.type = Directive::Type::CallTool;
@@ -230,7 +216,6 @@ AgentTask::Directive ExecutionTask::completeTaskGeneration(
             directive.toolCallAlreadyRecorded = result.toolCallAlreadyRecorded;
             return directive;
         case ActionResult::Type::TaskCompleted:
-            if (wasAwaitingReview) ++stepReviewSuccesses_;
             directive.type = Directive::Type::Completed;
             directive.content = result.content;
             directive.evidenceEnd = result.evidenceEnd;
@@ -243,10 +228,11 @@ AgentTask::Directive ExecutionTask::completeTaskGeneration(
             return directive;
         case ActionResult::Type::Continue:
             directive.type = Directive::Type::Continue;
-            directive.code = wasAwaitingReview ? QStringLiteral("task_pending")
-                             : wasAwaitingToolCallReview
-                                 ? QStringLiteral("tool_call_rejected")
-                                 : QStringLiteral("continue");
+            directive.activity =
+                wasAwaitingToolCallReview
+                    ? QStringLiteral(
+                          "Choosing an action within the current task")
+                    : QStringLiteral("Continuing the current task");
             return directive;
         case ActionResult::Type::Invalid:
             return repair(decision.rawAction, result.errorMessage,
@@ -302,42 +288,23 @@ ExecutionTask::ActionResult ExecutionTask::handleAction(
         result.content = action.content;
         return result;
     }
-    if (awaitingReview())
-    {
-        if (action.type != agent::ActionType::ReviewPlanStep)
-        {
-            result.repair = ActionResult::Repair::StepReview;
-            result.errorMessage = QStringLiteral(
-                "This task result must be reviewed before another action. "
-                "Return review_plan_step now.");
-            return result;
-        }
-        const auto review = reviewStep(action, rawAction, toolEvidence,
-                                       unresolvedVerificationReason);
-        if (review.status == StepReviewResult::Status::Invalid)
-        {
-            result.repair = ActionResult::Repair::StepReview;
-            result.errorMessage = review.errorMessage;
-            return result;
-        }
-        if (review.status == StepReviewResult::Status::Pending)
-        {
-            result.type = ActionResult::Type::Continue;
-            return result;
-        }
-        result.type = ActionResult::Type::TaskCompleted;
-        result.evidenceEnd = evidenceEnd_;
-        return result;
-    }
-    if (action.type == agent::ActionType::ReviewPlanStep)
-    {
-        result.errorMessage = QStringLiteral(
-            "review_plan_step is valid only after this task requested it.");
-        return result;
-    }
-
     if (action.type == agent::ActionType::Final)
     {
+        if (requiresTool())
+        {
+            const auto completionError = completeWithEvidence(
+                action, rawAction, toolEvidence, unresolvedVerificationReason);
+            if (!completionError.isEmpty())
+            {
+                result.repair = ActionResult::Repair::PrematureFinal;
+                result.errorMessage = completionError;
+                return result;
+            }
+            result.type = ActionResult::Type::TaskCompleted;
+            result.content = action.content;
+            result.evidenceEnd = evidenceEnd_;
+            return result;
+        }
         if (!completeWithoutTool(action, rawAction))
         {
             result.repair = ActionResult::Repair::PrematureFinal;
@@ -365,24 +332,6 @@ QString ExecutionTask::validateToolAction(const agent::Action& action,
                                           bool toolIsReadOnly) const
 {
     const auto stepId = id();
-    if (action.planStepId.isEmpty() || !action.completesPlanStep.has_value())
-    {
-        const auto missing = action.planStepId.isEmpty()
-                                 ? QStringLiteral("plan_step_id")
-                                 : QStringLiteral("completes_plan_step");
-        return QStringLiteral(
-                   "The current task is '%1'. The call is missing %2. Use "
-                   "plan_step_id='%1' and set completes_plan_step=true only "
-                   "for the final call that finishes this task.")
-            .arg(stepId, missing);
-    }
-    if (action.planStepId != stepId)
-        return QStringLiteral(
-                   "This call targets plan_step_id '%1', but this task worker "
-                   "owns only '%2' (%3).")
-            .arg(
-                action.planStepId, stepId,
-                specification_.value(QStringLiteral("description")).toString());
     if (!requiresTool())
         return QStringLiteral(
                    "The current task '%1' does not require a tool. Complete "
@@ -414,59 +363,25 @@ void ExecutionTask::awaitApproval()
     setStatus(Status::WaitingForApproval);
 }
 
-void ExecutionTask::beginReview(int evidenceEnd)
-{
-    evidenceEnd_ = evidenceEnd;
-    planStepReviewFailures_ = 0;
-    awaitingStepReview_ = true;
-    setStatus(Status::Running);
-}
-
-void ExecutionTask::receiveToolResult(const agent::Action& action,
-                                      const agent::ToolResult& result,
+void ExecutionTask::receiveToolResult(const agent::ToolResult& result,
                                       int evidenceSequence,
-                                      const QList<QJsonObject>& toolEvidence,
                                       const QJsonObject& ledgerState,
                                       const QString& verificationReason)
 {
     QString recoveryGuidance;
     const auto inProgress = result.outcome == agent::ToolOutcome::InProgress;
-    if (managedPlan_ && result.outcome == agent::ToolOutcome::Succeeded &&
-        !inProgress && evidenceSequence > 0 &&
-        action.completesPlanStep.value_or(false))
-    {
-        if (verificationReason.isEmpty()) beginReview(evidenceSequence);
-        recoveryGuidance =
-            awaitingReview()
-                ? QStringLiteral(
-                      "The call proposed completion of the current task-plan "
-                      "step. Review that exact step now; it has not advanced "
-                      "yet.")
-                : QStringLiteral(
-                      "The current task-plan step remains unfinished because "
-                      "its mutation verification is unresolved.");
-    }
-    else if (managedPlan_ && !inProgress && !action.planStepId.isEmpty())
-    {
-        recoveryGuidance =
-            QStringLiteral(
-                "Task-plan step '%1' remains current. Use the same "
-                "plan_step_id for the next necessary call; do not advance to "
-                "a later step yet.")
-                .arg(action.planStepId);
-    }
+    if (evidenceSequence >= evidenceStart_)
+        evidenceEnd_ = qMax(evidenceEnd_, evidenceSequence);
+    if (managedPlan_ && !inProgress)
+        recoveryGuidance = QStringLiteral(
+            "This result is bound to the current task by the task "
+            "runtime. Continue only with dependent work for this task, "
+            "or return final when this task's requested outcome is "
+            "complete. The runtime will validate and attach task "
+            "evidence; do not work on a later task.");
 
-    auto resultMessage = AgentPromptBuilder::toolResultMessage(
-        result, evidenceSequence, ledgerState, verificationReason,
-        recoveryGuidance);
-    if (awaitingReview())
-    {
-        const auto reviewMessage = AgentPromptBuilder::planStepReviewMessage(
-            specification_, toolEvidence, evidenceStart_, evidenceEnd_,
-            ledgerState, verificationReason);
-        resultMessage.content += QStringLiteral("\n\n") + reviewMessage.content;
-    }
-    messages().append(std::move(resultMessage));
+    messages().append(AgentPromptBuilder::toolResultMessage(
+        result, ledgerState, verificationReason, recoveryGuidance));
 }
 
 void ExecutionTask::beginToolCallReview(const agent::Action& action,
@@ -515,120 +430,18 @@ bool ExecutionTask::repairToolCallReview(const QByteArray& rawAction,
     return true;
 }
 
-ExecutionTask::StepReviewResult ExecutionTask::reviewStep(
-    const agent::Action& review, const QByteArray& rawAction,
-    const QList<QJsonObject>& toolEvidence,
-    const QString& unresolvedVerificationReason)
-{
-    StepReviewResult result;
-    if (!awaitingReview() || evidenceEnd_ <= 0)
-    {
-        result.errorMessage =
-            QStringLiteral("No result for this task is awaiting review.");
-        return result;
-    }
-    if (review.planStepId != id())
-    {
-        result.errorMessage =
-            QStringLiteral(
-                "review_plan_step targets '%1', but this task is "
-                "'%2'.")
-                .arg(review.planStepId, id());
-        return result;
-    }
-
-    auto citesTerminalResult = false;
-    for (const auto& value : review.planStepReviewEvidence)
-    {
-        const auto sequence = value.toInt();
-        if (sequence < evidenceStart_ || sequence > evidenceEnd_)
-        {
-            result.errorMessage =
-                QStringLiteral(
-                    "Evidence %1 is outside this task's evidence "
-                    "range %2 through %3.")
-                    .arg(sequence)
-                    .arg(evidenceStart_)
-                    .arg(evidenceEnd_);
-            return result;
-        }
-        const auto evidence = std::find_if(
-            toolEvidence.cbegin(), toolEvidence.cend(),
-            [sequence](const QJsonObject& candidate)
-            {
-                return candidate.value(QStringLiteral("sequence")).toInt() ==
-                       sequence;
-            });
-        if (evidence == toolEvidence.cend())
-        {
-            result.errorMessage =
-                QStringLiteral("Unknown tool evidence sequence %1.")
-                    .arg(sequence);
-            return result;
-        }
-        citesTerminalResult =
-            citesTerminalResult ||
-            (evidence->value(QStringLiteral("outcome")).toString() ==
-                 QLatin1String("success") &&
-             evidence->value(QStringLiteral("terminal")).toBool());
-    }
-    if (review.planStepReviewStatus == QLatin1String("satisfied"))
-    {
-        if (!citesTerminalResult)
-        {
-            result.errorMessage = QStringLiteral(
-                "A satisfied review must cite successful terminal evidence "
-                "from this task's evidence range.");
-            return result;
-        }
-        if (!unresolvedVerificationReason.isEmpty())
-        {
-            result.errorMessage = unresolvedVerificationReason;
-            return result;
-        }
-    }
-
-    planStepReviewFailures_ = 0;
-    messages().append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
-    result.detail = review.completionDetail;
-    result.evidence = review.planStepReviewEvidence;
-    if (review.planStepReviewStatus == QLatin1String("pending"))
-    {
-        result.status = StepReviewResult::Status::Pending;
-        markPending();
-        messages().append(AgentPromptBuilder::planStepContinuationMessage(
-            specification_, result.detail));
-        return result;
-    }
-
-    result.status = StepReviewResult::Status::Satisfied;
-    markSatisfied(result.evidence);
-    return result;
-}
-
-bool ExecutionTask::repairStepReview(const QByteArray& rawAction,
-                                     const QString& errorMessage)
-{
-    if (planStepReviewFailures_ >= 1) return false;
-    ++planStepReviewFailures_;
-    messages().append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
-    messages().append(AgentPromptBuilder::planStepReviewCorrectionMessage(
-        errorMessage, specification_));
-    return true;
-}
-
 bool ExecutionTask::repairAction(const QByteArray& rawAction,
-                                 const QString& errorMessage)
+                                 const QString& errorMessage, bool recordAction)
 {
     const auto maximumRepairs = managedPlan_ ? 3 : 1;
     if (actionRepairFailures_ >= maximumRepairs) return false;
     ++actionRepairFailures_;
-    messages().append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
-    messages().append(
+    return appendCorrectionTurn(
+        rawAction,
         managedPlan_
             ? AgentPromptBuilder::orderedPlanCorrectionMessage(errorMessage)
-            : AgentPromptBuilder::correctionMessage(errorMessage));
-    return true;
+            : AgentPromptBuilder::correctionMessage(errorMessage),
+        recordAction);
 }
 
 bool ExecutionTask::repairPrematureFinal(const QByteArray& rawAction,
@@ -651,31 +464,56 @@ bool ExecutionTask::completeWithoutTool(const agent::Action& action,
     return true;
 }
 
-void ExecutionTask::markPending()
+QString ExecutionTask::completeWithEvidence(
+    const agent::Action& action, const QByteArray& rawAction,
+    const QList<QJsonObject>& toolEvidence,
+    const QString& unresolvedVerificationReason)
 {
-    evidenceEnd_ = 0;
-    awaitingStepReview_ = false;
-    setStatus(Status::Running);
+    if (!unresolvedVerificationReason.isEmpty())
+        return unresolvedVerificationReason;
+
+    QJsonArray successfulEvidence;
+    const QJsonObject* latestEvidence = nullptr;
+    for (const auto& evidence : toolEvidence)
+    {
+        const auto sequence =
+            evidence.value(QStringLiteral("sequence")).toInt();
+        if (sequence < evidenceStart_) continue;
+        if (!latestEvidence ||
+            sequence >
+                latestEvidence->value(QStringLiteral("sequence")).toInt())
+            latestEvidence = &evidence;
+        if (evidence.value(QStringLiteral("outcome")).toString() ==
+                QLatin1String("success") &&
+            evidence.value(QStringLiteral("terminal")).toBool())
+            successfulEvidence.append(sequence);
+    }
+    if (!latestEvidence || successfulEvidence.isEmpty())
+        return QStringLiteral(
+            "The current task has no successful terminal tool result.");
+    if (!latestEvidence->value(QStringLiteral("terminal")).toBool())
+        return QStringLiteral(
+            "The latest tool operation for the current task is still in "
+            "progress.");
+
+    messages().append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    evidenceEnd_ = latestEvidence->value(QStringLiteral("sequence")).toInt();
+    output_ = action.content;
+    markSatisfied(successfulEvidence);
+    return {};
 }
 
 void ExecutionTask::markSatisfied(const QJsonArray& evidence)
 {
     evidence_ = evidence;
     pendingToolCallReview_.reset();
-    awaitingStepReview_ = false;
     complete();
 }
 
 void ExecutionTask::markBlocked()
 {
     pendingToolCallReview_.reset();
-    awaitingStepReview_ = false;
     block();
-}
-
-bool ExecutionTask::awaitingReview() const
-{
-    return awaitingStepReview_;
 }
 
 int ExecutionTask::evidenceStart() const
@@ -688,16 +526,6 @@ int ExecutionTask::evidenceEnd() const
     return evidenceEnd_;
 }
 
-int ExecutionTask::stepReviewAttempts() const
-{
-    return stepReviewAttempts_;
-}
-
-int ExecutionTask::stepReviewSuccesses() const
-{
-    return stepReviewSuccesses_;
-}
-
 bool ExecutionTask::hasPendingToolCallReview() const
 {
     return pendingToolCallReview_.has_value();
@@ -705,8 +533,6 @@ bool ExecutionTask::hasPendingToolCallReview() const
 
 QString ExecutionTask::activity() const
 {
-    if (awaitingStepReview_)
-        return QStringLiteral("Reviewing the current task result");
     if (pendingToolCallReview_.has_value())
         return QStringLiteral("Checking the current task boundary");
     switch (status())
@@ -714,8 +540,9 @@ QString ExecutionTask::activity() const
         case Status::Pending:
             return QStringLiteral("Waiting to start");
         case Status::Running:
-        case Status::WaitingForModel:
             return QStringLiteral("Working on the current task");
+        case Status::WaitingForModel:
+            return QStringLiteral("Deciding the next action");
         case Status::WaitingForApproval:
             return QStringLiteral("Waiting for approval");
         case Status::WaitingForTool:

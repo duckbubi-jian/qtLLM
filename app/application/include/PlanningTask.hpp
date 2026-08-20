@@ -11,7 +11,7 @@ namespace qtllm::application
 class PlanningTask final : public AgentTask
 {
    public:
-    explicit PlanningTask(QString originalRequest, QStringList availableTools);
+    explicit PlanningTask(QStringList availableTools);
 
     void activate(QList<chat::Message> messages);
     [[nodiscard]] Directive completeTaskGeneration(
@@ -26,7 +26,6 @@ class PlanningTask final : public AgentTask
     [[nodiscard]] QString activity() const override;
 
     QSet<QString> availableTools_;
-    int numberedInstructionCount_ = 0;
     int repairCount_ = 0;
 };
 }  // namespace qtllm::application

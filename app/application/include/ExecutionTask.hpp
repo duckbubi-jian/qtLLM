@@ -6,21 +6,12 @@
 #include <QByteArray>
 #include <QJsonArray>
 #include <QJsonObject>
-#include <QSet>
-#include <optional>
 
 namespace qtllm::application
 {
 class ExecutionTask final : public AgentTask
 {
    public:
-    struct ToolCallReviewResult
-    {
-        agent::Action proposedAction;
-        bool allowed = false;
-        QString detail;
-    };
-
     struct ActionResult
     {
         enum class Type
@@ -35,7 +26,6 @@ class ExecutionTask final : public AgentTask
         enum class Repair
         {
             General,
-            ToolCallReview,
             PrematureFinal
         };
 
@@ -46,11 +36,9 @@ class ExecutionTask final : public AgentTask
         QString blockReason;
         QString errorMessage;
         int evidenceEnd = 0;
-        bool toolCallAlreadyRecorded = false;
     };
 
-    explicit ExecutionTask(QJsonObject specification = {},
-                           QSet<QString> toolsRequiringSemanticReview = {});
+    explicit ExecutionTask(QJsonObject specification = {});
     explicit ExecutionTask(QString directDescription);
 
     [[nodiscard]] const QJsonObject& specification() const;
@@ -85,18 +73,10 @@ class ExecutionTask final : public AgentTask
     [[nodiscard]] int evidenceStart() const;
     [[nodiscard]] int evidenceEnd() const;
 
-    [[nodiscard]] bool hasPendingToolCallReview() const;
-
    private:
     [[nodiscard]] QString activity() const override;
-    void beginToolCallReview(const agent::Action& action,
-                             const QByteArray& rawAction);
-    [[nodiscard]] bool repairToolCallReview(const QByteArray& rawAction,
-                                            const QString& errorMessage);
     [[nodiscard]] bool repairPrematureFinal(const QByteArray& rawAction,
                                             const QString& errorMessage);
-    [[nodiscard]] std::optional<ToolCallReviewResult> resolveToolCallReview(
-        const agent::Action& review, const QByteArray& rawAction);
     [[nodiscard]] bool completeWithoutTool(const agent::Action& action,
                                            const QByteArray& rawAction);
     [[nodiscard]] QString completeWithEvidence(
@@ -107,13 +87,10 @@ class ExecutionTask final : public AgentTask
 
     QJsonObject specification_;
     bool managedPlan_ = true;
-    QSet<QString> toolsRequiringSemanticReview_;
     int evidenceStart_ = 1;
     int evidenceEnd_ = 0;
     QJsonArray evidence_;
     QString output_;
-    std::optional<agent::Action> pendingToolCallReview_;
-    int toolCallReviewFailures_ = 0;
     int actionRepairFailures_ = 0;
     int prematureFinalFailures_ = 0;
 };

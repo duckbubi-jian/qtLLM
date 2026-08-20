@@ -102,6 +102,7 @@ void collectFacts(const QJsonValue& value, const QString& path, qsizetype depth,
 
 QJsonValue compactJson(const QJsonValue& value, qsizetype maximumBytes)
 {
+    if (!value.isObject() && !value.isArray()) return boundedScalar(value);
     const auto serialized =
         value.isObject()
             ? QJsonDocument(value.toObject()).toJson(QJsonDocument::Compact)

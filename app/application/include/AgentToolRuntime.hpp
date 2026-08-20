@@ -117,7 +117,7 @@ class AgentToolRuntime final
     QString activeCallSignature_;
     QString activeRequestId_;
     QString pollableCallSignature_;
-    qint64 lastPollCompletedAtMs_ = 0;
+    qint64 lastPollCompletedAtMs_ = -1;
     QString lastFailedCallSignature_;
     QStringList completedCallHistory_;
 };

@@ -198,7 +198,7 @@ AgentToolRuntime::DispatchResult AgentToolRuntime::dispatch(
     const auto signature = callSignature(action);
     result.statusPoll = !pollableCallSignature_.isEmpty() &&
                         signature == pollableCallSignature_;
-    if (result.statusPoll && lastPollCompletedAtMs_ > 0)
+    if (result.statusPoll && lastPollCompletedAtMs_ >= 0)
     {
         const auto elapsed = nowMilliseconds - lastPollCompletedAtMs_;
         const auto remaining = minimumPollIntervalMilliseconds - elapsed;
@@ -253,7 +253,7 @@ std::optional<AgentToolRuntime::CompletedCall> AgentToolRuntime::completeCall(
     else
     {
         pollableCallSignature_.clear();
-        lastPollCompletedAtMs_ = 0;
+        lastPollCompletedAtMs_ = -1;
     }
 
     auto operation = ToolOperationKind::Unknown;
@@ -292,7 +292,7 @@ void AgentToolRuntime::clearTransportState()
     activeCallSignature_.clear();
     activeRequestId_.clear();
     pollableCallSignature_.clear();
-    lastPollCompletedAtMs_ = 0;
+    lastPollCompletedAtMs_ = -1;
 }
 
 ToolOperationKind AgentToolRuntime::operationKind(

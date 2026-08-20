@@ -46,14 +46,14 @@ class AgentControllerTest final : public QObject
     void toolRuntimeOwnsDuplicateCallGuard();
     void toolRuntimeOwnsTransportLifecycle();
     void repairsToolValidationWithFocusedContract();
-    void preservesAlternatingRolesWhenReviewedToolNeedsValidationRepair();
+    void preservesAlternatingRolesWhenSharedToolNeedsValidationRepair();
     void rejectsUnchangedRetryAfterToolError();
     void repairsDynamicPropertyNameValidation();
     void bindsToolCallsToCurrentTaskInCode();
     void allowsSemanticTaskBoundaries();
     void blocksOrderedPlanWhenRequiredInputIsMissing();
     void successfulStructuredMutationAdvancesPlanWithoutReadBack();
-    void keepsSharedMutationWithinCurrentPlanStep();
+    void dispatchesSharedMutationWithoutModelReview();
     void keepsOrderedStepPendingWhenEvidenceMissesRequestedTarget();
     void advancesPlanOneStepPerTerminalToolResult();
     void rejectsRepeatedSuccessfulToolCall();
@@ -203,15 +203,6 @@ QByteArray orderedTaskPlanAction(const QJsonArray& steps)
                                       QStringLiteral("task_plan")},
                                      {QStringLiteral("steps"), steps},
                                      {QStringLiteral("ordered"), true}})
-        .toJson(QJsonDocument::Compact);
-}
-
-QByteArray toolCallReviewAction(const QString& verdict, const QString& detail)
-{
-    return QJsonDocument(QJsonObject{{QStringLiteral("action"),
-                                      QStringLiteral("review_tool_call")},
-                                     {QStringLiteral("verdict"), verdict},
-                                     {QStringLiteral("detail"), detail}})
         .toJson(QJsonDocument::Compact);
 }
 
@@ -587,7 +578,7 @@ void AgentControllerTest::repairsToolValidationWithFocusedContract()
 }
 
 void AgentControllerTest::
-    preservesAlternatingRolesWhenReviewedToolNeedsValidationRepair()
+    preservesAlternatingRolesWhenSharedToolNeedsValidationRepair()
 {
     auto toolCallCount = 0;
     QList<chat::Message> generatedMessages;
@@ -634,13 +625,6 @@ void AgentControllerTest::
 
     controller.receiveToken(QByteArrayLiteral(
         R"({"action":"call_tool","tool":"fake.apply","arguments":{"value":"invalid"}})"));
-    controller.completeGeneration(false);
-    QVERIFY(generatedMessages.constLast().content.contains(
-        QStringLiteral("review_tool_call")));
-
-    controller.receiveToken(toolCallReviewAction(
-        QStringLiteral("allow"),
-        QStringLiteral("The proposed call belongs to the first task.")));
     controller.completeGeneration(false);
 
     QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
@@ -1458,7 +1442,6 @@ void AgentControllerTest::exportsStructuredRunMetrics()
     QCOMPARE(metrics.duplicateMutationActions, 0);
     QCOMPARE(metrics.redundantDiscoveryCalls, 1);
     QCOMPARE(metrics.schemaValidArgumentRate, 0.5);
-    QVERIFY(!metrics.completionReviewSucceeded);
 
     const auto json = metrics.toJson();
     QCOMPARE(json.value(QStringLiteral("schemaVersion")).toInt(), 1);
@@ -1467,16 +1450,12 @@ void AgentControllerTest::exportsStructuredRunMetrics()
     const auto taskTimings =
         json.value(QStringLiteral("taskTimings")).toArray();
     QCOMPARE(taskTimings.size(), 1);
-    QCOMPARE(taskTimings.constFirst()
-                 .toObject()
-                 .value(QStringLiteral("kind"))
-                 .toString(),
-             QStringLiteral("execution"));
-    QCOMPARE(taskTimings.constFirst()
-                 .toObject()
-                 .value(QStringLiteral("status"))
-                 .toString(),
-             QStringLiteral("completed"));
+    QCOMPARE(
+        taskTimings.at(0).toObject().value(QStringLiteral("kind")).toString(),
+        QStringLiteral("execution"));
+    QCOMPARE(
+        taskTimings.at(0).toObject().value(QStringLiteral("status")).toString(),
+        QStringLiteral("completed"));
     QCOMPARE(metricsSpy.count(), 1);
     const auto emittedMetrics =
         qvariant_cast<QJsonObject>(metricsSpy.constFirst().at(1));
@@ -1686,7 +1665,7 @@ void AgentControllerTest::rejectsUnchangedRetryAfterToolError()
     QCOMPARE(controller.state(), application::AgentRun::State::Deciding);
     QCOMPARE(generationCount, 4);
     QVERIFY(generatedMessages.constLast().content.contains(
-        QStringLiteral("successful evidence")));
+        QStringLiteral("no successful terminal tool result")));
 
     controller.receiveToken(unsupportedFinal);
     controller.completeGeneration(false);
@@ -2108,7 +2087,7 @@ void AgentControllerTest::
     controller.cancel();
 }
 
-void AgentControllerTest::keepsSharedMutationWithinCurrentPlanStep()
+void AgentControllerTest::dispatchesSharedMutationWithoutModelReview()
 {
     auto toolCallCount = 0;
     QJsonObject executedArguments;
@@ -2132,7 +2111,9 @@ void AgentControllerTest::keepsSharedMutationWithinCurrentPlanStep()
         QStringLiteral("1. Import shaft.stl as a solid region.\n"
                        "2. Import inlet_shaft.stl as an inlet.\n"
                        "3. Import qyck_shaft.stl as a sampling window."),
-        {}, {ledgerTool(QStringLiteral("import_stl"), false)}));
+        {},
+        {ledgerTool(QStringLiteral("import_stl"), false),
+         ledgerTool(QStringLiteral("inspect"), true)}));
     const QJsonArray plan{
         planStep(QStringLiteral("solid"),
                  QStringLiteral("Import shaft.stl as object_type solidRegion"),
@@ -2147,37 +2128,16 @@ void AgentControllerTest::keepsSharedMutationWithinCurrentPlanStep()
     controller.completeGeneration(false);
 
     controller.receiveToken(QByteArrayLiteral(
-        R"({"action":"call_tool","tool":"fake.import_stl","arguments":{"stl_file":"E:/stl_case1/inlet_shaft.stl","object_type":"inlet"}})"));
-    controller.completeGeneration(false);
-    QCOMPARE(toolCallCount, 0);
-    QVERIFY(generatedMessages.constLast().content.contains(
-        QStringLiteral("review_tool_call")));
-    QVERIFY(generatedMessages.constLast().content.contains(
-        QStringLiteral("shaft.stl")));
-
-    controller.receiveToken(toolCallReviewAction(
-        QStringLiteral("reject"),
-        QStringLiteral("The proposed call performs the inlet step.")));
-    controller.completeGeneration(false);
-    QCOMPARE(toolCallCount, 0);
-    QCOMPARE(controller.progressSnapshot().currentStepId,
-             QStringLiteral("solid"));
-    QVERIFY(generatedMessages.constLast().content.contains(
-        QStringLiteral("only this current step")));
-
-    controller.receiveToken(QByteArrayLiteral(
         R"({"action":"call_tool","tool":"fake.import_stl","arguments":{"stl_file":"E:/stl_case1/shaft.stl","object_type":"solidRegion"}})"));
     controller.completeGeneration(false);
-    QCOMPARE(toolCallCount, 0);
-    controller.receiveToken(toolCallReviewAction(
-        QStringLiteral("allow"),
-        QStringLiteral("The call exactly imports the requested solid.")));
-    controller.completeGeneration(false);
     QCOMPARE(toolCallCount, 1);
+    QCOMPARE(controller.state(), application::AgentRun::State::ExecutingTool);
     QCOMPARE(executedArguments.value(QStringLiteral("object_type")).toString(),
              QStringLiteral("solidRegion"));
     QCOMPARE(executedArguments.value(QStringLiteral("stl_file")).toString(),
              QStringLiteral("E:/stl_case1/shaft.stl"));
+    for (const auto& message : generatedMessages)
+        QVERIFY(!message.content.contains(QStringLiteral("review_tool_call")));
 
     agent::ToolResult imported;
     imported.requestId = QStringLiteral("tool-request-1");
@@ -2192,6 +2152,23 @@ void AgentControllerTest::keepsSharedMutationWithinCurrentPlanStep()
     controller.receiveToolResult(imported);
     QCOMPARE(controller.activeRun()->executionTasks.at(0).status(),
              application::ExecutionTask::Status::WaitingForModel);
+
+    controller.receiveToken(QByteArrayLiteral(
+        R"({"action":"call_tool","tool":"fake.inspect","arguments":{"object_uuid":"solid-1"}})"));
+    controller.completeGeneration(false);
+    QCOMPARE(toolCallCount, 2);
+    agent::ToolResult inspected;
+    inspected.requestId = QStringLiteral("tool-request-2");
+    inspected.serverId = QStringLiteral("fake");
+    inspected.toolName = QStringLiteral("inspect");
+    inspected.structuredContent = QJsonObject{
+        {QStringLiteral("ok"), true},
+        {QStringLiteral("object_type"), QStringLiteral("solidRegion")},
+        {QStringLiteral("source_file"),
+         QStringLiteral("E:/stl_case1/shaft.stl")},
+        {QStringLiteral("object_uuid"), QStringLiteral("solid-1")}};
+    controller.receiveToolResult(inspected);
+
     controller.receiveToken(QByteArrayLiteral(
         R"({"action":"final","content":"The solid import completed"})"));
     controller.completeGeneration(false);

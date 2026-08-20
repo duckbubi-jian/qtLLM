@@ -889,8 +889,7 @@ void AgentController::applyTaskDirective(const AgentTask::Directive& directive)
             acceptTaskPlan(directive.tasks);
             return;
         case AgentTask::Directive::Type::CallTool:
-            handleToolAction(directive.toolAction, directive.rawAction,
-                             !directive.toolCallAlreadyRecorded);
+            handleToolAction(directive.toolAction, directive.rawAction);
             return;
         case AgentTask::Directive::Type::Completed:
             if (currentTask() &&
@@ -999,45 +998,10 @@ void AgentController::acceptTaskPlan(const QJsonArray& steps)
         agent::EventType::TaskPlanAccepted,
         QStringLiteral("Task plan accepted."), {},
         {{QStringLiteral("stepCount"), activeRun_->completionSteps.size()}});
-    std::vector<QSet<QString>> toolsRequiringSemanticReview(
-        static_cast<std::size_t>(steps.size()));
-    for (qsizetype index = 0; index < steps.size(); ++index)
-    {
-        const auto allowedTools = steps.at(index)
-                                      .toObject()
-                                      .value(QStringLiteral("allowed_tools"))
-                                      .toArray();
-        for (const auto& toolValue : allowedTools)
-        {
-            const auto toolName = toolValue.toString();
-            const auto descriptor = toolRuntime_.inspect(toolName);
-            if (!descriptor.has_value() ||
-                descriptor->operationKind == ToolOperationKind::ReadOnly)
-                continue;
-            for (qsizetype otherIndex = 0; otherIndex < steps.size();
-                 ++otherIndex)
-            {
-                if (otherIndex == index) continue;
-                if (!steps.at(otherIndex)
-                         .toObject()
-                         .value(QStringLiteral("allowed_tools"))
-                         .toArray()
-                         .contains(toolName))
-                    continue;
-                toolsRequiringSemanticReview.at(static_cast<std::size_t>(index))
-                    .insert(toolName);
-                break;
-            }
-        }
-    }
-
     activeRun_->executionTasks.clear();
     activeRun_->executionTasks.reserve(static_cast<std::size_t>(steps.size()));
     for (qsizetype index = 0; index < steps.size(); ++index)
-        activeRun_->executionTasks.emplace_back(
-            steps.at(index).toObject(),
-            std::move(toolsRequiringSemanticReview.at(
-                static_cast<std::size_t>(index))));
+        activeRun_->executionTasks.emplace_back(steps.at(index).toObject());
 
     // Each ExecutionTask gets a fresh user turn for only its own assignment
     // and the completed-task background it may depend on.

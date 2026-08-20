@@ -8,13 +8,11 @@
 
 namespace qtllm::application
 {
-ExecutionTask::ExecutionTask(QJsonObject specification,
-                             QSet<QString> toolsRequiringSemanticReview)
+ExecutionTask::ExecutionTask(QJsonObject specification)
     : AgentTask(Kind::Execution,
                 specification.value(QStringLiteral("id")).toString(),
                 specification.value(QStringLiteral("description")).toString()),
-      specification_(std::move(specification)),
-      toolsRequiringSemanticReview_(std::move(toolsRequiringSemanticReview))
+      specification_(std::move(specification))
 {
 }
 
@@ -82,7 +80,6 @@ void ExecutionTask::activate(QList<chat::Message> messageSeed,
     evidenceEnd_ = 0;
     evidence_ = {};
     output_.clear();
-    pendingToolCallReview_.reset();
     actionRepairFailures_ = 0;
     prematureFinalFailures_ = 0;
     activateConversation(std::move(messageSeed), requestMessageIndex);
@@ -95,7 +92,6 @@ void ExecutionTask::activateDirect(QList<chat::Message> messages)
     evidenceEnd_ = 0;
     evidence_ = {};
     output_.clear();
-    pendingToolCallReview_.reset();
     actionRepairFailures_ = 0;
     prematureFinalFailures_ = 0;
     activateConversation(std::move(messages), requestMessageIndex);
@@ -120,11 +116,6 @@ AgentTask::Directive ExecutionTask::completeTaskGeneration(
         auto activity = QStringLiteral("Correcting the current task action");
         switch (repairType)
         {
-            case ActionResult::Repair::ToolCallReview:
-                repaired = repairToolCallReview(rawAction, errorMessage);
-                failureCode = QStringLiteral("tool_call_review_failed");
-                activity = QStringLiteral("Correcting the tool-call review");
-                break;
             case ActionResult::Repair::PrematureFinal:
                 repaired = repairPrematureFinal(rawAction, errorMessage);
                 failureCode = QStringLiteral("completion_unverified");
@@ -147,10 +138,8 @@ AgentTask::Directive ExecutionTask::completeTaskGeneration(
 
     if (!decision.valid)
     {
-        auto repairType = ActionResult::Repair::General;
-        if (hasPendingToolCallReview())
-            repairType = ActionResult::Repair::ToolCallReview;
-        return repair(decision.rawAction, decision.errorMessage, repairType);
+        return repair(decision.rawAction, decision.errorMessage,
+                      ActionResult::Repair::General);
     }
 
     if (!managedPlan_)
@@ -167,6 +156,29 @@ AgentTask::Directive ExecutionTask::completeTaskGeneration(
         }
         if (decision.action.type == agent::ActionType::Final)
         {
+            auto hasToolEvidence = false;
+            for (const auto& evidence : toolEvidence)
+            {
+                if (evidence.value(QStringLiteral("sequence")).toInt() >=
+                    evidenceStart_)
+                {
+                    hasToolEvidence = true;
+                    break;
+                }
+            }
+            if (hasToolEvidence)
+            {
+                const auto completionError = completeWithEvidence(
+                    decision.action, decision.rawAction, toolEvidence,
+                    unresolvedVerificationReason);
+                if (!completionError.isEmpty())
+                    return repair(decision.rawAction, completionError,
+                                  ActionResult::Repair::PrematureFinal);
+                directive.type = Directive::Type::Completed;
+                directive.content = output_;
+                directive.evidenceEnd = evidenceEnd_;
+                return directive;
+            }
             if (!unresolvedVerificationReason.isEmpty())
                 return repair(decision.rawAction, unresolvedVerificationReason,
                               ActionResult::Repair::PrematureFinal);
@@ -192,7 +204,6 @@ AgentTask::Directive ExecutionTask::completeTaskGeneration(
             ActionResult::Repair::General);
     }
 
-    const auto wasAwaitingToolCallReview = hasPendingToolCallReview();
     const auto result =
         handleAction(decision.action, decision.rawAction, toolEvidence,
                      unresolvedVerificationReason);
@@ -201,19 +212,8 @@ AgentTask::Directive ExecutionTask::completeTaskGeneration(
     switch (result.type)
     {
         case ActionResult::Type::CallTool:
-            if (!result.toolCallAlreadyRecorded &&
-                toolsRequiringSemanticReview_.contains(
-                    result.toolAction.toolName))
-            {
-                beginToolCallReview(result.toolAction, decision.rawAction);
-                directive.type = Directive::Type::Generate;
-                directive.activity =
-                    QStringLiteral("Reviewing a proposed tool call");
-                return directive;
-            }
             directive.type = Directive::Type::CallTool;
             directive.toolAction = result.toolAction;
-            directive.toolCallAlreadyRecorded = result.toolCallAlreadyRecorded;
             return directive;
         case ActionResult::Type::TaskCompleted:
             directive.type = Directive::Type::Completed;
@@ -228,11 +228,7 @@ AgentTask::Directive ExecutionTask::completeTaskGeneration(
             return directive;
         case ActionResult::Type::Continue:
             directive.type = Directive::Type::Continue;
-            directive.activity =
-                wasAwaitingToolCallReview
-                    ? QStringLiteral(
-                          "Choosing an action within the current task")
-                    : QStringLiteral("Continuing the current task");
+            directive.activity = QStringLiteral("Continuing the current task");
             return directive;
         case ActionResult::Type::Invalid:
             return repair(decision.rawAction, result.errorMessage,
@@ -247,40 +243,6 @@ ExecutionTask::ActionResult ExecutionTask::handleAction(
     const QString& unresolvedVerificationReason)
 {
     ActionResult result;
-    if (hasPendingToolCallReview())
-    {
-        if (action.type != agent::ActionType::ReviewToolCall)
-        {
-            result.repair = ActionResult::Repair::ToolCallReview;
-            result.errorMessage = QStringLiteral(
-                "The pending tool call must be reviewed before another "
-                "action. Return review_tool_call now.");
-            return result;
-        }
-        const auto review = resolveToolCallReview(action, rawAction);
-        if (!review.has_value())
-        {
-            result.repair = ActionResult::Repair::ToolCallReview;
-            result.errorMessage =
-                QStringLiteral("No proposed tool call is awaiting review.");
-            return result;
-        }
-        if (!review->allowed)
-        {
-            result.type = ActionResult::Type::Continue;
-            return result;
-        }
-        result.type = ActionResult::Type::CallTool;
-        result.toolAction = review->proposedAction;
-        result.toolCallAlreadyRecorded = true;
-        return result;
-    }
-    if (action.type == agent::ActionType::ReviewToolCall)
-    {
-        result.errorMessage = QStringLiteral(
-            "review_tool_call is valid only when this task requested it.");
-        return result;
-    }
     if (action.type == agent::ActionType::Blocked)
     {
         result.type = ActionResult::Type::Blocked;
@@ -384,52 +346,6 @@ void ExecutionTask::receiveToolResult(const agent::ToolResult& result,
         result, ledgerState, verificationReason, recoveryGuidance));
 }
 
-void ExecutionTask::beginToolCallReview(const agent::Action& action,
-                                        const QByteArray& rawAction)
-{
-    pendingToolCallReview_ = action;
-    toolCallReviewFailures_ = 0;
-    setStatus(Status::Running);
-    messages().append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
-    messages().append(
-        AgentPromptBuilder::toolCallReviewMessage(specification_, action));
-}
-
-std::optional<ExecutionTask::ToolCallReviewResult>
-ExecutionTask::resolveToolCallReview(const agent::Action& review,
-                                     const QByteArray& rawAction)
-{
-    if (!pendingToolCallReview_.has_value()) return std::nullopt;
-    ToolCallReviewResult result{
-        *pendingToolCallReview_,
-        review.toolReviewVerdict == QLatin1String("allow"),
-        review.toolReviewDetail};
-    pendingToolCallReview_.reset();
-    toolCallReviewFailures_ = 0;
-    setStatus(Status::Running);
-    messages().append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
-    if (!result.allowed)
-        messages().append(AgentPromptBuilder::toolCallReviewContinuationMessage(
-            specification_, result.detail));
-    return result;
-}
-
-bool ExecutionTask::repairToolCallReview(const QByteArray& rawAction,
-                                         const QString& errorMessage)
-{
-    if (!pendingToolCallReview_.has_value() || toolCallReviewFailures_ >= 1)
-        return false;
-    ++toolCallReviewFailures_;
-    messages().append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
-    auto correction = AgentPromptBuilder::toolCallReviewMessage(
-        specification_, *pendingToolCallReview_);
-    correction.content.prepend(
-        QStringLiteral("The prior current-task call review was invalid: %1 ")
-            .arg(errorMessage));
-    messages().append(std::move(correction));
-    return true;
-}
-
 bool ExecutionTask::repairAction(const QByteArray& rawAction,
                                  const QString& errorMessage, bool recordAction)
 {
@@ -506,13 +422,11 @@ QString ExecutionTask::completeWithEvidence(
 void ExecutionTask::markSatisfied(const QJsonArray& evidence)
 {
     evidence_ = evidence;
-    pendingToolCallReview_.reset();
     complete();
 }
 
 void ExecutionTask::markBlocked()
 {
-    pendingToolCallReview_.reset();
     block();
 }
 
@@ -526,15 +440,8 @@ int ExecutionTask::evidenceEnd() const
     return evidenceEnd_;
 }
 
-bool ExecutionTask::hasPendingToolCallReview() const
-{
-    return pendingToolCallReview_.has_value();
-}
-
 QString ExecutionTask::activity() const
 {
-    if (pendingToolCallReview_.has_value())
-        return QStringLiteral("Checking the current task boundary");
     switch (status())
     {
         case Status::Pending:

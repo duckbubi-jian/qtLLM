@@ -230,8 +230,8 @@ QString systemPrompt(const QList<agent::ToolDefinition>& tools,
                "internal reasoning, a plan, or statements about operations "
                "you still need to perform as final. A tool action has action "
                "set to call_tool, an exact listed tool name, and an arguments "
-               "object. task_plan and review_tool_call are task-only actions; "
-               "return one only when the active task explicitly requests it. "
+               "object. task_plan is a planning-only action; return it only "
+               "when the active task explicitly requests it. "
                "When the user "
                "requests an "
                "external operation and a "
@@ -392,46 +392,6 @@ chat::Message AgentPromptBuilder::summaryCorrectionMessage(
             "Do not call a tool, return a task plan or review, or change any "
             "recorded task status.")
             .arg(errorMessage)};
-}
-
-chat::Message AgentPromptBuilder::toolCallReviewMessage(
-    const QJsonObject& step, const agent::Action& proposedAction)
-{
-    const QJsonObject proposedCall{
-        {QStringLiteral("tool"), proposedAction.toolName},
-        {QStringLiteral("arguments"), proposedAction.arguments}};
-    return {
-        chat::Role::User,
-        QStringLiteral(
-            "The plan manager requires a semantic gate before this mutating "
-            "tool call because the same tool is assigned to more than one "
-            "ordered step. Review only whether the proposed call directly "
-            "performs the exact current step. Return verdict allow only when "
-            "its tool and every task-selecting argument (including target, "
-            "path, name, type, value, and unit) belong to this current step. "
-            "Return reject if it performs, begins, or substitutes any later "
-            "or different step. Do not change the plan, execute a tool, or "
-            "review completion. Return exactly {\"action\":"
-            "\"review_tool_call\",\"verdict\":\"allow\","
-            "\"detail\":\"...\"}.\n"
-            "<current_step>%1</current_step>\n"
-            "<proposed_call>%2</proposed_call>")
-            .arg(compactJson(step), compactJson(proposedCall))};
-}
-
-chat::Message AgentPromptBuilder::toolCallReviewContinuationMessage(
-    const QJsonObject& step, const QString& detail)
-{
-    return {
-        chat::Role::User,
-        QStringLiteral(
-            "The plan manager rejected the proposed call because it crossed "
-            "the current task boundary: %1 Continue as the worker for only "
-            "this current step: <current_step>%2</current_step> Return one "
-            "corrected call_tool action for this step, or blocked only for a "
-            "real external blocker. Do not start a later checklist item or "
-            "return another review_tool_call unless requested.")
-            .arg(detail, compactJson(step))};
 }
 
 chat::Message AgentPromptBuilder::taskPlanCorrectionMessage(

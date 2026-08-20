@@ -86,7 +86,6 @@ class AgentTask
         QString detail;
         QString activity;
         int evidenceEnd = 0;
-        bool toolCallAlreadyRecorded = false;
     };
 
     AgentTask(Kind kind, QString id, QString description);

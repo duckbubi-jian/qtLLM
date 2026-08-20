@@ -9,6 +9,7 @@
 #include "MessageWidget.hpp"
 #include "SensitiveData.hpp"
 #include "ToolApprovalWidget.hpp"
+#include "VerificationConfirmationWidget.hpp"
 
 #include <QColor>
 #include <QCoreApplication>
@@ -259,6 +260,29 @@ MainWindow::MainWindow(const QString& settingsFilePath, QWidget* parent)
                     });
                 scrollConversationToBottom();
             });
+    connect(&agentController_,
+            &application::AgentController::verificationRequested, this,
+            [this](const QString&, const QString& reason, const QJsonObject&)
+            {
+                if (pendingVerification_ != nullptr)
+                    pendingVerification_->markCancelled();
+                auto* confirmation = new VerificationConfirmationWidget(reason);
+                pendingVerification_ = confirmation;
+                chatView_->conversationLayout()->insertWidget(
+                    chatView_->conversationLayout()->count() - 1, confirmation);
+                connect(confirmation,
+                        &VerificationConfirmationWidget::decisionMade, this,
+                        [this, confirmation](
+                            application::VerificationDecision decision,
+                            const QString& userEvidence)
+                        {
+                            if (pendingVerification_ != confirmation) return;
+                            pendingVerification_ = nullptr;
+                            agentController_.resolveVerification(decision,
+                                                                 userEvidence);
+                        });
+                scrollConversationToBottom();
+            });
     connect(&agentController_, &application::AgentController::eventRecorded,
             this,
             [this](const agent::Event& event)
@@ -293,6 +317,11 @@ MainWindow::MainWindow(const QString& settingsFilePath, QWidget* parent)
                 {
                     pendingToolApproval_->markCancelled();
                     pendingToolApproval_ = nullptr;
+                }
+                if (pendingVerification_ != nullptr)
+                {
+                    pendingVerification_->markCancelled();
+                    pendingVerification_ = nullptr;
                 }
                 if (state == application::AgentRun::State::Completed ||
                     state == application::AgentRun::State::Blocked)
@@ -1267,6 +1296,7 @@ void MainWindow::resetConversationView()
     activeAgentProgress_ = nullptr;
     lastAgentProgress_ = {};
     pendingToolApproval_ = nullptr;
+    pendingVerification_ = nullptr;
     currentAssistantText_.clear();
     pendingUtf8_.clear();
     chatView_->setStatusText(tr("Conversation cleared"));
@@ -1798,6 +1828,9 @@ void MainWindow::updateAgentState(application::AgentRun::State state)
             break;
         case application::AgentRun::State::WaitingForApproval:
             chatView_->setStatusText(tr("Waiting for tool approval"));
+            break;
+        case application::AgentRun::State::WaitingForVerification:
+            chatView_->setStatusText(tr("Waiting for temporary evidence"));
             break;
         case application::AgentRun::State::ExecutingTool:
             chatView_->setStatusText(tr("Using a tool..."));

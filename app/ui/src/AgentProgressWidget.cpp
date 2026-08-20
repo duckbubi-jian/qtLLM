@@ -207,6 +207,9 @@ void AgentProgressWidget::refresh()
 {
     switch (snapshot_.state)
     {
+        case application::AgentRun::State::WaitingForVerification:
+            stateText_ = tr("Agent needs confirmation");
+            break;
         case application::AgentRun::State::Completed:
             stateText_ = tr("Agent complete");
             break;

@@ -14,6 +14,8 @@ enum class EventType
     TaskStepUpdated,
     DecisionStarted,
     ApprovalRequested,
+    VerificationRequested,
+    VerificationResolved,
     ToolStarted,
     ToolFinished,
     AnswerStarted,

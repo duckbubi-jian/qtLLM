@@ -19,6 +19,7 @@ class ExecutionTask final : public AgentTask
             CallTool,
             TaskCompleted,
             Blocked,
+            VerificationRequired,
             Continue,
             Invalid
         };
@@ -62,6 +63,9 @@ class ExecutionTask final : public AgentTask
 
     void awaitTool();
     void awaitApproval();
+    void awaitVerification();
+    [[nodiscard]] bool resumeWithUserEvidence(const QString& evidence);
+    void allowUnverifiedCompletion(const QList<int>& evidenceSequences);
     void receiveToolResult(const agent::ToolResult& result,
                            int evidenceSequence, const QJsonObject& ledgerState,
                            const QString& verificationReason);
@@ -90,7 +94,9 @@ class ExecutionTask final : public AgentTask
     int evidenceStart_ = 1;
     int evidenceEnd_ = 0;
     QJsonArray evidence_;
+    QJsonArray userResolvedEvidence_;
     QString output_;
+    QByteArray pendingVerificationAction_;
     int actionRepairFailures_ = 0;
     int prematureFinalFailures_ = 0;
 };

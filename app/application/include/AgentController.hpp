@@ -20,6 +20,13 @@
 
 namespace qtllm::application
 {
+enum class VerificationDecision
+{
+    AcceptUnverified,
+    ProvideEvidence,
+    Stop
+};
+
 class AgentController final : public QObject
 {
     Q_OBJECT
@@ -55,6 +62,8 @@ class AgentController final : public QObject
                const AssistantContext& context = {});
     void cancel();
     void resolveApproval(bool approved);
+    void resolveVerification(VerificationDecision decision,
+                             const QString& userEvidence = {});
     bool clearConversation();
     bool setConversationMessages(QList<chat::Message> messages);
 
@@ -83,6 +92,8 @@ class AgentController final : public QObject
     void userRequestAccepted(const QString& runId, const QString& request);
     void approvalRequested(const QString& runId, const QString& toolName,
                            const QJsonObject& arguments);
+    void verificationRequested(const QString& runId, const QString& reason,
+                               const QJsonObject& ledgerState);
     void finalAnswerReady(const QString& runId, const QString& content);
     void metricsReady(const QString& runId, const QJsonObject& metrics);
     void runFinished(const QString& runId,
@@ -91,6 +102,13 @@ class AgentController final : public QObject
     void conversationCleared();
 
    private:
+    enum class VerificationContinuation
+    {
+        RepeatCurrentDecision,
+        ResumeDecision,
+        StartSummary
+    };
+
     static bool isTerminal(AgentRun::State state);
     void requestDecision(const QString& operation = {});
     void compactContextIfNeeded();
@@ -110,6 +128,10 @@ class AgentController final : public QObject
     void acceptTaskPlan(const QJsonArray& steps);
     void executeTool(const agent::Action& action);
     void dispatchTool(const agent::Action& action);
+    void requestVerification(const QString& reason,
+                             VerificationContinuation continuation,
+                             const QString& taskId = {});
+    void clearPendingVerification();
     void retryInvalidToolAction(const QByteArray& rawAction,
                                 const agent::ToolValidationIssue& issue,
                                 const agent::ToolDefinition& tool,
@@ -139,5 +161,10 @@ class AgentController final : public QObject
     QList<QJsonObject> toolEvidence_;
     QTimer* runTimer_ = nullptr;
     QTimer* pollTimer_ = nullptr;
+    std::optional<VerificationContinuation> verificationContinuation_;
+    QString verificationTaskId_;
+    QString verificationReason_;
 };
 }  // namespace qtllm::application
+
+Q_DECLARE_METATYPE(qtllm::application::VerificationDecision)

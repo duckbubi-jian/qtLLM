@@ -25,6 +25,7 @@ class ChatView;
 class MessageWidget;
 class McpControlPanel;
 class ToolApprovalWidget;
+class VerificationConfirmationWidget;
 
 class MainWindow final : public QMainWindow
 {
@@ -135,6 +136,7 @@ class MainWindow final : public QMainWindow
     MessageWidget* currentAssistant_ = nullptr;
     AgentProgressWidget* activeAgentProgress_ = nullptr;
     ToolApprovalWidget* pendingToolApproval_ = nullptr;
+    VerificationConfirmationWidget* pendingVerification_ = nullptr;
     McpControlPanel* mcpControlPanel_ = nullptr;
     QString currentAssistantText_;
     QString modelPath_;

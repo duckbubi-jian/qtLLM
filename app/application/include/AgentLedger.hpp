@@ -71,6 +71,10 @@ class AgentLedger final
     [[nodiscard]] const QList<AgentVerificationRecord>& verifications() const;
     [[nodiscard]] bool hasUnresolvedVerification() const;
     [[nodiscard]] bool evidenceRequiresVerification(int sequence) const;
+    [[nodiscard]] QList<int> acceptUnresolvedVerification(
+        const QString& taskId = {});
+    [[nodiscard]] QList<int> attestUnresolvedVerification(
+        const QString& taskId, const QString& userEvidence);
     [[nodiscard]] QString unresolvedVerificationReason(
         const QString& taskId = {}) const;
     [[nodiscard]] QJsonObject snapshot() const;

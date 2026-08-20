@@ -26,6 +26,7 @@ struct AgentRun
         Idle,
         Deciding,
         WaitingForApproval,
+        WaitingForVerification,
         ExecutingTool,
         GeneratingAnswer,
         Completed,

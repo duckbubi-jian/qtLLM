@@ -323,6 +323,16 @@ Verification should be proportional to risk and contract support:
 - When no reliable verification path exists, the active task must report or
   block on that limitation instead of inventing success.
 
+An unresolved verification is a recoverable user decision point, not an
+automatic failed terminal state. The UI provides a dedicated temporary-evidence
+input with three outcomes: submit user evidence and resume the current task,
+explicitly accept the unverified result, or stop the run. The ledger preserves
+the distinction between deterministic `verified`, user `attested`, and explicit
+`accepted` states. User evidence never becomes Host verification implicitly;
+a later matching read-back may still upgrade it to `verified`.
+An ambiguously dispatched mutation is recorded as unresolved `uncertain` until
+one of those resolution paths applies.
+
 qtLLM must not invent verification mappings or add Shondy-specific conditionals.
 The controller marks a mutation as awaiting verification, exposes the known
 resource state to the model, and accepts a read-back selected from the existing

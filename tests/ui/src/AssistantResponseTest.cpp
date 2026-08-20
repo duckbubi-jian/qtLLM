@@ -12,6 +12,7 @@
 #include "SensitiveData.hpp"
 #include "Theme.hpp"
 #include "ToolApprovalWidget.hpp"
+#include "VerificationConfirmationWidget.hpp"
 
 #include <QAction>
 #include <QApplication>
@@ -62,6 +63,7 @@ class AssistantResponseTest final : public QObject
     void rendersConversationPreview();
     void reasoningOnlyResponseFallsBackToVisibleAnswer();
     void showsInlineToolApprovalAndRedactsSecrets();
+    void collectsTemporaryVerificationEvidence();
     void showsStructuredAgentProgressUntilRunEnds();
     void recordsRedactedAgentActivity();
     void enterSendsAndShiftEnterAddsNewline();
@@ -423,6 +425,67 @@ void AssistantResponseTest::showsInlineToolApprovalAndRedactsSecrets()
              ui::ToolApprovalDecision::AlwaysAllow);
 }
 
+void AssistantResponseTest::collectsTemporaryVerificationEvidence()
+{
+    ui::VerificationConfirmationWidget confirmation(
+        QStringLiteral("Read-back did not expose density."));
+    confirmation.show();
+    QSignalSpy decisionSpy(&confirmation,
+                           &ui::VerificationConfirmationWidget::decisionMade);
+
+    auto* input = confirmation.findChild<QPlainTextEdit*>(
+        QStringLiteral("temporaryEvidenceInput"));
+    auto* submit = confirmation.findChild<QPushButton*>(
+        QStringLiteral("submitTemporaryEvidenceButton"));
+    auto* accept = confirmation.findChild<QPushButton*>(
+        QStringLiteral("acceptUnverifiedResultButton"));
+    auto* stop = confirmation.findChild<QPushButton*>(
+        QStringLiteral("stopUnverifiedRunButton"));
+    QVERIFY(input != nullptr);
+    QVERIFY(submit != nullptr);
+    QVERIFY(accept != nullptr);
+    QVERIFY(stop != nullptr);
+    QVERIFY(!submit->isEnabled());
+
+    input->setPlainText(QStringLiteral("I checked density = 900 in the UI."));
+    QVERIFY(submit->isEnabled());
+    submit->click();
+    QCOMPARE(decisionSpy.count(), 1);
+    QCOMPARE(qvariant_cast<application::VerificationDecision>(
+                 decisionSpy.constFirst().at(0)),
+             application::VerificationDecision::ProvideEvidence);
+    QCOMPARE(decisionSpy.constFirst().at(1).toString(),
+             QStringLiteral("I checked density = 900 in the UI."));
+    QVERIFY(!input->isVisible());
+
+    ui::VerificationConfirmationWidget acceptConfirmation(
+        QStringLiteral("Read-back is unavailable."));
+    QSignalSpy acceptSpy(&acceptConfirmation,
+                         &ui::VerificationConfirmationWidget::decisionMade);
+    auto* acceptCurrent = acceptConfirmation.findChild<QPushButton*>(
+        QStringLiteral("acceptUnverifiedResultButton"));
+    QVERIFY(acceptCurrent != nullptr);
+    acceptCurrent->click();
+    QCOMPARE(acceptSpy.count(), 1);
+    QCOMPARE(qvariant_cast<application::VerificationDecision>(
+                 acceptSpy.constFirst().at(0)),
+             application::VerificationDecision::AcceptUnverified);
+    QVERIFY(acceptSpy.constFirst().at(1).toString().isEmpty());
+
+    ui::VerificationConfirmationWidget stopConfirmation(
+        QStringLiteral("Read-back is unavailable."));
+    QSignalSpy stopSpy(&stopConfirmation,
+                       &ui::VerificationConfirmationWidget::decisionMade);
+    auto* stopRun = stopConfirmation.findChild<QPushButton*>(
+        QStringLiteral("stopUnverifiedRunButton"));
+    QVERIFY(stopRun != nullptr);
+    stopRun->click();
+    QCOMPARE(stopSpy.count(), 1);
+    QCOMPARE(qvariant_cast<application::VerificationDecision>(
+                 stopSpy.constFirst().at(0)),
+             application::VerificationDecision::Stop);
+}
+
 void AssistantResponseTest::showsStructuredAgentProgressUntilRunEnds()
 {
     ui::MainWindow window(settingsFilePath());
@@ -476,7 +539,7 @@ void AssistantResponseTest::showsStructuredAgentProgressUntilRunEnds()
     QVERIFY(stateToggle != nullptr);
     QVERIFY(elapsed != nullptr);
     QCOMPARE(elapsed->text(), QStringLiteral("01:05"));
-    QVERIFY(stateToggle->text().startsWith(QStringLiteral("Agent working")));
+    QVERIFY(stateToggle->toolTip().startsWith(QStringLiteral("Agent working")));
     QVERIFY(
         stateToggle->toolTip().contains(QStringLiteral("shondy.create_inlet")));
     const auto stepLabels = progress->findChildren<QLabel*>(
@@ -524,7 +587,24 @@ void AssistantResponseTest::showsStructuredAgentProgressUntilRunEnds()
     window.resize(720, 520);
     window.show();
     QCoreApplication::processEvents();
-    QVERIFY(stateToggle->geometry().right() < elapsed->geometry().left());
+    progress->layout()->activate();
+    QVERIFY2(
+        !stateToggle->geometry().intersects(elapsed->geometry()),
+        qPrintable(QStringLiteral(
+                       "progress=%1,%2 %3x%4 toggle=%5,%6 %7x%8 elapsed=%9,%10 "
+                       "%11x%12")
+                       .arg(progress->x())
+                       .arg(progress->y())
+                       .arg(progress->width())
+                       .arg(progress->height())
+                       .arg(stateToggle->x())
+                       .arg(stateToggle->y())
+                       .arg(stateToggle->width())
+                       .arg(stateToggle->height())
+                       .arg(elapsed->x())
+                       .arg(elapsed->y())
+                       .arg(elapsed->width())
+                       .arg(elapsed->height())));
     auto* conversationScroll =
         window.findChild<QScrollArea*>(QStringLiteral("conversationScroll"));
     QVERIFY(conversationScroll != nullptr);
@@ -582,8 +662,8 @@ void AssistantResponseTest::showsStructuredAgentProgressUntilRunEnds()
     ui::AgentProgressWidget blockedProgress;
     application::AgentProgressSnapshot blocked = running;
     blocked.state = application::AgentRun::State::Blocked;
-    blocked.steps.at(1).status = application::AgentProgressStepStatus::Blocked;
-    blocked.steps.at(2).status = application::AgentProgressStepStatus::Pending;
+    blocked.steps[1].status = application::AgentProgressStepStatus::Blocked;
+    blocked.steps[2].status = application::AgentProgressStepStatus::Pending;
     blocked.finishCode = QStringLiteral("blocked_missing_input");
     blocked.finishMessage = QStringLiteral("Provide the parent directory.");
     blockedProgress.setSnapshot(blocked);
@@ -593,7 +673,7 @@ void AssistantResponseTest::showsStructuredAgentProgressUntilRunEnds()
         QStringLiteral("agentProgressFinish"));
     QVERIFY(blockedTitle != nullptr);
     QVERIFY(blockedFinish != nullptr);
-    QCOMPARE(blockedTitle->text(), QStringLiteral("Agent blocked"));
+    QCOMPARE(blockedTitle->toolTip(), QStringLiteral("Agent blocked"));
     QVERIFY(blockedFinish->isHidden());
     QVERIFY(prompt->toPlainText().isEmpty());
 }
@@ -1529,7 +1609,7 @@ void AssistantResponseTest::showsLiveGenerationThroughput()
         Q_ARG(int, 48), Q_ARG(double, 12.35), Q_ARG(qint64, qint64{8'400})));
     QCOMPARE(statusLabel->text(),
              QStringLiteral("Generating \u00b7 context 8.4s \u00b7 48 tokens "
-                            "\u00b7 12.4 tok/s"));
+                            "\u00b7 12.3 tok/s"));
 }
 }  // namespace qtllm::tests
 

@@ -1,6 +1,7 @@
 #include "AgentLedger.hpp"
 #include "ToolResultStatus.hpp"
 
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -155,6 +156,13 @@ void collectSemanticTokens(const QJsonValue& value, QStringList& identities,
                            qsizetype& visited, bool includeAliases,
                            bool parentContext);
 bool intersects(const QStringList& left, const QStringList& right);
+
+bool verificationResolved(const QString& state)
+{
+    return state == QLatin1String("verified") ||
+           state == QLatin1String("accepted") ||
+           state == QLatin1String("attested");
+}
 
 bool explicitlyConfirmsSuccess(const QJsonValue& value)
 {
@@ -697,9 +705,7 @@ void AgentLedger::recordToolResult(const QString& taskId, int evidenceSequence,
         if (verification.taskId != taskId ||
             verification.serverId != result.serverId)
             continue;
-        if (verification.state != QLatin1String("pending") &&
-            verification.state != QLatin1String("failed"))
-            continue;
+        if (verification.state == QLatin1String("verified")) continue;
         const auto& observedIds = resultIds.isEmpty() ? actionIds : resultIds;
         const auto& observedNames =
             resultNames.isEmpty() ? actionNames : resultNames;
@@ -750,8 +756,12 @@ void AgentLedger::recordToolResult(const QString& taskId, int evidenceSequence,
         }
     }
 
-    if (operationKind != ToolOperationKind::Mutation || result.isError ||
-        inProgress || verifications_.size() >= maximumVerifications)
+    const auto uncertainMutationFailure =
+        result.isError &&
+        result.sideEffectState == agent::ToolSideEffectState::Uncertain;
+    if (operationKind != ToolOperationKind::Mutation ||
+        (result.isError && !uncertainMutationFailure) || inProgress ||
+        verifications_.size() >= maximumVerifications)
         return;
 
     const auto targetIds = actionIds.isEmpty() ? resultIds : actionIds;
@@ -768,7 +778,7 @@ void AgentLedger::recordToolResult(const QString& taskId, int evidenceSequence,
     const auto selfEffectVerification =
         ToolEffectVerifier::verify(expectedEffects, selfEffectPayload);
     const auto selfVerified =
-        selfTargetVerified &&
+        !result.isError && selfTargetVerified &&
         selfEffectVerification.status == ToolEffectVerificationStatus::Verified;
     const auto hasVerificationTarget =
         !targetIds.isEmpty() || !targetNames.isEmpty();
@@ -777,7 +787,8 @@ void AgentLedger::recordToolResult(const QString& taskId, int evidenceSequence,
     verification.serverId = result.serverId;
     verification.mutationEvidenceSequence = evidenceSequence;
     verification.tool = action.toolName;
-    verification.state = selfVerified ? QStringLiteral("verified")
+    verification.state = uncertainMutationFailure ? QStringLiteral("uncertain")
+                         : selfVerified           ? QStringLiteral("verified")
                          : !hasVerificationTarget
                              ? QStringLiteral("unavailable")
                              : QStringLiteral("pending");
@@ -788,8 +799,11 @@ void AgentLedger::recordToolResult(const QString& taskId, int evidenceSequence,
     verification.missingEffectFields = selfEffectVerification.missingFields;
     verification.mismatchedEffectFields =
         selfEffectVerification.mismatchedFields;
-    if (selfTargetVerified && selfEffectVerification.status ==
-                                  ToolEffectVerificationStatus::Incomplete)
+    if (uncertainMutationFailure)
+        verification.detail = QStringLiteral(
+            "The mutation was dispatched, but its final outcome is unknown.");
+    else if (selfTargetVerified && selfEffectVerification.status ==
+                                       ToolEffectVerificationStatus::Incomplete)
         verification.detail = QStringLiteral(
             "The mutation result did not expose every expected effect field.");
     else if (selfTargetVerified && selfEffectVerification.status ==
@@ -818,10 +832,9 @@ const QList<AgentVerificationRecord>& AgentLedger::verifications() const
 
 bool AgentLedger::hasUnresolvedVerification() const
 {
-    return std::any_of(
-        verifications_.cbegin(), verifications_.cend(),
-        [](const AgentVerificationRecord& verification)
-        { return verification.state != QLatin1String("verified"); });
+    return std::any_of(verifications_.cbegin(), verifications_.cend(),
+                       [](const AgentVerificationRecord& verification)
+                       { return !verificationResolved(verification.state); });
 }
 
 bool AgentLedger::evidenceRequiresVerification(int sequence) const
@@ -831,7 +844,50 @@ bool AgentLedger::evidenceRequiresVerification(int sequence) const
         [sequence](const AgentVerificationRecord& candidate)
         { return candidate.mutationEvidenceSequence == sequence; });
     return verification != verifications_.cend() &&
-           verification->state != QLatin1String("verified");
+           !verificationResolved(verification->state);
+}
+
+QList<int> AgentLedger::acceptUnresolvedVerification(const QString& taskId)
+{
+    QList<int> accepted;
+    for (auto& verification : verifications_)
+    {
+        if (verificationResolved(verification.state) ||
+            (!taskId.isEmpty() && verification.taskId != taskId))
+            continue;
+        verification.state = QStringLiteral("accepted");
+        verification.detail = QStringLiteral(
+            "The user accepted this result without deterministic "
+            "read-back verification.");
+        accepted.append(verification.mutationEvidenceSequence);
+    }
+    return accepted;
+}
+
+QList<int> AgentLedger::attestUnresolvedVerification(
+    const QString& taskId, const QString& userEvidence)
+{
+    QList<int> attested;
+    const auto evidence = userEvidence.trimmed();
+    if (evidence.isEmpty()) return attested;
+    const auto digest = QString::fromLatin1(
+        QCryptographicHash::hash(evidence.toUtf8(), QCryptographicHash::Sha256)
+            .toHex());
+    for (auto& verification : verifications_)
+    {
+        if (verificationResolved(verification.state) ||
+            (!taskId.isEmpty() && verification.taskId != taskId))
+            continue;
+        verification.state = QStringLiteral("attested");
+        verification.detail =
+            QStringLiteral(
+                "The user supplied temporary evidence (sha256:%1, %2 "
+                "characters); deterministic read-back was not available.")
+                .arg(digest)
+                .arg(evidence.size());
+        attested.append(verification.mutationEvidenceSequence);
+    }
+    return attested;
 }
 
 QString AgentLedger::unresolvedVerificationReason(const QString& taskId) const
@@ -840,7 +896,7 @@ QString AgentLedger::unresolvedVerificationReason(const QString& taskId) const
         verifications_.cbegin(), verifications_.cend(),
         [&taskId](const AgentVerificationRecord& candidate)
         {
-            return candidate.state != QLatin1String("verified") &&
+            return !verificationResolved(candidate.state) &&
                    (taskId.isEmpty() || candidate.taskId == taskId);
         });
     if (verification == verifications_.cend()) return {};

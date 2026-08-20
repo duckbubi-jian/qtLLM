@@ -79,7 +79,9 @@ void ExecutionTask::activate(QList<chat::Message> messageSeed,
     evidenceStart_ = evidenceStart;
     evidenceEnd_ = 0;
     evidence_ = {};
+    userResolvedEvidence_ = {};
     output_.clear();
+    pendingVerificationAction_.clear();
     actionRepairFailures_ = 0;
     prematureFinalFailures_ = 0;
     activateConversation(std::move(messageSeed), requestMessageIndex);
@@ -91,7 +93,9 @@ void ExecutionTask::activateDirect(QList<chat::Message> messages)
     evidenceStart_ = 1;
     evidenceEnd_ = 0;
     evidence_ = {};
+    userResolvedEvidence_ = {};
     output_.clear();
+    pendingVerificationAction_.clear();
     actionRepairFailures_ = 0;
     prematureFinalFailures_ = 0;
     activateConversation(std::move(messages), requestMessageIndex);
@@ -168,6 +172,15 @@ AgentTask::Directive ExecutionTask::completeTaskGeneration(
             }
             if (hasToolEvidence)
             {
+                if (!unresolvedVerificationReason.isEmpty())
+                {
+                    pendingVerificationAction_ = decision.rawAction;
+                    awaitVerification();
+                    directive.type = Directive::Type::VerificationRequired;
+                    directive.content = decision.action.content;
+                    directive.detail = unresolvedVerificationReason;
+                    return directive;
+                }
                 const auto completionError = completeWithEvidence(
                     decision.action, decision.rawAction, toolEvidence,
                     unresolvedVerificationReason);
@@ -180,8 +193,14 @@ AgentTask::Directive ExecutionTask::completeTaskGeneration(
                 return directive;
             }
             if (!unresolvedVerificationReason.isEmpty())
-                return repair(decision.rawAction, unresolvedVerificationReason,
-                              ActionResult::Repair::PrematureFinal);
+            {
+                pendingVerificationAction_ = decision.rawAction;
+                awaitVerification();
+                directive.type = Directive::Type::VerificationRequired;
+                directive.content = decision.action.content;
+                directive.detail = unresolvedVerificationReason;
+                return directive;
+            }
             messages().append(
                 {chat::Role::Assistant, QString::fromUtf8(decision.rawAction)});
             output_ = decision.action.content;
@@ -226,6 +245,13 @@ AgentTask::Directive ExecutionTask::completeTaskGeneration(
             directive.code = result.blockReason;
             directive.content = result.content;
             return directive;
+        case ActionResult::Type::VerificationRequired:
+            pendingVerificationAction_ = decision.rawAction;
+            awaitVerification();
+            directive.type = Directive::Type::VerificationRequired;
+            directive.content = result.content;
+            directive.detail = result.errorMessage;
+            return directive;
         case ActionResult::Type::Continue:
             directive.type = Directive::Type::Continue;
             directive.activity = QStringLiteral("Continuing the current task");
@@ -254,6 +280,13 @@ ExecutionTask::ActionResult ExecutionTask::handleAction(
     {
         if (requiresTool())
         {
+            if (!unresolvedVerificationReason.isEmpty())
+            {
+                result.type = ActionResult::Type::VerificationRequired;
+                result.content = action.content;
+                result.errorMessage = unresolvedVerificationReason;
+                return result;
+            }
             const auto completionError = completeWithEvidence(
                 action, rawAction, toolEvidence, unresolvedVerificationReason);
             if (!completionError.isEmpty())
@@ -323,6 +356,67 @@ void ExecutionTask::awaitTool()
 void ExecutionTask::awaitApproval()
 {
     setStatus(Status::WaitingForApproval);
+}
+
+void ExecutionTask::awaitVerification()
+{
+    setStatus(Status::WaitingForVerification);
+}
+
+bool ExecutionTask::resumeWithUserEvidence(const QString& evidence)
+{
+    const auto userEvidence = evidence.trimmed();
+    if (userEvidence.isEmpty() || messages().isEmpty()) return false;
+
+    if (!pendingVerificationAction_.isEmpty())
+    {
+        if (messages().constLast().role != chat::Role::User) return false;
+        messages().append({chat::Role::Assistant,
+                           QString::fromUtf8(pendingVerificationAction_)});
+        pendingVerificationAction_.clear();
+        messages().append(
+            {chat::Role::User,
+             QStringLiteral(
+                 "<user_evidence>\n%1\n</user_evidence>\n"
+                 "This is user-attested evidence, not deterministic Host "
+                 "verification. Continue the current task without repeating "
+                 "an uncertain mutation.")
+                 .arg(userEvidence)});
+    }
+    else if (messages().constLast().role == chat::Role::User)
+    {
+        messages().last().content +=
+            QStringLiteral(
+                "\n\n<user_evidence>\n%1\n</user_evidence>\n"
+                "This is user-attested evidence, not deterministic Host "
+                "verification. Continue the current task without repeating "
+                "an uncertain mutation.")
+                .arg(userEvidence);
+    }
+    else
+    {
+        messages().append(
+            {chat::Role::User,
+             QStringLiteral(
+                 "<user_evidence>\n%1\n</user_evidence>\n"
+                 "This is user-attested evidence, not deterministic Host "
+                 "verification.")
+                 .arg(userEvidence)});
+    }
+    setStatus(Status::Running);
+    return true;
+}
+
+void ExecutionTask::allowUnverifiedCompletion(
+    const QList<int>& evidenceSequences)
+{
+    for (const auto sequence : evidenceSequences)
+    {
+        if (sequence < evidenceStart_ ||
+            userResolvedEvidence_.contains(sequence))
+            continue;
+        userResolvedEvidence_.append(sequence);
+    }
 }
 
 void ExecutionTask::receiveToolResult(const agent::ToolResult& result,
@@ -404,7 +498,8 @@ QString ExecutionTask::completeWithEvidence(
             evidence.value(QStringLiteral("terminal")).toBool())
             successfulEvidence.append(sequence);
     }
-    if (!latestEvidence || successfulEvidence.isEmpty())
+    if (!latestEvidence ||
+        (successfulEvidence.isEmpty() && userResolvedEvidence_.isEmpty()))
         return QStringLiteral(
             "The current task has no successful terminal tool result.");
     if (!latestEvidence->value(QStringLiteral("terminal")).toBool())
@@ -413,8 +508,11 @@ QString ExecutionTask::completeWithEvidence(
             "progress.");
 
     messages().append({chat::Role::Assistant, QString::fromUtf8(rawAction)});
+    pendingVerificationAction_.clear();
     evidenceEnd_ = latestEvidence->value(QStringLiteral("sequence")).toInt();
     output_ = action.content;
+    if (successfulEvidence.isEmpty())
+        successfulEvidence = userResolvedEvidence_;
     markSatisfied(successfulEvidence);
     return {};
 }
@@ -452,6 +550,8 @@ QString ExecutionTask::activity() const
             return QStringLiteral("Deciding the next action");
         case Status::WaitingForApproval:
             return QStringLiteral("Waiting for approval");
+        case Status::WaitingForVerification:
+            return QStringLiteral("Waiting for verification confirmation");
         case Status::WaitingForTool:
             return QStringLiteral("Waiting for the tool result");
         case Status::Completed:

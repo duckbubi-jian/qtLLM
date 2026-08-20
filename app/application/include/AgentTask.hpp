@@ -33,6 +33,7 @@ class AgentTask
         Running,
         WaitingForModel,
         WaitingForApproval,
+        WaitingForVerification,
         WaitingForTool,
         Completed,
         Blocked,
@@ -73,6 +74,7 @@ class AgentTask
             TasksCreated,
             Completed,
             Blocked,
+            VerificationRequired,
             Failed,
             Continue
         };

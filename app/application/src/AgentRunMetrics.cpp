@@ -18,6 +18,8 @@ QString stateName(AgentRun::State state)
             return QStringLiteral("deciding");
         case AgentRun::State::WaitingForApproval:
             return QStringLiteral("waiting_for_approval");
+        case AgentRun::State::WaitingForVerification:
+            return QStringLiteral("waiting_for_verification");
         case AgentRun::State::ExecutingTool:
             return QStringLiteral("executing_tool");
         case AgentRun::State::GeneratingAnswer:

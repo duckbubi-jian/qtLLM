@@ -18,6 +18,10 @@ QString eventTypeName(EventType type)
             return QStringLiteral("decision_started");
         case EventType::ApprovalRequested:
             return QStringLiteral("approval_requested");
+        case EventType::VerificationRequested:
+            return QStringLiteral("verification_requested");
+        case EventType::VerificationResolved:
+            return QStringLiteral("verification_resolved");
         case EventType::ToolStarted:
             return QStringLiteral("tool_started");
         case EventType::ToolFinished:

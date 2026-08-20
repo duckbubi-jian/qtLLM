@@ -532,6 +532,52 @@ QLabel#toolApprovalStatus {
 QLabel#toolApprovalStatus[approved="true"] {
     color: #18794e;
 }
+QWidget#verificationConfirmationCard {
+    background: #fff9ed;
+    border: 1px solid #d59b32;
+    border-radius: 5px;
+}
+QLabel#verificationConfirmationTitle {
+    color: #202124;
+    font-weight: 600;
+}
+QLabel#verificationReason {
+    color: #5f6368;
+}
+QLabel#temporaryEvidenceLabel {
+    color: #334155;
+    font-weight: 600;
+}
+QPlainTextEdit#temporaryEvidenceInput {
+    padding: 6px 8px;
+    color: #202124;
+    background: #ffffff;
+    border: 1px solid #c9cdd3;
+    border-radius: 4px;
+    selection-background-color: #2563eb;
+}
+QPushButton#submitTemporaryEvidenceButton,
+QPushButton#acceptUnverifiedResultButton {
+    color: #ffffff;
+    background: #2563eb;
+    border-color: #2563eb;
+    font-weight: 600;
+}
+QPushButton#submitTemporaryEvidenceButton:hover,
+QPushButton#acceptUnverifiedResultButton:hover {
+    background: #1d4ed8;
+    border-color: #1d4ed8;
+}
+QPushButton#stopUnverifiedRunButton {
+    color: #b42318;
+}
+QLabel#verificationConfirmationStatus {
+    color: #b42318;
+    font-weight: 600;
+}
+QLabel#verificationConfirmationStatus[accepted="true"] {
+    color: #18794e;
+}
 QToolButton#reasoningToggle {
     min-height: 26px;
     padding: 0 7px;
